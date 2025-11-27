@@ -1,0 +1,72 @@
+# Hyperparameters for Willmore Energy Minimization
+
+# Model Architecture
+model:
+  input_dim: 2  # Dimension of parameter space (u, v coordinates)
+  output_dim: 3  # Dimension of embedding space (x, y, z coordinates)
+  hidden_dims: [128, 256, 512, 256, 128]  # Hidden layer dimensions
+  activation: "tanh"  # Activation function: relu, tanh, elu, silu
+  dropout: 0.0  # Dropout rate
+  use_batch_norm: true  # Use batch normalization
+  use_periodic_embedding: true  # Use Fourier features to enforce periodicity
+  num_frequencies: 3  # Number of frequency components (balance between smoothness and expressiveness)
+  use_residual: false  # Learn residuals from reference (true) or full embedding (false)
+  residual_scale: 0.5  # Scale factor for residual corrections (only if use_residual=true)
+  initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
+
+# Training Parameters
+training:
+  num_epochs: 200
+  batch_size: 64
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  scheduler: "cosine"  # Learning rate scheduler: step, cosine, exponential, plateau, none
+  scheduler_params:
+    T_max: 100  # For cosine annealing
+    eta_min: 0.00001
+  gradient_clip: 1.0  # Gradient clipping threshold (null to disable)
+  save_frequency: 5  # Save model every N epochs
+  log_frequency: 5  # Log metrics every N epochs
+
+# Sampling Parameters
+sampling:
+  num_points: 2000  # Number of points to sample per epoch
+  domain: "torus"  # Domain type: sphere, torus, ellipsoid, custom
+  domain_params:
+    radius: 1.0  # For sphere
+    major_radius: 4.0  # For torus: R (distance from origin to tube center) - Clifford has R/r = √2
+    minor_radius: 0.5  # For torus: r (tube radius) - extreme ratio R/r=8.0 vs optimal √2≈1.414
+    center: [0.0, 0.0, 0.0]
+  noise_level: 0.0  # Add Gaussian noise to coordinates
+  resample_each_epoch: true  # Whether to resample points each epoch
+
+# Loss Function Parameters
+loss:
+  willmore_weight: 1.0  # Weight for Willmore energy term (H² integrated over surface)
+  regularization_weight: 0.0  # Weight for metric regularization (keep metric well-behaved)
+  area_weight: 0.0  # Weight for area constraint (prevent collapse/explosion)
+  smoothness_weight: 0.001  # Weight for smoothness regularization
+  topology_weight: 0.01  # Weight for topology preservation (prevent degeneracies - now enabled!)
+  target_area: null  # Target surface area (null for adaptive constraint)
+  epsilon: 0.0001  # Numerical stability constant (1e-4) - larger to prevent H explosion from small EG-F²
+  # Note: True Willmore energy computed from embedding derivatives
+
+# Optimization
+optimizer:
+  type: "adam"  # adam, sgd, adamw, rmsprop
+  betas: [0.9, 0.999]  # For Adam
+  momentum: 0.9  # For SGD
+
+# Output and Logging
+output:
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  save_best_only: false  # Save checkpoints at regular intervals (not just best)
+  metric_to_monitor: "willmore_energy"  # Metric to monitor for best model
+  
+# Computation
+device: "auto"  # auto, cpu, cuda, mps
+               # Note: auto defaults to CPU (MPS has incomplete linalg support)
+               # For MPS, set device: "mps" and run with PYTORCH_ENABLE_MPS_FALLBACK=1
+seed: 42  # Random seed for reproducibility
+dtype: "float32"  # float32 or float64

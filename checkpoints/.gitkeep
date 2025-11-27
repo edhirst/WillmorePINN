@@ -1,0 +1,2 @@
+# This file keeps the checkpoints directory in version control
+# Actual checkpoint files are ignored by .gitignore

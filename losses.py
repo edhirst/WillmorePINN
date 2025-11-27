@@ -59,20 +59,7 @@ class EmbeddingWillmoreLoss(nn.Module):
         # Monte Carlo: integral ≈ (volume/N) * sum = volume * mean
         domain_area = (2 * 3.14159265359) ** 2  # (2π)²
         
-        # DEBUG_DELETE: Print intermediate values and check for outliers
         integrand = H * H * area_element
-        if torch.rand(1).item() < 0.02:  # Print occasionally
-            mean_integrand = torch.mean(integrand).item()
-            max_integrand = torch.max(integrand).item()
-            min_H = H.min().item()
-            max_H = H.max().item()
-            print(f"DEBUG_DELETE: mean(H²*dA)={mean_integrand:.2f}, max(H²*dA)={max_integrand:.2f}")
-            print(f"DEBUG_DELETE: H range=[{min_H:.2f}, {max_H:.2f}], area_element mean={area_element.mean().item():.2f}")
-            if mean_integrand > 10000:
-                print(f"DEBUG_DELETE: *** HIGH WILLMORE BATCH DETECTED! ***")
-                outliers = integrand > 1000
-                print(f"DEBUG_DELETE: {outliers.sum().item()} points with H²*dA > 1000")
-        
         willmore_energy = domain_area * torch.mean(integrand)
         
         return willmore_energy
@@ -328,10 +315,6 @@ class CombinedEmbeddingLoss(nn.Module):
             self.smoothness_weight * smoothness +
             self.topology_weight * topology
         )
-        
-        # DEBUG_DELETE: Check if willmore is a scalar or needs reduction
-        if torch.rand(1).item() < 0.01:
-            print(f"DEBUG_DELETE: willmore tensor shape={willmore.shape}, value={willmore.item() if willmore.numel() == 1 else 'NOT_SCALAR'}")
         
         return {
             'total': total_loss,

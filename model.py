@@ -72,7 +72,8 @@ class EmbeddingNetwork(nn.Module):
         domain: str = "torus",  # Reference domain type
         domain_params: Optional[dict] = None,  # Parameters for reference embedding
         use_residual: bool = True,  # Learn residuals from reference (False = full embedding)
-        residual_scale: float = 0.1  # Scale factor for residuals
+        residual_scale: float = 0.1,  # Scale factor for residuals
+        skip_init: bool = False  # Skip reference initialization (for loading checkpoints)
     ):
         """
         Initialize the embedding network.
@@ -137,7 +138,8 @@ class EmbeddingNetwork(nn.Module):
         self._initialize_weights(initialization)
         
         # For full embedding mode, initialize to approximate reference
-        if not use_residual and domain in ['torus', 'sphere']:
+        # Skip if loading from checkpoint
+        if not skip_init and not use_residual and domain in ['torus', 'sphere']:
             self._init_near_reference()
     
     def _get_activation(self, activation: str) -> nn.Module:
@@ -175,8 +177,6 @@ class EmbeddingNetwork(nn.Module):
     def _init_near_reference(self):
         """Initialize network to match reference embedding AND its derivatives."""
         device = next(self.parameters()).device
-        
-        print("DEBUG_DELETE: Training network to fit reference geometry + derivatives...")
         
         # Create optimizer for initialization
         optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
@@ -257,13 +257,8 @@ class EmbeddingNetwork(nn.Module):
             
             avg_pos_loss = epoch_pos_loss / num_batches
             avg_deriv_loss = epoch_deriv_loss / num_batches
-            
-            # Print progress
-            if (epoch + 1) % 30 == 0:
-                print(f"DEBUG_DELETE: Init epoch {epoch+1}/{num_init_epochs}, pos_MSE={avg_pos_loss:.6f}, deriv_MSE={avg_deriv_loss:.6f}")
         
         # Final validation including Willmore energy
-        print("DEBUG_DELETE: Computing final initialization quality...")
         with torch.no_grad():
             n_val = 500
             uv_val = torch.rand(n_val, 2, device=device) * 2 * np.pi
@@ -271,7 +266,6 @@ class EmbeddingNetwork(nn.Module):
             xyz_pred_val = self.forward(uv_val)
             val_error = torch.mean((xyz_pred_val - xyz_ref_val) ** 2).item()
             max_error = torch.max(torch.abs(xyz_pred_val - xyz_ref_val)).item()
-            print(f"DEBUG_DELETE: Position - MSE={val_error:.6f}, max_error={max_error:.6f}")
     
     def _get_reference_embedding(self, uv: torch.Tensor) -> torch.Tensor:
         """
@@ -500,22 +494,9 @@ class EmbeddingNetwork(nn.Module):
         denominator = 2 * (E * G - F * F) + epsilon
         H = numerator / denominator
         
-        # DEBUG_DELETE: Check for extreme values before clamping
-        if torch.rand(1).item() < 0.02:
-            print(f"DEBUG_DELETE: H raw - min={H.min().item():.2f}, max={H.max().item():.2f}, mean={H.mean().item():.2f}")
-            print(f"DEBUG_DELETE: denominator - min={denominator.min().item():.6f}, max={denominator.max().item():.6f}")
-            n_extreme = (torch.abs(H) > 100).sum().item()
-            if n_extreme > 0:
-                print(f"DEBUG_DELETE: WARNING! {n_extreme} points with |H| > 100")
-        
         # Clamp H to prevent numerical instabilities from dominating
         # For reference: torus R=4, r=0.5 has max|H| ~ 10-20, Clifford has max|H| ~ 5
         H_clamped = torch.clamp(H, min=-100, max=100)
-        
-        # DEBUG_DELETE: Report if clamping occurred
-        if torch.any(H != H_clamped) and torch.rand(1).item() < 0.05:
-            n_clamped = (H != H_clamped).sum().item()
-            print(f"DEBUG_DELETE: Clamped {n_clamped} H values")
         
         return H_clamped
     
@@ -524,13 +505,14 @@ class EmbeddingNetwork(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
-def create_embedding_model(config: dict, device: torch.device) -> nn.Module:
+def create_embedding_model(config: dict, device: torch.device, skip_init: bool = False) -> nn.Module:
     """
     Factory function to create an embedding model from configuration.
     
     Args:
         config: Configuration dictionary with model parameters
         device: Device to place the model on
+        skip_init: If True, skip reference initialization (useful when loading checkpoints)
     
     Returns:
         Initialized embedding model
@@ -551,7 +533,8 @@ def create_embedding_model(config: dict, device: torch.device) -> nn.Module:
         domain=sampling_config.get("domain", "torus"),
         domain_params=sampling_config.get("domain_params", {}),
         use_residual=model_config.get("use_residual", False),  # Default to full embedding
-        residual_scale=model_config.get("residual_scale", 0.1)
+        residual_scale=model_config.get("residual_scale", 0.1),
+        skip_init=skip_init
     )
     
     model = model.to(device)

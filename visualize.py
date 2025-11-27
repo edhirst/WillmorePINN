@@ -20,7 +20,8 @@ from sampling import sample_parameters
 
 def load_checkpoint_model(checkpoint_path, config, device):
     """Load model from checkpoint."""
-    model = create_embedding_model(config, device)
+    # Skip reference initialization when loading from checkpoint
+    model = create_embedding_model(config, device, skip_init=True)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
@@ -66,7 +67,8 @@ def visualize_training_evolution(
     config_path='hyperparameters.yaml',
     checkpoint_dir='checkpoints',
     num_test_points=5000,
-    output_path='logs/embedding_evolution.png'
+    output_path='logs/embedding_evolution.png',
+    number_of_models=None
 ):
     """
     Visualize how the embedding evolves during training.
@@ -76,6 +78,9 @@ def visualize_training_evolution(
         checkpoint_dir: Directory containing checkpoints
         num_test_points: Number of points to sample for visualization
         output_path: Where to save the visualization
+        number_of_models: Number of models to plot. If None or >= total models, plots all.
+                         If a positive integer < total models, selects that many with even spacing,
+                         always including first and last. Must be >= 2 if specified.
     """
     # Load configuration
     with open(config_path, 'r') as f:
@@ -88,25 +93,56 @@ def visualize_training_evolution(
     print(f"Using {num_test_points} test points")
     
     # Find all checkpoint files
-    checkpoint_files = sorted(glob.glob(os.path.join(checkpoint_dir, 'checkpoint_epoch_*.pt')))
+    checkpoint_files = glob.glob(os.path.join(checkpoint_dir, 'checkpoint_epoch_*.pt'))
     
     if not checkpoint_files:
         print(f"No checkpoint files found in {checkpoint_dir}")
         return
     
-    # Select checkpoints to visualize (including best and latest)
-    best_checkpoint = os.path.join(checkpoint_dir, 'best_model.pt')
-    latest_checkpoint = os.path.join(checkpoint_dir, 'latest_model.pt')
+    # Sort checkpoint files by epoch number (extract epoch from filename)
+    def extract_epoch(filepath):
+        filename = os.path.basename(filepath)
+        # Extract epoch number from 'checkpoint_epoch_N.pt'
+        try:
+            epoch_str = filename.replace('checkpoint_epoch_', '').replace('.pt', '')
+            return int(epoch_str)
+        except ValueError:
+            return 0
     
-    # Select evenly spaced checkpoints
-    num_plots = min(6, len(checkpoint_files))
-    if num_plots > 2:
-        indices = np.linspace(0, len(checkpoint_files) - 1, num_plots - 2, dtype=int)
-        selected_checkpoints = [checkpoint_files[i] for i in indices]
+    checkpoint_files = sorted(checkpoint_files, key=extract_epoch)
+    
+    # Validate and apply number_of_models parameter
+    total_checkpoints = len(checkpoint_files)
+    
+    if number_of_models is not None:
+        # Validate that number_of_models is a positive integer
+        if not isinstance(number_of_models, int) or number_of_models < 1:
+            raise ValueError(f"number_of_models must be a positive integer, got: {number_of_models}")
+        
+        # If number_of_models is less than total and at least 2, select with even spacing
+        if number_of_models < total_checkpoints:
+            if number_of_models < 2:
+                raise ValueError(f"number_of_models must be at least 2 to include first and last models, got: {number_of_models}")
+            
+            # Always include first and last, then select evenly spaced models in between
+            if number_of_models == 2:
+                selected_indices = [0, total_checkpoints - 1]
+            else:
+                # Use linspace to get evenly spaced indices including first and last
+                selected_indices = np.linspace(0, total_checkpoints - 1, number_of_models, dtype=int)
+                # Remove duplicates while preserving order
+                selected_indices = sorted(list(dict.fromkeys(selected_indices)))
+            
+            selected_checkpoints = [checkpoint_files[i] for i in selected_indices]
+        else:
+            # Use all checkpoint files if number_of_models >= total
+            selected_checkpoints = checkpoint_files
     else:
-        selected_checkpoints = checkpoint_files[:num_plots]
+        # Use all checkpoint files if number_of_models is None
+        selected_checkpoints = checkpoint_files
     
-    # Add best if exists
+    # Add best model if it exists (will appear last)
+    best_checkpoint = os.path.join(checkpoint_dir, 'best_model.pt')
     if os.path.exists(best_checkpoint):
         selected_checkpoints.append(best_checkpoint)
     
@@ -231,6 +267,8 @@ def main():
                        help='Visualization mode')
     parser.add_argument('--points', type=int, default=5000,
                        help='Number of test points')
+    parser.add_argument('--num-models', type=int, default=None,
+                       help='Number of models to plot (default: all). Must be >= 2 if specified.')
     
     args = parser.parse_args()
     
@@ -241,7 +279,8 @@ def main():
         visualize_training_evolution(
             config_path=args.config,
             checkpoint_dir=args.checkpoints,
-            num_test_points=args.points
+            num_test_points=args.points,
+            number_of_models=args.num_models
         )
     
     if args.mode in ['best', 'both']:

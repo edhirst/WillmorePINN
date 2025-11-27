@@ -128,10 +128,6 @@ def train_epoch(
         # Optimizer step
         optimizer.step()
         
-        # DEBUG_DELETE: Track willmore values per batch for first epoch
-        if batch_idx < 5 or batch_idx == num_batches - 1:
-            print(f"DEBUG_DELETE: Batch {batch_idx}/{num_batches}: willmore={loss_dict['willmore']:.2f}, smoothness={loss_dict['smoothness']:.2f}")
-        
         # Accumulate losses
         for key in epoch_losses.keys():
             if key == 'total':
@@ -142,14 +138,8 @@ def train_epoch(
                 epoch_losses[key] += loss_dict.get(key, 0.0)
     
     # Average losses over batches
-    # DEBUG_DELETE: Print before averaging
-    print(f"DEBUG_DELETE: Before averaging - accumulated willmore={epoch_losses['willmore']:.6f}, num_batches={num_batches}")
-    
     for key in epoch_losses.keys():
         epoch_losses[key] /= num_batches
-    
-    # DEBUG_DELETE: Print after averaging
-    print(f"DEBUG_DELETE: After averaging - willmore={epoch_losses['willmore']:.6f}")
     
     return epoch_losses
 

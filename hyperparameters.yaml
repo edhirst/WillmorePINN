@@ -16,26 +16,26 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 200
-  batch_size: 64
-  learning_rate: 0.001
+  num_epochs: 1000  # Long training run to converge to Clifford torus
+  batch_size: 128  # Larger batches for stability
+  learning_rate: 0.0005  # Lower LR for careful optimization
   weight_decay: 0.0001
   scheduler: "cosine"  # Learning rate scheduler: step, cosine, exponential, plateau, none
   scheduler_params:
-    T_max: 100  # For cosine annealing
-    eta_min: 0.00001
+    T_max: 1000  # Match num_epochs for full cosine cycle
+    eta_min: 0.000001  # Very low final LR for fine-tuning
   gradient_clip: 1.0  # Gradient clipping threshold (null to disable)
-  save_frequency: 5  # Save model every N epochs
-  log_frequency: 5  # Log metrics every N epochs
+  save_frequency: 25  # Save model every 25 epochs
+  log_frequency: 10  # Log metrics every 10 epochs
 
 # Sampling Parameters
 sampling:
-  num_points: 2000  # Number of points to sample per epoch
+  num_points: 8000  # Many points for accurate geometry representation
   domain: "torus"  # Domain type: sphere, torus, ellipsoid, custom
   domain_params:
     radius: 1.0  # For sphere
-    major_radius: 4.0  # For torus: R (distance from origin to tube center) - Clifford has R/r = √2
-    minor_radius: 0.5  # For torus: r (tube radius) - extreme ratio R/r=8.0 vs optimal √2≈1.414
+    major_radius: 3.0  # For torus: R - starting with distorted torus (R/r = 6.0)
+    minor_radius: 0.5  # For torus: r - target Clifford has R/r = √2 ≈ 1.414
     center: [0.0, 0.0, 0.0]
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch

@@ -181,8 +181,8 @@ class EmbeddingNetwork(nn.Module):
         # Create optimizer for initialization
         optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
         
-        # Training loop for initialization
-        num_init_epochs = 150  # More epochs since we're matching derivatives too
+        # Training loop for initialization - LONG supervised pretraining
+        num_init_epochs = 500  # Extended supervised pretraining to learn the distorted torus
         batch_size = 256  # Smaller batches for derivative computation
         n_samples_per_epoch = 2000
         
@@ -257,6 +257,13 @@ class EmbeddingNetwork(nn.Module):
             
             avg_pos_loss = epoch_pos_loss / num_batches
             avg_deriv_loss = epoch_deriv_loss / num_batches
+            
+            # Print progress every 50 epochs
+            if (epoch + 1) % 50 == 0 or epoch == 0:
+                print(f"  Supervised pretraining epoch [{epoch+1}/{num_init_epochs}]: "
+                      f"Position loss = {avg_pos_loss:.6f}, Derivative loss = {avg_deriv_loss:.6f}")
+        
+        print(f"Supervised pretraining complete after {num_init_epochs} epochs")
         
         # Final validation including Willmore energy
         with torch.no_grad():

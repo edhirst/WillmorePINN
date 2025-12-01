@@ -55,6 +55,9 @@ venv.bak/
 logs/*.png
 logs/*.json
 
+# Model checkpoints
+checkpoints/
+
 # Temporary files
 *.tmp
 *.bak

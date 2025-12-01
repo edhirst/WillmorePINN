@@ -2,6 +2,7 @@
 
 # Model Architecture
 model:
+  # Base network structure
   input_dim: 2  # Dimension of parameter space (u, v coordinates)
   output_dim: 3  # Dimension of embedding space (x, y, z coordinates)
   hidden_dims: [128, 256, 512, 256, 128]  # Hidden layer dimensions
@@ -10,13 +11,25 @@ model:
   use_batch_norm: true  # Use batch normalization
   use_periodic_embedding: true  # Use Fourier features to enforce periodicity
   num_frequencies: 3  # Number of frequency components (balance between smoothness and expressiveness)
+  initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
+  
+  # Residual learning (learning corrections to reference embedding)
   use_residual: false  # Learn residuals from reference (true) or full embedding (false)
   residual_scale: 0.5  # Scale factor for residual corrections (only if use_residual=true)
-  initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
+  
+  # Supervised pretraining (initialize network to match reference embedding)
+  supervised_pretraining:
+    enabled: true  # Whether to pretrain network on reference embedding
+    num_epochs: 500  # Number of supervised pretraining epochs
+    learning_rate: 0.01  # Learning rate for pretraining optimizer
+    batch_size: 256  # Batch size for pretraining
+    num_points_per_epoch: 2000  # Number of points to sample per pretraining epoch
+    position_weight: 1.0  # Weight for position matching loss
+    derivative_weight: 0.1  # Weight for derivative matching loss
 
 # Training Parameters
 training:
-  num_epochs: 1000  # Long training run to converge to Clifford torus
+  num_epochs: 500  # Long training run to converge to Clifford torus
   batch_size: 128  # Larger batches for stability
   learning_rate: 0.0005  # Lower LR for careful optimization
   weight_decay: 0.0001
@@ -30,7 +43,7 @@ training:
 
 # Sampling Parameters
 sampling:
-  num_points: 8000  # Many points for accurate geometry representation
+  num_points: 20000  # Many points for accurate geometry representation
   domain: "torus"  # Domain type: sphere, torus, ellipsoid, custom
   domain_params:
     radius: 1.0  # For sphere

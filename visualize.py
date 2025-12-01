@@ -111,6 +111,9 @@ def visualize_training_evolution(
     
     checkpoint_files = sorted(checkpoint_files, key=extract_epoch)
     
+    # Verify checkpoint files contain valid epochs
+    print(f"Found {len(checkpoint_files)} checkpoint files")
+    
     # Validate and apply number_of_models parameter
     total_checkpoints = len(checkpoint_files)
     
@@ -160,7 +163,8 @@ def visualize_training_evolution(
     
     # Plot each checkpoint
     for idx, checkpoint_path in enumerate(selected_checkpoints):
-        print(f"  Loading {Path(checkpoint_path).name}...")
+        checkpoint_name = Path(checkpoint_path).name
+        print(f"  Loading {checkpoint_name}...")
         
         model, epoch, loss = load_checkpoint_model(checkpoint_path, config, device)
         
@@ -171,12 +175,16 @@ def visualize_training_evolution(
         # Create subplot
         ax = fig.add_subplot(n_rows, n_cols, idx + 1, projection='3d')
         
-        # Determine title
+        # Determine title - verify epoch matches filename
         if 'best' in checkpoint_path:
             title = f'Best Model\nEpoch {epoch}, W={loss:.2f}'
         elif 'latest' in checkpoint_path:
             title = f'Latest Model\nEpoch {epoch}, W={loss:.2f}'
         else:
+            # Verify the epoch in the checkpoint matches the filename
+            expected_epoch = extract_epoch(checkpoint_path) if checkpoint_name.startswith('checkpoint_epoch_') else epoch
+            if expected_epoch != epoch:
+                print(f"  WARNING: Checkpoint {checkpoint_name} has epoch {epoch} but filename suggests {expected_epoch}")
             title = f'Epoch {epoch}\nW={loss:.2f}'
         
         plot_embedding_3d(ax, xyz, title)

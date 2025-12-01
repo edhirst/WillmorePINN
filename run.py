@@ -307,10 +307,11 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         history['topology'].append(epoch_losses['topology'])
         history['learning_rate'].append(current_lr)
         
-        # Check if best model
-        is_best = epoch_losses['willmore'] < best_willmore
+        # Check if best model using the actual Willmore energy
+        current_willmore = epoch_losses['willmore']
+        is_best = current_willmore < best_willmore
         if is_best:
-            best_willmore = epoch_losses['willmore']
+            best_willmore = current_willmore
         
         # Log progress
         if epoch % log_frequency == 0:
@@ -328,8 +329,10 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
                 ratio = epoch_losses['willmore'] / ref_willmore
                 print(f"  Ratio to reference: {ratio:.4f}x")
         
-        # Save checkpoint
-        if epoch % save_frequency == 0 or is_best:
+        # Save checkpoint - save at regular intervals AND when we find a new best
+        # Use separate condition to save regular checkpoints vs best model
+        should_save_regular = (epoch % save_frequency == 0)
+        if should_save_regular or is_best:
             save_checkpoint(
                 model, optimizer, epoch,
                 epoch_losses['willmore'], config,

@@ -379,10 +379,11 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         print(f"Ratio: {best_willmore / ref_willmore:.4f}x")
     print(f"Final epoch - Total Loss: {epoch_losses['total']:.6f}")
     print(f"             Willmore: {epoch_losses['willmore']:.6f}")
-    print(f"             Regularization: {epoch_losses['regularization']:.6f}")
     print(f"             Area: {epoch_losses['area']:.6f}")
     print(f"             Smoothness: {epoch_losses['smoothness']:.6f}")
     print(f"             Topology: {epoch_losses['topology']:.6f}")
+    print(f"             Volume: {epoch_losses['volume']:.6f}")
+    print(f"             Symmetry: {epoch_losses['symmetry']:.6f}")
 
 
 def main():

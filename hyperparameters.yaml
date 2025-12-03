@@ -29,7 +29,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 100  # Long training run to converge to Clifford torus
+  num_epochs: 500  # Long training run to converge to Clifford torus
   batch_size: 256  # Larger batches for more stable gradients
   learning_rate: 0.0001  # Much lower LR for smooth, stable optimization
   weight_decay: 0.00001  # Lighter weight decay to preserve learned features
@@ -38,12 +38,12 @@ training:
     T_max: 100  # Match num_epochs for full cosine cycle
     eta_min: 0.00001  # Low final LR for fine-tuning
   gradient_clip: 0.5  # Tighter gradient clipping to prevent large jumps
-  save_frequency: 20  # Save checkpoint every n epochs
-  log_frequency: 5  # Log metrics more frequently to monitor stability
+  save_frequency: 25  # Save checkpoint every n epochs
+  log_frequency: 25  # Log metrics more frequently to monitor stability
 
 # Sampling Parameters
 sampling:
-  num_points: 8192  # More points for accurate geometry (power of 2 for efficiency)
+  num_points: 20000  # More points for accurate geometry (power of 2 for efficiency)
   domain: "torus"  # Domain type: sphere, torus, ellipsoid, custom
   domain_params:
     radius: 1.0  # For sphere

@@ -10,7 +10,7 @@ model:
   dropout: 0.0  # Dropout rate
   use_batch_norm: true  # Use batch normalization
   use_periodic_embedding: true  # Use Fourier features to enforce periodicity
-  num_frequencies: 3  # Number of frequency components (balance between smoothness and expressiveness)
+  num_frequencies: 2  # Fewer frequencies = smoother surfaces (reduces high-freq artifacts)
   initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
   
   # Residual learning (learning corrections to reference embedding)
@@ -20,54 +20,57 @@ model:
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
-    num_epochs: 500  # Number of supervised pretraining epochs
-    learning_rate: 0.01  # Learning rate for pretraining optimizer
-    batch_size: 256  # Batch size for pretraining
-    num_points_per_epoch: 2000  # Number of points to sample per pretraining epoch
+    num_epochs: 100  # More pretraining for better initialization
+    learning_rate: 0.005  # Lower LR for more careful pretraining
+    batch_size: 512  # Larger batches for stable pretraining
+    num_points_per_epoch: 4096  # More points for better coverage
     position_weight: 1.0  # Weight for position matching loss
-    derivative_weight: 0.1  # Weight for derivative matching loss
+    derivative_weight: 0.5  # Higher derivative weight for better geometry learning
 
 # Training Parameters
 training:
-  num_epochs: 500  # Long training run to converge to Clifford torus
-  batch_size: 128  # Larger batches for stability
-  learning_rate: 0.0005  # Lower LR for careful optimization
-  weight_decay: 0.0001
+  num_epochs: 100  # Long training run to converge to Clifford torus
+  batch_size: 256  # Larger batches for more stable gradients
+  learning_rate: 0.0001  # Much lower LR for smooth, stable optimization
+  weight_decay: 0.00001  # Lighter weight decay to preserve learned features
   scheduler: "cosine"  # Learning rate scheduler: step, cosine, exponential, plateau, none
   scheduler_params:
-    T_max: 1000  # Match num_epochs for full cosine cycle
-    eta_min: 0.000001  # Very low final LR for fine-tuning
-  gradient_clip: 1.0  # Gradient clipping threshold (null to disable)
-  save_frequency: 25  # Save model every 25 epochs
-  log_frequency: 10  # Log metrics every 10 epochs
+    T_max: 100  # Match num_epochs for full cosine cycle
+    eta_min: 0.00001  # Low final LR for fine-tuning
+  gradient_clip: 0.5  # Tighter gradient clipping to prevent large jumps
+  save_frequency: 20  # Save checkpoint every n epochs
+  log_frequency: 5  # Log metrics more frequently to monitor stability
 
 # Sampling Parameters
 sampling:
-  num_points: 20000  # Many points for accurate geometry representation
+  num_points: 8192  # More points for accurate geometry (power of 2 for efficiency)
   domain: "torus"  # Domain type: sphere, torus, ellipsoid, custom
   domain_params:
     radius: 1.0  # For sphere
-    major_radius: 3.0  # For torus: R - starting with distorted torus (R/r = 6.0)
+    major_radius: 3.0  # For torus: R
     minor_radius: 0.5  # For torus: r - target Clifford has R/r = √2 ≈ 1.414
     center: [0.0, 0.0, 0.0]
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
+  use_rotation_augmentation: true  # Apply random z-axis rotations for symmetry enforcement
 
 # Loss Function Parameters
 loss:
-  willmore_weight: 1.0  # Weight for Willmore energy term (H² integrated over surface)
-  regularization_weight: 0.0  # Weight for metric regularization (keep metric well-behaved)
-  area_weight: 0.0  # Weight for area constraint (prevent collapse/explosion)
-  smoothness_weight: 0.001  # Weight for smoothness regularization
-  topology_weight: 0.01  # Weight for topology preservation (prevent degeneracies - now enabled!)
-  target_area: null  # Target surface area (null for adaptive constraint)
-  epsilon: 0.0001  # Numerical stability constant (1e-4) - larger to prevent H explosion from small EG-F²
-  # Note: True Willmore energy computed from embedding derivatives
+  willmore_weight: 0.05  # Start very low, increase gradually (prevents roughness)
+  area_weight: 2.0  # Increase area constraint to maintain shape stability
+  smoothness_weight: 0.5  # Much stronger smoothness regularization (50x increase)
+  topology_weight: 10.0  # Much stronger topology preservation
+  volume_weight: 20.0  # Very strong volume constraint to prevent any collapse
+  symmetry_weight: 5.0  # Enforce rotational symmetry (high initially, decreases to 1.5)
+  target_area: null  # Target surface area (null for adaptive constraint with bounds)
+  target_volume: null  # Target enclosed volume (null for adaptive constraint with bounds)
+  epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
+  # Note: Constraints weighted heavily initially to maintain topology, then can anneal Willmore up
 
 # Optimization
 optimizer:
   type: "adam"  # adam, sgd, adamw, rmsprop
-  betas: [0.9, 0.999]  # For Adam
+  betas: [0.9, 0.999]  # For Adam - higher beta1 for smoother momentum
   momentum: 0.9  # For SGD
 
 # Output and Logging

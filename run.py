@@ -87,7 +87,8 @@ def train_epoch(
     domain: str,
     device: torch.device,
     dtype: torch.dtype,
-    gradient_clip: Optional[float] = None
+    gradient_clip: Optional[float] = None,
+    use_rotation_augmentation: bool = True
 ) -> Dict[str, float]:
     """Train for one epoch."""
     model.train()
@@ -95,15 +96,23 @@ def train_epoch(
     # Sample parameter space points
     uv = sample_parameters(num_points, domain, device, dtype)
     
+    # Apply random z-axis rotation augmentation if enabled
+    if use_rotation_augmentation and domain == 'torus':
+        # Random rotation angle in [0, 2π)
+        theta = torch.rand(1, device=device, dtype=dtype).item() * 2 * 3.14159265359
+        # Shift u coordinate by theta (rotates around z-axis)
+        uv[:, 0] = (uv[:, 0] + theta) % (2 * 3.14159265359)
+    
     # Split into batches
     num_batches = (num_points + batch_size - 1) // batch_size
     epoch_losses = {
         'total': 0.0,
         'willmore': 0.0,
-        'regularization': 0.0,
         'area': 0.0,
         'smoothness': 0.0,
-        'topology': 0.0
+        'topology': 0.0,
+        'volume': 0.0,
+        'symmetry': 0.0
     }
     
     for batch_idx in range(num_batches):
@@ -275,20 +284,26 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         'epoch': [],
         'total_loss': [],
         'willmore_energy': [],
-        'regularization': [],
         'area': [],
         'smoothness': [],
         'topology': [],
+        'volume': [],
+        'symmetry': [],
         'learning_rate': []
     }
     
     # Training loop
     for epoch in range(start_epoch, num_epochs + 1):
+        # Update loss weights progressively (annealing)
+        loss_fn.update_weights(epoch, num_epochs)
+        
         # Train one epoch
+        use_rotation_aug = config["sampling"].get("use_rotation_augmentation", True)
         epoch_losses = train_epoch(
             model, loss_fn, optimizer,
             num_points, batch_size, domain,
-            device, dtype, gradient_clip
+            device, dtype, gradient_clip,
+            use_rotation_augmentation=use_rotation_aug
         )
         
         # Update learning rate
@@ -301,10 +316,11 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         history['epoch'].append(epoch)
         history['total_loss'].append(epoch_losses['total'])
         history['willmore_energy'].append(epoch_losses['willmore'])
-        history['regularization'].append(epoch_losses['regularization'])
         history['area'].append(epoch_losses['area'])
         history['smoothness'].append(epoch_losses['smoothness'])
         history['topology'].append(epoch_losses['topology'])
+        history['volume'].append(epoch_losses['volume'])
+        history['symmetry'].append(epoch_losses['symmetry'])
         history['learning_rate'].append(current_lr)
         
         # Check if best model using the actual Willmore energy
@@ -316,12 +332,11 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         # Log progress
         if epoch % log_frequency == 0:
             print(f"Epoch [{epoch}/{num_epochs}] - LR: {current_lr:.6f}")
+            print(f"  Loss Weights - W:{loss_fn.willmore_weight:.3f} Sm:{loss_fn.smoothness_weight:.3f} Sy:{loss_fn.symmetry_weight:.3f}")
             print(f"  Total Loss: {epoch_losses['total']:.6f}")
             print(f"  Willmore Energy: {epoch_losses['willmore']:.6f}")
-            print(f"  Regularization: {epoch_losses['regularization']:.6f}")
-            print(f"  Area: {epoch_losses['area']:.6f}")
-            print(f"  Smoothness: {epoch_losses['smoothness']:.6f}")
-            print(f"  Topology: {epoch_losses['topology']:.6f}")
+            print(f"  Area: {epoch_losses['area']:.6f} | Smoothness: {epoch_losses['smoothness']:.6f}")
+            print(f"  Topology: {epoch_losses['topology']:.6f} | Volume: {epoch_losses['volume']:.6f} | Symmetry: {epoch_losses['symmetry']:.6f}")
             if domain == 'torus':
                 ratio_to_optimal = epoch_losses['willmore'] / clifford_willmore
                 print(f"  Ratio to Clifford minimum: {ratio_to_optimal:.4f}x")

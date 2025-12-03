@@ -73,7 +73,8 @@ class EmbeddingNetwork(nn.Module):
         domain_params: Optional[dict] = None,  # Parameters for reference embedding
         use_residual: bool = True,  # Learn residuals from reference (False = full embedding)
         residual_scale: float = 0.1,  # Scale factor for residuals
-        skip_init: bool = False  # Skip reference initialization (for loading checkpoints)
+        skip_init: bool = False,  # Skip reference initialization (for loading checkpoints)
+        supervised_pretraining_config: Optional[dict] = None  # Config for supervised pretraining
     ):
         """
         Initialize the embedding network.
@@ -98,6 +99,7 @@ class EmbeddingNetwork(nn.Module):
         self.domain_params = domain_params or {}
         self.use_residual = use_residual
         self.residual_scale = residual_scale
+        self.supervised_pretraining_config = supervised_pretraining_config or {}
         
         # Periodic embedding layer
         if use_periodic_embedding:
@@ -138,8 +140,9 @@ class EmbeddingNetwork(nn.Module):
         self._initialize_weights(initialization)
         
         # For full embedding mode, initialize to approximate reference
-        # Skip if loading from checkpoint
-        if not skip_init and not use_residual and domain in ['torus', 'sphere']:
+        # Skip if loading from checkpoint or if pretraining is disabled
+        pretrain_enabled = self.supervised_pretraining_config.get('enabled', True)
+        if not skip_init and not use_residual and domain in ['torus', 'sphere'] and pretrain_enabled:
             self._init_near_reference()
     
     def _get_activation(self, activation: str) -> nn.Module:
@@ -178,13 +181,17 @@ class EmbeddingNetwork(nn.Module):
         """Initialize network to match reference embedding AND its derivatives."""
         device = next(self.parameters()).device
         
-        # Create optimizer for initialization
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
+        # Get supervised pretraining config
+        pretrain_config = self.supervised_pretraining_config
+        num_init_epochs = pretrain_config.get('num_epochs', 30)
+        learning_rate = pretrain_config.get('learning_rate', 0.01)
+        batch_size = pretrain_config.get('batch_size', 256)
+        n_samples_per_epoch = pretrain_config.get('num_points_per_epoch', 2000)
+        position_weight = pretrain_config.get('position_weight', 1.0)
+        derivative_weight_final = pretrain_config.get('derivative_weight', 0.1)
         
-        # Training loop for initialization - LONG supervised pretraining
-        num_init_epochs = 500  # Extended supervised pretraining to learn the distorted torus
-        batch_size = 256  # Smaller batches for derivative computation
-        n_samples_per_epoch = 2000
+        # Create optimizer for initialization
+        optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
         
         for epoch in range(num_init_epochs):
             epoch_pos_loss = 0.0
@@ -243,9 +250,9 @@ class EmbeddingNetwork(nn.Module):
                 pos_loss = torch.mean((xyz_pred - xyz_ref.detach()) ** 2)
                 deriv_loss = torch.mean((phi_u_pred - phi_u_ref) ** 2) + torch.mean((phi_v_pred - phi_v_ref) ** 2)
                 
-                # Weight derivatives less in early epochs, more later
-                deriv_weight = min(1.0, epoch / 50.0)
-                loss = pos_loss + deriv_weight * deriv_loss
+                # Gradually increase derivative weight over training
+                deriv_weight = derivative_weight_final * min(1.0, epoch / 50.0)
+                loss = position_weight * pos_loss + deriv_weight * deriv_loss
                 
                 # Backward pass
                 optimizer.zero_grad()
@@ -501,11 +508,9 @@ class EmbeddingNetwork(nn.Module):
         denominator = 2 * (E * G - F * F) + epsilon
         H = numerator / denominator
         
-        # Clamp H to prevent numerical instabilities from dominating
-        # For reference: torus R=4, r=0.5 has max|H| ~ 10-20, Clifford has max|H| ~ 5
-        H_clamped = torch.clamp(H, min=-100, max=100)
-        
-        return H_clamped
+        # Don't clamp - let topology and volume constraints prevent pathological cases
+        # Clamping hides the real problems instead of preventing them
+        return H
     
     def count_parameters(self) -> int:
         """Count the number of trainable parameters."""
@@ -526,6 +531,7 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
     """
     model_config = config.get("model", {})
     sampling_config = config.get("sampling", {})
+    supervised_pretraining_config = model_config.get("supervised_pretraining", {})
     
     model = EmbeddingNetwork(
         input_dim=model_config.get("input_dim", 2),
@@ -541,7 +547,8 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         domain_params=sampling_config.get("domain_params", {}),
         use_residual=model_config.get("use_residual", False),  # Default to full embedding
         residual_scale=model_config.get("residual_scale", 0.1),
-        skip_init=skip_init
+        skip_init=skip_init,
+        supervised_pretraining_config=supervised_pretraining_config
     )
     
     model = model.to(device)

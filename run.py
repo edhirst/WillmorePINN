@@ -43,6 +43,29 @@ def get_device(config: dict) -> torch.device:
     return device
 
 
+def get_next_run_number(base_checkpoint_dir: str) -> int:
+    """Get the next run number by finding the highest existing run number."""
+    os.makedirs(base_checkpoint_dir, exist_ok=True)
+    
+    # Find all run_* directories
+    run_dirs = [d for d in os.listdir(base_checkpoint_dir) 
+                if os.path.isdir(os.path.join(base_checkpoint_dir, d)) and d.startswith('run_')]
+    
+    if not run_dirs:
+        return 1
+    
+    # Extract numbers and find max
+    run_numbers = []
+    for d in run_dirs:
+        try:
+            num = int(d.split('_')[1])
+            run_numbers.append(num)
+        except (IndexError, ValueError):
+            continue
+    
+    return max(run_numbers) + 1 if run_numbers else 1
+
+
 def save_checkpoint(
     model: nn.Module,
     optimizer: optim.Optimizer,
@@ -108,11 +131,7 @@ def train_epoch(
     epoch_losses = {
         'total': 0.0,
         'willmore': 0.0,
-        'area': 0.0,
-        'smoothness': 0.0,
-        'topology': 0.0,
-        'volume': 0.0,
-        'symmetry': 0.0
+        'regularity': 0.0
     }
     
     for batch_idx in range(num_batches):
@@ -229,11 +248,23 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     save_frequency = config["training"].get("save_frequency", 50)
     gradient_clip = config["training"].get("gradient_clip", None)
     
-    # Output directories
-    checkpoint_dir = config["output"]["checkpoint_dir"]
-    log_dir = config["output"]["log_dir"]
+    # Output directories with run numbering
+    base_checkpoint_dir = config["output"]["checkpoint_dir"]
+    base_log_dir = config["output"]["log_dir"]
+    
+    # Get next run number and create run-specific directories
+    run_number = get_next_run_number(base_checkpoint_dir)
+    checkpoint_dir = os.path.join(base_checkpoint_dir, f'run_{run_number}')
+    log_dir = os.path.join(base_log_dir, f'run_{run_number}')
+    
     os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
+    
+    print(f"\n{'='*60}")
+    print(f"Starting Training Run #{run_number}")
+    print(f"{'='*60}")
+    print(f"Checkpoints: {checkpoint_dir}")
+    print(f"Logs: {log_dir}")
     
     # Load checkpoint if resuming
     start_epoch = 1
@@ -284,11 +315,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         'epoch': [],
         'total_loss': [],
         'willmore_energy': [],
-        'area': [],
-        'smoothness': [],
-        'topology': [],
-        'volume': [],
-        'symmetry': [],
+        'regularity': [],
         'learning_rate': []
     }
     
@@ -316,11 +343,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         history['epoch'].append(epoch)
         history['total_loss'].append(epoch_losses['total'])
         history['willmore_energy'].append(epoch_losses['willmore'])
-        history['area'].append(epoch_losses['area'])
-        history['smoothness'].append(epoch_losses['smoothness'])
-        history['topology'].append(epoch_losses['topology'])
-        history['volume'].append(epoch_losses['volume'])
-        history['symmetry'].append(epoch_losses['symmetry'])
+        history['regularity'].append(epoch_losses['regularity'])
         history['learning_rate'].append(current_lr)
         
         # Check if best model using the actual Willmore energy
@@ -332,11 +355,10 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         # Log progress
         if epoch % log_frequency == 0:
             print(f"Epoch [{epoch}/{num_epochs}] - LR: {current_lr:.6f}")
-            print(f"  Loss Weights - W:{loss_fn.willmore_weight:.3f} Sm:{loss_fn.smoothness_weight:.3f} Sy:{loss_fn.symmetry_weight:.3f}")
+            print(f"  Loss Weights - Willmore:{loss_fn.willmore_weight:.3f} Regularity:{loss_fn.regularity_weight:.3f}")
             print(f"  Total Loss: {epoch_losses['total']:.6f}")
             print(f"  Willmore Energy: {epoch_losses['willmore']:.6f}")
-            print(f"  Area: {epoch_losses['area']:.6f} | Smoothness: {epoch_losses['smoothness']:.6f}")
-            print(f"  Topology: {epoch_losses['topology']:.6f} | Volume: {epoch_losses['volume']:.6f} | Symmetry: {epoch_losses['symmetry']:.6f}")
+            print(f"  Regularity: {epoch_losses['regularity']:.6f}")
             if domain == 'torus':
                 ratio_to_optimal = epoch_losses['willmore'] / clifford_willmore
                 print(f"  Ratio to Clifford minimum: {ratio_to_optimal:.4f}x")
@@ -379,11 +401,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         print(f"Ratio: {best_willmore / ref_willmore:.4f}x")
     print(f"Final epoch - Total Loss: {epoch_losses['total']:.6f}")
     print(f"             Willmore: {epoch_losses['willmore']:.6f}")
-    print(f"             Area: {epoch_losses['area']:.6f}")
-    print(f"             Smoothness: {epoch_losses['smoothness']:.6f}")
-    print(f"             Topology: {epoch_losses['topology']:.6f}")
-    print(f"             Volume: {epoch_losses['volume']:.6f}")
-    print(f"             Symmetry: {epoch_losses['symmetry']:.6f}")
+    print(f"             Regularity: {epoch_losses['regularity']:.6f}")
 
 
 def main():

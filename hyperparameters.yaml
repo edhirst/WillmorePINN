@@ -29,7 +29,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 100  # Long training run to converge to Clifford torus
+  num_epochs: 200  # Long training run to converge to Clifford torus
   batch_size: 256  # Larger batches for more stable gradients
   learning_rate: 0.0001  # Much lower LR for smooth, stable optimization
   weight_decay: 0.00001  # Lighter weight decay to preserve learned features
@@ -43,7 +43,7 @@ training:
 
 # Sampling Parameters
 sampling:
-  num_points: 4000  # More points for accurate geometry (power of 2 for efficiency)
+  num_points: 3000  # More points for accurate geometry (power of 2 for efficiency)
   domain: "torus"  # Domain type: sphere, torus, ellipsoid, custom
   domain_params:
     radius: 1.0  # For sphere
@@ -57,15 +57,22 @@ sampling:
 # Loss Function Parameters
 loss:
   willmore_weight: 0.05  # Start very low, increase gradually (prevents roughness)
-  area_weight: 2.0  # Increase area constraint to maintain shape stability
-  smoothness_weight: 0.5  # Much stronger smoothness regularization (50x increase)
-  topology_weight: 10.0  # Much stronger topology preservation
-  volume_weight: 20.0  # Very strong volume constraint to prevent any collapse
-  symmetry_weight: 5.0  # Enforce rotational symmetry (high initially, decreases to 1.5)
+  regularity_weight: 10.0  # Metric regularity preservation (decreases to 5.0)
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   target_volume: null  # Target enclosed volume (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
-  # Note: Constraints weighted heavily initially to maintain topology, then can anneal Willmore up
+  
+  # Regularity loss sub-components (normalized internally to sum to 1.0)
+  regularity_area_element_weight: 1.0  # Prevent area element collapse
+  regularity_orientation_weight: 1.0  # Maintain consistent orientation
+  regularity_metric_positivity_weight: 1.0  # Prevent metric degeneration
+  regularity_smoothness_weight: 1.0  # Penalize large derivatives
+  # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
+
+  # Disabled losses (moved to end of losses.py):
+  # - area_weight: 0.0
+  # - volume_weight: 0.0
+  # - symmetry_weight: 0.0
 
 # Optimization
 optimizer:

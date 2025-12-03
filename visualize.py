@@ -63,6 +63,30 @@ def plot_embedding_3d(ax, xyz, title, color='viridis', alpha=0.6):
     return scatter
 
 
+def get_highest_run_number(base_checkpoint_dir: str) -> int:
+    """Get the highest run number from run directories."""
+    if not os.path.exists(base_checkpoint_dir):
+        return None
+    
+    # Find all run_* directories
+    run_dirs = [d for d in os.listdir(base_checkpoint_dir) 
+                if os.path.isdir(os.path.join(base_checkpoint_dir, d)) and d.startswith('run_')]
+    
+    if not run_dirs:
+        return None
+    
+    # Extract numbers and find max
+    run_numbers = []
+    for d in run_dirs:
+        try:
+            num = int(d.split('_')[1])
+            run_numbers.append(num)
+        except (IndexError, ValueError):
+            continue
+    
+    return max(run_numbers) if run_numbers else None
+
+
 def visualize_training_evolution(
     config_path='hyperparameters.yaml',
     checkpoint_dir='checkpoints',
@@ -75,7 +99,7 @@ def visualize_training_evolution(
     
     Args:
         config_path: Path to configuration file
-        checkpoint_dir: Directory containing checkpoints
+        checkpoint_dir: Directory containing checkpoints (can be base dir or specific run dir)
         num_test_points: Number of points to sample for visualization
         output_path: Where to save the visualization
         number_of_models: Number of models to plot. If None or >= total models, plots all.
@@ -91,6 +115,7 @@ def visualize_training_evolution(
     
     print(f"Visualizing training evolution for {domain}")
     print(f"Using {num_test_points} test points")
+    print(f"Looking in: {checkpoint_dir}")
     
     # Find all checkpoint files
     checkpoint_files = glob.glob(os.path.join(checkpoint_dir, 'checkpoint_epoch_*.pt'))
@@ -270,7 +295,9 @@ def main():
     parser.add_argument('--config', type=str, default='hyperparameters.yaml',
                        help='Path to configuration file')
     parser.add_argument('--checkpoints', type=str, default='checkpoints',
-                       help='Directory containing checkpoints')
+                       help='Base directory containing checkpoint runs')
+    parser.add_argument('--run-number', type=int, default=None,
+                       help='Specific run number to visualize (default: highest run number)')
     parser.add_argument('--mode', type=str, choices=['evolution', 'best', 'both'], default='both',
                        help='Visualization mode')
     parser.add_argument('--points', type=int, default=5000,
@@ -280,13 +307,31 @@ def main():
     
     args = parser.parse_args()
     
+    # Determine which run to visualize
+    if args.run_number is not None:
+        run_number = args.run_number
+    else:
+        # Use highest run number
+        run_number = get_highest_run_number(args.checkpoints)
+        if run_number is None:
+            print(f"Error: No run directories found in {args.checkpoints}")
+            print(f"Expected directory structure: {args.checkpoints}/run_N/")
+            return
+    
+    checkpoint_dir = os.path.join(args.checkpoints, f'run_{run_number}')
+    if not os.path.exists(checkpoint_dir):
+        print(f"Error: Run {run_number} not found at {checkpoint_dir}")
+        return
+    
+    print(f"Using run #{run_number}")
+    
     if args.mode in ['evolution', 'both']:
         print("=" * 60)
         print("Visualizing Training Evolution")
         print("=" * 60)
         visualize_training_evolution(
             config_path=args.config,
-            checkpoint_dir=args.checkpoints,
+            checkpoint_dir=checkpoint_dir,
             num_test_points=args.points,
             number_of_models=args.num_models
         )
@@ -295,8 +340,8 @@ def main():
         print("\n" + "=" * 60)
         print("Visualizing Best Model")
         print("=" * 60)
-        best_path = os.path.join(args.checkpoints, 'best_model.pt')
-        latest_path = os.path.join(args.checkpoints, 'latest_model.pt')
+        best_path = os.path.join(checkpoint_dir, 'best_model.pt')
+        latest_path = os.path.join(checkpoint_dir, 'latest_model.pt')
         
         if os.path.exists(best_path):
             visualize_single_model(

@@ -65,69 +65,219 @@ class EmbeddingWillmoreLoss(nn.Module):
         return willmore_energy
 
 
-class AreaConstraintLoss(nn.Module):
+class RegularityLoss(nn.Module):
     """
-    Constraint to maintain appropriate surface area.
-    Prevents collapse or explosion of the surface.
+    Regularization loss to maintain well-conditioned metric and smooth parametrization.
+    Ensures the embedding stays non-degenerate with bounded derivatives.
+    Includes area element preservation, orientation preservation, metric positivity, and smoothness.
     """
     
     def __init__(
-        self, 
-        target_area: Optional[float] = None,
-        epsilon: float = 1e-8
+        self,
+        epsilon: float = 1e-8,
+        min_area_element: float = 0.01,
+        area_element_weight: float = 1.0,
+        orientation_weight: float = 1.0,
+        metric_positivity_weight: float = 1.0,
+        smoothness_weight: float = 1.0
     ):
         """
         Args:
-            target_area: Target total surface area (None for adaptive)
             epsilon: Small constant for numerical stability
+            min_area_element: Minimum allowed area element (prevents collapse)
+            area_element_weight: Weight for area element loss term
+            orientation_weight: Weight for orientation preservation term
+            metric_positivity_weight: Weight for metric positivity term
+            smoothness_weight: Weight for smoothness term
         """
         super().__init__()
-        self.target_area = target_area
         self.epsilon = epsilon
+        self.min_area_element = min_area_element
+        
+        # Store initial weights
+        self.area_element_weight = area_element_weight
+        self.orientation_weight = orientation_weight
+        self.metric_positivity_weight = metric_positivity_weight
+        self.smoothness_weight = smoothness_weight
     
     def forward(self, model: nn.Module, uv: torch.Tensor) -> torch.Tensor:
         """
-        Compute area constraint loss.
+        Compute regularity loss.
         
         Args:
             model: EmbeddingNetwork model
             uv: Parameter coordinates (batch_size, 2)
         
         Returns:
-            Area constraint loss (scalar)
+            Regularity loss (scalar)
         """
         uv = uv.requires_grad_(True)
         
         # Compute first fundamental form
-        E, F, G, _, _ = model.compute_first_fundamental_form(uv)
+        E, F, G, phi_u, phi_v = model.compute_first_fundamental_form(uv)
         
-        # Compute area element
-        area_element = torch.sqrt(torch.abs(E * G - F * F) + self.epsilon)
+        # Penalize extremely small area elements (prevents local collapse)
+        det = E * G - F * F
+        area_element = torch.sqrt(torch.abs(det) + self.epsilon)
+        area_element_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - area_element) ** 2)
         
-        # Total area using proper Monte Carlo integration
-        # Integral ≈ (domain_volume / N) * sum = domain_volume * mean
-        domain_area = (2 * 3.14159265359) ** 2  # (2π)² for [0,2π] × [0,2π]
-        total_area = domain_area * torch.mean(area_element)
+        # Check orientation is preserved (normal should point consistently)
+        # Cross product magnitude should stay bounded away from zero
+        cross_magnitude = torch.norm(torch.cross(phi_u, phi_v, dim=1), dim=1)
+        orientation_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - cross_magnitude) ** 2)
         
-        if self.target_area is not None:
-            # Penalize deviation from target area
-            loss = ((total_area - self.target_area) / self.target_area) ** 2
-        else:
-            # For torus with R, r: area = 4π²Rr
-            # Starting torus (R=3, r=0.5): area ≈ 59.22
-            # Clifford torus (R=√2, r=1): area ≈ 55.55
-            # Use tight bounds to prevent collapse
-            min_area = 30.0  # Much tighter lower bound
-            max_area = 150.0  # Reasonable upper bound
-            
-            # Strong penalty for going below minimum (prevents collapse)
-            collapse_penalty = torch.nn.functional.relu(min_area - total_area) ** 2
-            # Moderate penalty for excessive area
-            explosion_penalty = torch.nn.functional.relu(total_area - max_area) ** 2
-            
-            loss = 10.0 * collapse_penalty + explosion_penalty  # Weight collapse prevention heavily
+        # Penalize extreme metric distortion (prevents degeneration)
+        # E and G should be positive and not too different (isotropy encouragement)
+        metric_positivity = torch.mean(torch.nn.functional.relu(0.001 - E) ** 2) + \
+                           torch.mean(torch.nn.functional.relu(0.001 - G) ** 2)
         
-        return loss
+        # Smoothness: penalize large derivatives (E = |φ_u|², G = |φ_v|²)
+        smoothness_loss = torch.mean(E + G)
+        
+        # Normalize weights so they sum to 1.0
+        weight_sum = (
+            self.area_element_weight +
+            self.orientation_weight +
+            self.metric_positivity_weight +
+            self.smoothness_weight
+        )
+        
+        # Weighted combination with normalized weights
+        total_loss = (
+            (self.area_element_weight / weight_sum) * area_element_loss +
+            (self.orientation_weight / weight_sum) * orientation_loss +
+            (self.metric_positivity_weight / weight_sum) * metric_positivity +
+            (self.smoothness_weight / weight_sum) * smoothness_loss
+        )
+        
+        return total_loss
+
+
+class CombinedEmbeddingLoss(nn.Module):
+    """
+    Combined loss function for embedding-based Willmore minimization.
+    """
+    
+    def __init__(
+        self,
+        willmore_weight: float = 1.0,
+        regularity_weight: float = 0.1,
+        target_area: Optional[float] = None,
+        target_volume: Optional[float] = None,
+        epsilon: float = 1e-8,
+        regularity_area_element_weight: float = 1.0,
+        regularity_orientation_weight: float = 1.0,
+        regularity_metric_positivity_weight: float = 1.0,
+        regularity_smoothness_weight: float = 1.0
+    ):
+        """
+        Args:
+            willmore_weight: Weight for Willmore energy term
+            regularity_weight: Weight for metric regularity preservation
+            target_area: Target surface area (None for adaptive)
+            target_volume: Target enclosed volume (None for adaptive)
+            epsilon: Small constant for numerical stability
+            regularity_area_element_weight: Weight for area element term within regularity loss
+            regularity_orientation_weight: Weight for orientation term within regularity loss
+            regularity_metric_positivity_weight: Weight for metric positivity term within regularity loss
+            regularity_smoothness_weight: Weight for smoothness term within regularity loss
+        """
+        super().__init__()
+        
+        self.willmore_weight = willmore_weight
+        self.regularity_weight = regularity_weight
+        
+        self.willmore_loss = EmbeddingWillmoreLoss(epsilon=epsilon)
+        self.regularity_loss = RegularityLoss(
+            epsilon=epsilon,
+            area_element_weight=regularity_area_element_weight,
+            orientation_weight=regularity_orientation_weight,
+            metric_positivity_weight=regularity_metric_positivity_weight,
+            smoothness_weight=regularity_smoothness_weight
+        )
+        
+        # Store initial weights for reference
+        self.initial_willmore_weight = willmore_weight
+        self.initial_regularity_weight = regularity_weight
+    
+    def update_weights(self, epoch: int, total_epochs: int):
+        """
+        Progressively adjust loss weights during training.
+        Early training: High regularity weight, low Willmore weight
+        Late training: Lower regularity weight, moderate Willmore weight
+        
+        Args:
+            epoch: Current epoch number (1-indexed)
+            total_epochs: Total number of training epochs
+        """
+        progress = min(1.0, (epoch - 1) / max(1, total_epochs))
+        
+        # Willmore: gradually increase but keep moderate (0.05 → 0.5, not 1.0)
+        # This prevents aggressive optimization that creates roughness
+        self.willmore_weight = self.initial_willmore_weight + (0.5 - self.initial_willmore_weight) * progress
+        
+        # Constraints: gradually decrease (but not too much)
+        self.regularity_weight = self.initial_regularity_weight * (1.0 - 0.5 * progress)
+    
+    def forward(self, model: nn.Module, uv: torch.Tensor) -> dict:
+        """
+        Compute combined loss.
+        
+        Args:
+            model: EmbeddingNetwork model
+            uv: Parameter coordinates (batch_size, 2)
+        
+        Returns:
+            Dictionary with total loss and individual components
+        """
+        # Compute individual losses
+        willmore = self.willmore_loss(model, uv)
+        regularity = self.regularity_loss(model, uv)
+        
+        # Normalize weights so they sum to 1.0
+        weight_sum = self.willmore_weight + self.regularity_weight
+        
+        # Weighted combination with normalized weights
+        total_loss = (
+            (self.willmore_weight / weight_sum) * willmore +
+            (self.regularity_weight / weight_sum) * regularity
+        )
+        
+        return {
+            'total': total_loss,
+            'willmore': willmore.item(),
+            'regularity': regularity.item()
+        }
+
+
+def create_embedding_loss(config: dict) -> nn.Module:
+    """
+    Factory function to create loss from configuration.
+    
+    Args:
+        config: Configuration dictionary
+    
+    Returns:
+        Combined loss function
+    """
+    loss_config = config.get("loss", {})
+    
+    return CombinedEmbeddingLoss(
+        willmore_weight=loss_config.get("willmore_weight", 1.0),
+        regularity_weight=loss_config.get("regularity_weight", 0.1),
+        target_area=loss_config.get("target_area", None),
+        target_volume=loss_config.get("target_volume", None),
+        epsilon=loss_config.get("epsilon", 1e-8),
+        regularity_area_element_weight=loss_config.get("regularity_area_element_weight", 1.0),
+        regularity_orientation_weight=loss_config.get("regularity_orientation_weight", 1.0),
+        regularity_metric_positivity_weight=loss_config.get("regularity_metric_positivity_weight", 1.0),
+        regularity_smoothness_weight=loss_config.get("regularity_smoothness_weight", 1.0)
+    )
+
+
+# ============================================================================
+# Additional Loss Functions (Currently Disabled)
+# ============================================================================
 
 
 class VolumeConstraintLoss(nn.Module):
@@ -206,99 +356,69 @@ class VolumeConstraintLoss(nn.Module):
         return loss
 
 
-class EmbeddingSmoothnessLoss(nn.Module):
+class AreaConstraintLoss(nn.Module):
     """
-    Smoothness loss to encourage smooth embeddings.
-    Penalizes large gradients in the embedding.
+    Constraint to maintain appropriate surface area.
+    Prevents collapse or explosion of the surface.
     """
     
-    def __init__(self, epsilon: float = 1e-8):
+    def __init__(
+        self, 
+        target_area: Optional[float] = None,
+        epsilon: float = 1e-8
+    ):
         """
         Args:
+            target_area: Target total surface area (None for adaptive)
             epsilon: Small constant for numerical stability
         """
         super().__init__()
+        self.target_area = target_area
         self.epsilon = epsilon
     
     def forward(self, model: nn.Module, uv: torch.Tensor) -> torch.Tensor:
         """
-        Compute smoothness loss.
+        Compute area constraint loss.
         
         Args:
             model: EmbeddingNetwork model
             uv: Parameter coordinates (batch_size, 2)
         
         Returns:
-            Smoothness loss (scalar)
-        """
-        uv = uv.requires_grad_(True)
-        
-        # Compute first fundamental form (which gives us derivatives)
-        E, F, G, _, _ = model.compute_first_fundamental_form(uv)
-        
-        # Penalize large derivatives
-        # E = |φ_u|², G = |φ_v|²
-        # Want these to be moderate, not too large
-        smoothness = torch.mean(E + G)
-        
-        return smoothness
-
-
-class TopologyPreservationLoss(nn.Module):
-    """
-    Loss to help preserve topological properties.
-    For a torus, ensures the mapping doesn't create self-intersections or collapse.
-    """
-    
-    def __init__(self, epsilon: float = 1e-8, min_area_element: float = 0.01):
-        """
-        Args:
-            epsilon: Small constant for numerical stability
-            min_area_element: Minimum allowed area element (prevents collapse)
-        """
-        super().__init__()
-        self.epsilon = epsilon
-        self.min_area_element = min_area_element
-    
-    def forward(self, model: nn.Module, uv: torch.Tensor) -> torch.Tensor:
-        """
-        Compute topology preservation loss.
-        
-        Args:
-            model: EmbeddingNetwork model
-            uv: Parameter coordinates (batch_size, 2)
-        
-        Returns:
-            Topology loss (scalar)
+            Area constraint loss (scalar)
         """
         uv = uv.requires_grad_(True)
         
         # Compute first fundamental form
-        E, F, G, phi_u, phi_v = model.compute_first_fundamental_form(uv)
+        E, F, G, _, _ = model.compute_first_fundamental_form(uv)
         
-        # Check that tangent vectors remain linearly independent
-        # det(I) = EG - F² should stay positive and bounded below
-        det = E * G - F * F
+        # Compute area element
+        area_element = torch.sqrt(torch.abs(E * G - F * F) + self.epsilon)
         
-        # Strong penalty for negative or near-zero determinant
-        # Use exponential penalty for stronger enforcement
-        degeneracy_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - det) ** 2)
+        # Total area using proper Monte Carlo integration
+        # Integral ≈ (domain_volume / N) * sum = domain_volume * mean
+        domain_area = (2 * 3.14159265359) ** 2  # (2π)² for [0,2π] × [0,2π]
+        total_area = domain_area * torch.mean(area_element)
         
-        # Penalize extremely small area elements (prevents local collapse)
-        area_element = torch.sqrt(torch.abs(det) + self.epsilon)
-        area_element_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - area_element) ** 2)
+        if self.target_area is not None:
+            # Penalize deviation from target area
+            loss = ((total_area - self.target_area) / self.target_area) ** 2
+        else:
+            # For torus with R, r: area = 4π²Rr
+            # Starting torus (R=3, r=0.5): area ≈ 59.22
+            # Clifford torus (R=√2, r=1): area ≈ 55.55
+            # Use tight bounds to prevent collapse
+            min_area = 30.0  # Much tighter lower bound
+            max_area = 150.0  # Reasonable upper bound
+            
+            # Strong penalty for going below minimum (prevents collapse)
+            collapse_penalty = torch.nn.functional.relu(min_area - total_area) ** 2
+            # Moderate penalty for excessive area
+            explosion_penalty = torch.nn.functional.relu(total_area - max_area) ** 2
+            
+            loss = 10.0 * collapse_penalty + explosion_penalty  # Weight collapse prevention heavily
         
-        # Check orientation is preserved (normal should point consistently)
-        # Cross product magnitude should stay bounded away from zero
-        cross_magnitude = torch.norm(torch.cross(phi_u, phi_v, dim=1), dim=1)
-        orientation_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - cross_magnitude) ** 2)
-        
-        # Penalize extreme metric distortion (prevents degeneration)
-        # E and G should be positive and not too different (isotropy encouragement)
-        metric_positivity = torch.mean(torch.nn.functional.relu(0.001 - E) ** 2) + \
-                           torch.mean(torch.nn.functional.relu(0.001 - G) ** 2)
-        
-        return degeneracy_loss + area_element_loss + orientation_loss + metric_positivity
+        return loss
 
 
 class SymmetryLoss(nn.Module):
@@ -369,160 +489,3 @@ class SymmetryLoss(nn.Module):
             return r_diff + z_diff
         else:
             return torch.tensor(0.0, device=uv.device)
-
-
-class CombinedEmbeddingLoss(nn.Module):
-    """
-    Combined loss function for embedding-based Willmore minimization.
-    """
-    
-    def __init__(
-        self,
-        willmore_weight: float = 1.0,
-        area_weight: float = 0.1,
-        smoothness_weight: float = 0.001,
-        topology_weight: float = 0.1,
-        volume_weight: float = 1.0,
-        symmetry_weight: float = 1.0,
-        target_area: Optional[float] = None,
-        target_volume: Optional[float] = None,
-        epsilon: float = 1e-8
-    ):
-        """
-        Args:
-            willmore_weight: Weight for Willmore energy term
-            area_weight: Weight for area constraint
-            smoothness_weight: Weight for smoothness regularization
-            topology_weight: Weight for topology preservation
-            volume_weight: Weight for volume constraint (prevents collapse)
-            symmetry_weight: Weight for rotational symmetry enforcement
-            target_area: Target surface area (None for adaptive)
-            target_volume: Target enclosed volume (None for adaptive)
-            epsilon: Small constant for numerical stability
-        """
-        super().__init__()
-        
-        self.willmore_weight = willmore_weight
-        self.area_weight = area_weight
-        self.smoothness_weight = smoothness_weight
-        self.topology_weight = topology_weight
-        self.volume_weight = volume_weight
-        self.symmetry_weight = symmetry_weight
-        
-        self.willmore_loss = EmbeddingWillmoreLoss(epsilon=epsilon)
-        self.area_loss = AreaConstraintLoss(target_area=target_area, epsilon=epsilon)
-        self.smoothness_loss = EmbeddingSmoothnessLoss(epsilon=epsilon)
-        self.topology_loss = TopologyPreservationLoss(epsilon=epsilon)
-        self.volume_loss = VolumeConstraintLoss(target_volume=target_volume, epsilon=epsilon)
-        self.symmetry_loss = SymmetryLoss(epsilon=epsilon)
-        
-        # Store initial weights for reference
-        self.initial_willmore_weight = willmore_weight
-        self.initial_area_weight = area_weight
-        self.initial_smoothness_weight = smoothness_weight
-        self.initial_topology_weight = topology_weight
-        self.initial_volume_weight = volume_weight
-        self.initial_symmetry_weight = symmetry_weight
-    
-    def update_weights(self, epoch: int, total_epochs: int):
-        """
-        Progressively adjust loss weights during training.
-        Early training: High constraint weights, low Willmore weight
-        Late training: Lower constraint weights, moderate Willmore weight
-        Smoothness increases throughout to maintain surface quality
-        
-        Args:
-            epoch: Current epoch number (1-indexed)
-            total_epochs: Total number of training epochs
-        """
-        progress = min(1.0, (epoch - 1) / max(1, total_epochs))
-        
-        # Willmore: gradually increase but keep moderate (0.05 → 0.5, not 1.0)
-        # This prevents aggressive optimization that creates roughness
-        self.willmore_weight = self.initial_willmore_weight + (0.5 - self.initial_willmore_weight) * progress
-        
-        # Smoothness: INCREASE over time to counteract roughness (important!)
-        self.smoothness_weight = self.initial_smoothness_weight * (1.0 + progress)
-        
-        # Symmetry: START high, then gradually decrease as shape converges
-        # Early training needs strong symmetry enforcement
-        self.symmetry_weight = self.initial_symmetry_weight * (1.0 - 0.7 * progress)
-        
-        # Constraints: gradually decrease (but not too much)
-        self.topology_weight = self.initial_topology_weight * (1.0 - 0.5 * progress)
-        self.volume_weight = self.initial_volume_weight * (1.0 - 0.5 * progress)
-        self.area_weight = self.initial_area_weight * (1.0 - 0.3 * progress)
-    
-    def forward(self, model: nn.Module, uv: torch.Tensor) -> dict:
-        """
-        Compute combined loss.
-        
-        Args:
-            model: EmbeddingNetwork model
-            uv: Parameter coordinates (batch_size, 2)
-        
-        Returns:
-            Dictionary with total loss and individual components
-        """
-        # Compute individual losses
-        willmore = self.willmore_loss(model, uv)
-        area = self.area_loss(model, uv)
-        smoothness = self.smoothness_loss(model, uv)
-        topology = self.topology_loss(model, uv)
-        volume = self.volume_loss(model, uv)
-        symmetry = self.symmetry_loss(model, uv)
-        
-        # Normalize weights so they sum to 1.0
-        weight_sum = (
-            self.willmore_weight + 
-            self.area_weight + 
-            self.smoothness_weight + 
-            self.topology_weight + 
-            self.volume_weight +
-            self.symmetry_weight
-        )
-        
-        # Weighted combination with normalized weights
-        total_loss = (
-            (self.willmore_weight / weight_sum) * willmore +
-            (self.area_weight / weight_sum) * area +
-            (self.smoothness_weight / weight_sum) * smoothness +
-            (self.topology_weight / weight_sum) * topology +
-            (self.volume_weight / weight_sum) * volume +
-            (self.symmetry_weight / weight_sum) * symmetry
-        )
-        
-        return {
-            'total': total_loss,
-            'willmore': willmore.item(),
-            'area': area.item(),
-            'smoothness': smoothness.item(),
-            'topology': topology.item(),
-            'volume': volume.item(),
-            'symmetry': symmetry.item()
-        }
-
-
-def create_embedding_loss(config: dict) -> nn.Module:
-    """
-    Factory function to create loss from configuration.
-    
-    Args:
-        config: Configuration dictionary
-    
-    Returns:
-        Combined loss function
-    """
-    loss_config = config.get("loss", {})
-    
-    return CombinedEmbeddingLoss(
-        willmore_weight=loss_config.get("willmore_weight", 1.0),
-        area_weight=loss_config.get("area_weight", 0.1),
-        smoothness_weight=loss_config.get("smoothness_weight", 0.001),
-        topology_weight=loss_config.get("topology_weight", 0.1),
-        volume_weight=loss_config.get("volume_weight", 1.0),
-        symmetry_weight=loss_config.get("symmetry_weight", 1.0),
-        target_area=loss_config.get("target_area", None),
-        target_volume=loss_config.get("target_volume", None),
-        epsilon=loss_config.get("epsilon", 1e-8)
-    )

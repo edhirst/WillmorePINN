@@ -52,8 +52,7 @@ venv.bak/
 
 # Logs and data
 *.log
-logs/*.png
-logs/*.json
+logs/**
 
 # Model checkpoints
 checkpoints/

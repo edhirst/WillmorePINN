@@ -47,8 +47,10 @@ sampling:
   domain: "torus"  # Domain type: sphere, torus, ellipsoid, custom
   domain_params:
     radius: 1.0  # For sphere
-    major_radius: 3.0  # For torus: R
-    minor_radius: 0.5  # For torus: r - target Clifford has R/r = √2 ≈ 1.414
+    tau: "0.5j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
+               # Default "1j" gives standard square torus
+               # Can also use dict format: {real: 0.5, imag: 0.866}
+    max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
     center: [0.0, 0.0, 0.0]
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch

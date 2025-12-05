@@ -79,6 +79,8 @@ class EmbeddingNetwork(nn.Module):
         """
         Initialize the embedding network.
         
+        DEBUG: __init__ starting
+        
         Args:
             input_dim: Dimension of parameter space (2 for u,v)
             output_dim: Dimension of embedding space (3 for x,y,z)
@@ -91,6 +93,9 @@ class EmbeddingNetwork(nn.Module):
             initialization: Weight initialization method
         """
         super().__init__()
+        
+        # DEBUG_TAU_SWEEP: Remove after tau sweep verification
+        print(f"DEBUG: EmbeddingNetwork.__init__ called with domain={domain}, skip_init={skip_init}")
         
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -142,8 +147,15 @@ class EmbeddingNetwork(nn.Module):
         # For full embedding mode, initialize to approximate reference
         # Skip if loading from checkpoint or if pretraining is disabled
         pretrain_enabled = self.supervised_pretraining_config.get('enabled', True)
+        # DEBUG_TAU_SWEEP: Remove after tau sweep verification
+        print(f"DEBUG: skip_init={skip_init}, use_residual={use_residual}, domain={domain}, pretrain_enabled={pretrain_enabled}")
         if not skip_init and not use_residual and domain in ['torus', 'sphere'] and pretrain_enabled:
+            # DEBUG_TAU_SWEEP: Remove after tau sweep verification
+            print("DEBUG: Starting supervised pretraining...")
             self._init_near_reference()
+        else:
+            # DEBUG_TAU_SWEEP: Remove after tau sweep verification
+            print("DEBUG: Skipping supervised pretraining!")
     
     def _get_activation(self, activation: str) -> nn.Module:
         """Get activation function by name."""
@@ -265,8 +277,9 @@ class EmbeddingNetwork(nn.Module):
             avg_pos_loss = epoch_pos_loss / num_batches
             avg_deriv_loss = epoch_deriv_loss / num_batches
             
-            # Print progress every 50 epochs
-            if (epoch + 1) % 50 == 0 or epoch == 0:
+            # DEBUG_TAU_SWEEP: Changed from 50 to 20 for more frequent updates
+            # Print progress every 20 epochs
+            if (epoch + 1) % 20 == 0 or epoch == 0:
                 print(f"  Supervised pretraining epoch [{epoch+1}/{num_init_epochs}]: "
                       f"Position loss = {avg_pos_loss:.6f}, Derivative loss = {avg_deriv_loss:.6f}")
         
@@ -291,31 +304,31 @@ class EmbeddingNetwork(nn.Module):
         Returns:
             Reference embedding (batch_size, 3)
         """
-        u, v = uv[:, 0], uv[:, 1]
+        from sampling import get_reference_embedding
         
         if self.domain == "torus":
-            # Torus: x = (R + r*cos(v))*cos(u), y = (R + r*cos(v))*sin(u), z = r*sin(v)
-            R = self.domain_params.get('major_radius', 2.0)
-            r = self.domain_params.get('minor_radius', 1.0)
-            x = (R + r * torch.cos(v)) * torch.cos(u)
-            y = (R + r * torch.cos(v)) * torch.sin(u)
-            z = r * torch.sin(v)
+            # Get tau from domain params (default to 1j for standard torus)
+            tau_value = self.domain_params.get('tau', 1j)
+            # Parse tau if it's a string
+            if isinstance(tau_value, str):
+                tau = complex(tau_value.replace(' ', ''))
+            elif isinstance(tau_value, dict):
+                tau = complex(tau_value.get('real', 0), tau_value.get('imag', 1))
+            else:
+                tau = tau_value
+            max_height = self.domain_params.get('max_height', None)
+            return get_reference_embedding(uv, domain="torus", tau=tau, max_height=max_height)
             
         elif self.domain == "sphere":
-            # Sphere: x = R*sin(v)*cos(u), y = R*sin(v)*sin(u), z = R*cos(v)
-            # v ∈ [0, π] for sphere
-            R = self.domain_params.get('radius', 1.0)
-            x = R * torch.sin(v) * torch.cos(u)
-            y = R * torch.sin(v) * torch.sin(u)
-            z = R * torch.cos(v)
+            return get_reference_embedding(uv, domain="sphere")
             
         else:
             # Default: unit sphere
+            u, v = uv[:, 0], uv[:, 1]
             x = torch.sin(v) * torch.cos(u)
             y = torch.sin(v) * torch.sin(u)
             z = torch.cos(v)
-        
-        return torch.stack([x, y, z], dim=1)
+            return torch.stack([x, y, z], dim=1)
     
     def forward(self, uv: torch.Tensor) -> torch.Tensor:
         """

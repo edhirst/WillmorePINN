@@ -21,6 +21,32 @@ from losses import create_embedding_loss
 from sampling import sample_parameters, compute_reference_willmore_energy
 
 
+def parse_tau(tau_value) -> complex:
+    """
+    Parse tau parameter from config, which may be a string or complex number.
+    
+    Args:
+        tau_value: Can be complex (1j), string ("1j", "0.5+0.866j"), or dict
+    
+    Returns:
+        Complex number
+    """
+    if isinstance(tau_value, complex):
+        return tau_value
+    elif isinstance(tau_value, str):
+        # Handle strings like "1j", "0.5+0.866j", etc.
+        return complex(tau_value.replace(' ', ''))
+    elif isinstance(tau_value, (int, float)):
+        # Pure real number
+        return complex(tau_value, 0)
+    elif isinstance(tau_value, dict):
+        # Handle dict format: {real: 0.5, imag: 0.866}
+        return complex(tau_value.get('real', 0), tau_value.get('imag', 1))
+    else:
+        # Default to 1j
+        return 1j
+
+
 def get_device(config: dict) -> torch.device:
     """Determine which device to use."""
     device_config = config.get("device", "auto")
@@ -285,21 +311,25 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     if use_residual:
         try:
             domain_params = config['sampling'].get('domain_params', {})
-            major_radius = domain_params.get('major_radius', 2.0)
-            minor_radius = domain_params.get('minor_radius', 1.0)
+            tau = parse_tau(domain_params.get('tau', 1j))
             uv_ref = sample_parameters(100, domain, device, dtype)
-            ref_willmore = compute_reference_willmore_energy(uv_ref, domain, major_radius, minor_radius)
+            ref_willmore = compute_reference_willmore_energy(uv_ref, domain, tau)
             print(f"\nReference surface Willmore energy: {ref_willmore:.6f}")
             print(f"Mode: Learning residual corrections from reference")
-        except:
+            if domain == 'torus':
+                print(f"Torus modulus τ = {tau:.4f}")
+        except Exception as e:
+            print(f"Warning: Could not compute reference Willmore energy: {e}")
             pass
     else:
         domain_params = config['sampling'].get('domain_params', {})
-        major_radius = domain_params.get('major_radius', 2.0)
-        minor_radius = domain_params.get('minor_radius', 1.0)
-        ref_willmore = compute_reference_willmore_energy(None, domain, major_radius, minor_radius)
+        tau = parse_tau(domain_params.get('tau', 1j))
+        uv_ref = sample_parameters(100, domain, device, dtype)
+        ref_willmore = compute_reference_willmore_energy(uv_ref, domain, tau)
         print(f"\nMode: Learning full embedding from scratch (no reference)")
         print(f"Starting from reference geometry: Willmore energy = {ref_willmore:.6f}")
+        if domain == 'torus':
+            print(f"Torus modulus τ = {tau:.4f}")
     
     # Compute theoretical minimum for comparison
     if domain == 'torus':
@@ -317,6 +347,13 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         'willmore_energy': [],
         'regularity': [],
         'learning_rate': []
+    }
+    
+    # Initialize epoch_losses in case num_epochs is 0
+    epoch_losses = {
+        'total': 0.0,
+        'willmore': ref_willmore if ref_willmore else 0.0,
+        'regularity': 0.0
     }
     
     # Training loop
@@ -376,12 +413,20 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
                 checkpoint_dir, is_best
             )
     
-    # Save final model
-    save_checkpoint(
-        model, optimizer, num_epochs,
-        epoch_losses['willmore'], config,
-        checkpoint_dir, is_best=False
-    )
+    # Save final model (only if we actually trained)
+    if num_epochs > 0:
+        save_checkpoint(
+            model, optimizer, num_epochs,
+            epoch_losses['willmore'], config,
+            checkpoint_dir, is_best=False
+        )
+    else:
+        # For num_epochs=0, save the pretrained model
+        save_checkpoint(
+            model, optimizer, 0,
+            epoch_losses['willmore'], config,
+            checkpoint_dir, is_best=False
+        )
     
     # Save training history
     history_path = os.path.join(log_dir, 'training_history.json')

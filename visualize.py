@@ -325,6 +325,10 @@ def main():
     
     print(f"Using run #{run_number}")
     
+    # Set output directory to logs/run_# to match the run being visualized
+    log_dir = os.path.join('logs', f'run_{run_number}')
+    os.makedirs(log_dir, exist_ok=True)
+    
     if args.mode in ['evolution', 'both']:
         print("=" * 60)
         print("Visualizing Training Evolution")
@@ -333,6 +337,7 @@ def main():
             config_path=args.config,
             checkpoint_dir=checkpoint_dir,
             num_test_points=args.points,
+            output_path=os.path.join(log_dir, 'embedding_evolution.png'),
             number_of_models=args.num_models
         )
     
@@ -347,14 +352,16 @@ def main():
             visualize_single_model(
                 checkpoint_path=best_path,
                 config_path=args.config,
-                num_test_points=args.points * 2
+                num_test_points=args.points * 2,
+                output_path=os.path.join(log_dir, 'best_embedding.png')
             )
         elif os.path.exists(latest_path):
             print(f"Best model not found, using latest model instead")
             visualize_single_model(
                 checkpoint_path=latest_path,
                 config_path=args.config,
-                num_test_points=args.points * 2
+                num_test_points=args.points * 2,
+                output_path=os.path.join(log_dir, 'latest_embedding.png')
             )
         else:
             print(f"No models found at {best_path} or {latest_path}")

@@ -157,9 +157,18 @@ def visualise_training_evolution(
         config = yaml.safe_load(f)
     
     device = torch.device('cpu')
-    domain = config['sampling']['domain']
     
-    print(f"Visualizing training evolution for {domain}")
+    # Get topology configuration
+    topology_config = config.get("topology", {})
+    genus = topology_config.get("genus", 1)
+    
+    # Import get_domain_for_genus
+    from sampling import get_domain_for_genus
+    domain = get_domain_for_genus(genus)
+    
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+    print(f"Visualizing training evolution for genus {genus} ({genus_names.get(genus, 'unknown')})")
+    print(f"Domain: {domain}")
     print(f"Using {num_test_points} test points")
     print(f"Looking in: {checkpoint_dir}")
     
@@ -222,8 +231,8 @@ def visualise_training_evolution(
     
     print(f"\nVisualizing {len(selected_checkpoints)} checkpoints:")
     
-    # Generate test data (same for all models)
-    uv_test = sample_parameters(num_test_points, domain, device)
+    # Generate test data according to the domain/genus
+    uv_test = sample_parameters(num_test_points, domain, device, genus=genus)
     
     # Create figure with subplots
     n_plots = len(selected_checkpoints)
@@ -231,6 +240,7 @@ def visualise_training_evolution(
     n_rows = (n_plots + n_cols - 1) // n_cols
     
     fig = plt.figure(figsize=(6 * n_cols, 5 * n_rows))
+    fig.suptitle(f"Willmore Minimization - Genus {genus} ({genus_names.get(genus, 'unknown')})", fontsize=14)
     
     # Plot each checkpoint
     for idx, checkpoint_path in enumerate(selected_checkpoints):

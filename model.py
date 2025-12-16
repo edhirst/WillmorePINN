@@ -4,34 +4,62 @@ Neural Network Model for Learning Surface Embeddings
 This module defines the neural network architecture that learns an embedding
 φ: (u,v) → (x,y,z) from parameter space to R³. The Willmore energy is then
 computed from the first and second fundamental forms of this embedding.
+
+Supported topologies:
+- Genus 0 (sphere/ellipsoid): Uses polar coordinates [0, π] × [0, 2π]
+- Genus 1 (torus): Uses doubly-periodic coordinates [0, 2π] × [0, 2π]
+- Genus 2 (double torus): Uses custom coordinates [0, 2π] × [0, 4π]
 """
 
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 
 
 class PeriodicEmbedding(nn.Module):
     """
     Fourier feature embedding for enforcing periodicity.
-    Maps (u,v) → (sin(2πnu), cos(2πnu), sin(2πmv), cos(2πmv), ...)
+    
+    For torus (genus 1): Maps (u,v) → (sin(2πnu), cos(2πnu), sin(2πmv), cos(2πmv), ...)
+                         Both u and v are periodic in [0, 2π]
+    
+    For ellipsoid (genus 0): Maps (u,v) → (sin(nu), cos(nu), sin(mv), cos(mv), ...)
+                             u is periodic [0, 2π], v is not periodic [0, π]
+    
+    For double torus (genus 2): Both directions periodic but v has period 4π
     """
     
-    def __init__(self, num_frequencies: int = 4):
+    def __init__(self, num_frequencies: int = 4, domain: str = "torus", genus: Optional[int] = None):
         """
         Args:
             num_frequencies: Number of frequency components per dimension
+            domain: Surface domain type ('torus', 'ellipsoid', 'double_torus')
+            genus: If provided, overrides domain (0=ellipsoid, 1=torus, 2=double_torus)
         """
         super().__init__()
         self.num_frequencies = num_frequencies
+        
+        # Determine domain from genus if provided
+        if genus is not None:
+            if genus == 0:
+                domain = "ellipsoid"
+            elif genus == 1:
+                domain = "torus"
+            elif genus == 2:
+                domain = "double_torus"
+        
+        self.domain = domain.lower()
         # Output dimension: 2 * num_frequencies * input_dim
         self.output_dim = 2 * num_frequencies * 2  # 2 input dims (u,v)
     
     def forward(self, uv: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            uv: Parameters (batch_size, 2) in [0, 2π] × [0, 2π]
+            uv: Parameters (batch_size, 2) 
+                - For torus: [0, 2π] × [0, 2π]
+                - For ellipsoid: [0, 2π] × [0, π]
+                - For double_torus: [0, 2π] × [0, 4π]
         
         Returns:
             Fourier features (batch_size, 2*num_frequencies*2)
@@ -39,13 +67,37 @@ class PeriodicEmbedding(nn.Module):
         features = []
         
         for freq in range(1, self.num_frequencies + 1):
-            # For u coordinate
-            features.append(torch.sin(freq * uv[:, 0:1]))
-            features.append(torch.cos(freq * uv[:, 0:1]))
+            if self.domain in ["torus"]:
+                # Both u and v are periodic with period 2π
+                features.append(torch.sin(freq * uv[:, 0:1]))
+                features.append(torch.cos(freq * uv[:, 0:1]))
+                features.append(torch.sin(freq * uv[:, 1:2]))
+                features.append(torch.cos(freq * uv[:, 1:2]))
+                
+            elif self.domain in ["ellipsoid", "sphere"]:
+                # u is periodic with period 2π, v is NOT periodic (polar angle)
+                # For v, we use features that respect the [0, π] boundary
+                features.append(torch.sin(freq * uv[:, 0:1]))
+                features.append(torch.cos(freq * uv[:, 0:1]))
+                # For polar angle v, use sin(v) and cos(v) based features
+                # These naturally handle the poles
+                features.append(torch.sin(freq * uv[:, 1:2]))
+                features.append(torch.cos(freq * uv[:, 1:2]))
+                
+            elif self.domain == "double_torus":
+                # u has period 2π, v has period 4π
+                features.append(torch.sin(freq * uv[:, 0:1]))
+                features.append(torch.cos(freq * uv[:, 0:1]))
+                # Scale v to have effective period 2π for the Fourier features
+                features.append(torch.sin(freq * uv[:, 1:2] / 2))
+                features.append(torch.cos(freq * uv[:, 1:2] / 2))
             
-            # For v coordinate
-            features.append(torch.sin(freq * uv[:, 1:2]))
-            features.append(torch.cos(freq * uv[:, 1:2]))
+            else:
+                # Default: treat as doubly periodic
+                features.append(torch.sin(freq * uv[:, 0:1]))
+                features.append(torch.cos(freq * uv[:, 0:1]))
+                features.append(torch.sin(freq * uv[:, 1:2]))
+                features.append(torch.cos(freq * uv[:, 1:2]))
         
         return torch.cat(features, dim=1)
 
@@ -54,8 +106,12 @@ class EmbeddingNetwork(nn.Module):
     """
     Neural network that learns an embedding from parameter space (u,v) to R³.
     
-    For a torus: φ(u,v) = (x(u,v), y(u,v), z(u,v))
-    The network enforces periodicity and learns to minimize Willmore energy.
+    Supports different topologies:
+    - Genus 0 (sphere/ellipsoid): φ(u,v) maps [0, 2π] × [0, π] to R³
+    - Genus 1 (torus): φ(u,v) maps [0, 2π] × [0, 2π] to R³  
+    - Genus 2 (double torus): φ(u,v) maps [0, 2π] × [0, 4π] to R³
+    
+    The network enforces appropriate boundary conditions and learns to minimize Willmore energy.
     """
     
     def __init__(
@@ -74,7 +130,9 @@ class EmbeddingNetwork(nn.Module):
         use_residual: bool = True,  # Learn residuals from reference (False = full embedding)
         residual_scale: float = 0.1,  # Scale factor for residuals
         skip_init: bool = False,  # Skip reference initialization (for loading checkpoints)
-        supervised_pretraining_config: Optional[dict] = None  # Config for supervised pretraining
+        supervised_pretraining_config: Optional[dict] = None,  # Config for supervised pretraining
+        genus: Optional[int] = None,  # Surface genus (0, 1, or 2)
+        topology_params: Optional[Dict] = None  # Topology-specific parameters
     ):
         """
         Initialize the embedding network.
@@ -89,21 +147,38 @@ class EmbeddingNetwork(nn.Module):
             use_periodic_embedding: Whether to use Fourier features for periodicity
             num_frequencies: Number of frequency components (if using periodic embedding)
             initialization: Weight initialization method
+            domain: Surface domain type ('torus', 'ellipsoid', 'double_torus')
+            domain_params: Domain-specific parameters (legacy, prefer topology_params)
+            use_residual: Whether to learn residuals from reference embedding
+            residual_scale: Scale factor for residuals
+            skip_init: Skip initialization (for checkpoint loading)
+            supervised_pretraining_config: Config for supervised pretraining
+            genus: Surface genus (0=ellipsoid, 1=torus, 2=double_torus)
+            topology_params: Topology-specific parameters from config
         """
         super().__init__()
         
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.use_periodic_embedding = use_periodic_embedding
-        self.domain = domain
         self.domain_params = domain_params or {}
         self.use_residual = use_residual
         self.residual_scale = residual_scale
         self.supervised_pretraining_config = supervised_pretraining_config or {}
+        self.topology_params = topology_params or {}
         
-        # Periodic embedding layer
+        # Handle genus and domain
+        self.genus = genus
+        if genus is not None:
+            # Derive domain from genus
+            from sampling import get_domain_for_genus
+            self.domain = get_domain_for_genus(genus)
+        else:
+            self.domain = domain
+        
+        # Periodic embedding layer - adapted for the domain type
         if use_periodic_embedding:
-            self.periodic_layer = PeriodicEmbedding(num_frequencies)
+            self.periodic_layer = PeriodicEmbedding(num_frequencies, domain=self.domain, genus=genus)
             effective_input_dim = self.periodic_layer.output_dim
         else:
             self.periodic_layer = None
@@ -142,7 +217,8 @@ class EmbeddingNetwork(nn.Module):
         # For full embedding mode, initialize to approximate reference
         # Skip if loading from checkpoint or if pretraining is disabled
         pretrain_enabled = self.supervised_pretraining_config.get('enabled', True)
-        if not skip_init and not use_residual and domain in ['torus', 'sphere'] and pretrain_enabled:
+        supported_domains = ['torus', 'sphere', 'ellipsoid', 'double_torus']
+        if not skip_init and not use_residual and self.domain in supported_domains and pretrain_enabled:
             self._init_near_reference()
     
     def _get_activation(self, activation: str) -> nn.Module:
@@ -193,14 +269,23 @@ class EmbeddingNetwork(nn.Module):
         # Create optimizer for initialization
         optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
         
+        # Import sampling function
+        from sampling import sample_parameters
+        
         for epoch in range(num_init_epochs):
             epoch_pos_loss = 0.0
             epoch_deriv_loss = 0.0
             num_batches = n_samples_per_epoch // batch_size
             
             for _ in range(num_batches):
-                # Sample random points
-                uv_batch = torch.rand(batch_size, 2, device=device) * 2 * np.pi
+                # Sample random points according to domain type
+                uv_batch = sample_parameters(
+                    batch_size, 
+                    domain=self.domain,
+                    device=device,
+                    dtype=torch.float32,
+                    genus=self.genus
+                )
                 uv_batch.requires_grad_(True)
                 
                 # Get reference embedding and derivatives
@@ -275,7 +360,13 @@ class EmbeddingNetwork(nn.Module):
         # Final validation including Willmore energy
         with torch.no_grad():
             n_val = 500
-            uv_val = torch.rand(n_val, 2, device=device) * 2 * np.pi
+            uv_val = sample_parameters(
+                n_val,
+                domain=self.domain,
+                device=device,
+                dtype=torch.float32,
+                genus=self.genus
+            )
             xyz_ref_val = self._get_reference_embedding(uv_val)
             xyz_pred_val = self.forward(uv_val)
             val_error = torch.mean((xyz_pred_val - xyz_ref_val) ** 2).item()
@@ -283,7 +374,7 @@ class EmbeddingNetwork(nn.Module):
     
     def _get_reference_embedding(self, uv: torch.Tensor) -> torch.Tensor:
         """
-        Compute reference embedding based on domain type.
+        Compute reference embedding based on domain type and genus.
         
         Args:
             uv: Parameter coordinates (batch_size, 2)
@@ -294,8 +385,9 @@ class EmbeddingNetwork(nn.Module):
         from sampling import get_reference_embedding
         
         if self.domain == "torus":
-            # Get tau from domain params (default to 1j for standard torus)
-            tau_value = self.domain_params.get('tau', 1j)
+            # Get tau from topology params or domain params (backward compatibility)
+            torus_params = self.topology_params.get('torus', {})
+            tau_value = torus_params.get('tau', self.domain_params.get('tau', '1j'))
             # Parse tau if it's a string
             if isinstance(tau_value, str):
                 tau = complex(tau_value.replace(' ', ''))
@@ -303,11 +395,23 @@ class EmbeddingNetwork(nn.Module):
                 tau = complex(tau_value.get('real', 0), tau_value.get('imag', 1))
             else:
                 tau = tau_value
-            max_height = self.domain_params.get('max_height', None)
-            return get_reference_embedding(uv, domain="torus", tau=tau, max_height=max_height)
+            max_height = torus_params.get('max_height', self.domain_params.get('max_height', None))
+            return get_reference_embedding(
+                uv, domain="torus", tau=tau, max_height=max_height,
+                genus=self.genus, topology_params=self.topology_params
+            )
             
-        elif self.domain == "sphere":
-            return get_reference_embedding(uv, domain="sphere")
+        elif self.domain in ["sphere", "ellipsoid"]:
+            return get_reference_embedding(
+                uv, domain="ellipsoid", genus=self.genus, 
+                topology_params=self.topology_params
+            )
+            
+        elif self.domain == "double_torus":
+            return get_reference_embedding(
+                uv, domain="double_torus", genus=self.genus,
+                topology_params=self.topology_params
+            )
             
         else:
             # Default: unit sphere
@@ -531,7 +635,21 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
     """
     model_config = config.get("model", {})
     sampling_config = config.get("sampling", {})
+    topology_config = config.get("topology", {})
     supervised_pretraining_config = model_config.get("supervised_pretraining", {})
+    
+    # Get genus from topology config (defaults to 1 for backward compatibility)
+    genus = topology_config.get("genus", 1)
+    
+    # Validate genus
+    if genus < 0:
+        raise ValueError(f"Genus must be non-negative, got {genus}")
+    if genus > 2:
+        raise NotImplementedError(f"Genus {genus} is not supported. Only genus 0, 1, 2 are implemented.")
+    
+    # Determine domain from genus
+    from sampling import get_domain_for_genus
+    domain = get_domain_for_genus(genus)
     
     model = EmbeddingNetwork(
         input_dim=model_config.get("input_dim", 2),
@@ -543,16 +661,21 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         use_periodic_embedding=model_config.get("use_periodic_embedding", True),
         num_frequencies=model_config.get("num_frequencies", 4),
         initialization=model_config.get("initialization", "xavier_uniform"),
-        domain=sampling_config.get("domain", "torus"),
+        domain=domain,
         domain_params=sampling_config.get("domain_params", {}),
         use_residual=model_config.get("use_residual", False),  # Default to full embedding
         residual_scale=model_config.get("residual_scale", 0.1),
         skip_init=skip_init,
-        supervised_pretraining_config=supervised_pretraining_config
+        supervised_pretraining_config=supervised_pretraining_config,
+        genus=genus,
+        topology_params=topology_config
     )
     
     model = model.to(device)
     
-    print(f"Embedding model created with {model.count_parameters()} trainable parameters")
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+    print(f"Embedding model created for genus {genus} ({genus_names.get(genus, 'unknown')})")
+    print(f"  Domain: {domain}")
+    print(f"  Parameters: {model.count_parameters()} trainable")
     
     return model

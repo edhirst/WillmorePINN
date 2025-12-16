@@ -1,5 +1,40 @@
 # Hyperparameters for Willmore Energy Minimization
 
+# Topology Parameters
+# The genus defines the topology of the surface being optimized
+topology:
+  genus: 1  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
+  
+  # Genus 0 (sphere/ellipsoid) initialization parameters
+  # Uses polar coordinates on [0, π] × [0, 2π]
+  ellipsoid:
+    a: 1.5  # Semi-axis along x
+    b: 1.5  # Semi-axis along y  
+    c: 1.0  # Semi-axis along z
+    # For a sphere, set a = b = c
+    # Willmore energy of a sphere is 4π ≈ 12.566 (the minimum for genus 0)
+  
+  # Genus 1 (torus) initialization parameters
+  # Uses doubly-periodic coordinates on [0, 2π] × [0, 2π]
+  torus:
+    tau: "1j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
+               # Default "1j" gives standard square torus
+               # Can also use dict format: {real: 0.5, imag: 0.866}
+    max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
+    major_radius: 2.0  # R: distance from center of tube to center of torus
+    minor_radius: 1.0  # r: radius of the tube
+    # Clifford torus (R = √2, r = 1) has minimum Willmore energy 2π² ≈ 19.74
+  
+  # Genus 2 (double torus) initialization parameters
+  # Constructed via catenoid bridge between two tori
+  double_torus:
+    torus_separation: 3.0  # Distance between torus centers
+    torus_major_radius: 1.5  # R: major radius of each torus component
+    torus_minor_radius: 0.6  # r: minor radius of each torus component
+    bridge_radius: 0.4  # Radius of connecting catenoid bridge
+    bridge_length: 1.0  # Length of the catenoid bridge section
+    # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 2π² × 2 = 4π² ≈ 39.48
+
 # Model Architecture
 model:
   # Base network structure
@@ -42,16 +77,12 @@ training:
   log_frequency: 25  # Log metrics more frequently to monitor stability
 
 # Sampling Parameters
+# Note: Domain is now automatically determined from topology.genus
+# - genus 0: sphere/ellipsoid domain with polar coordinates [0, π] × [0, 2π]
+# - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
+# - genus 2: double_torus domain with custom parametrization
 sampling:
   num_points: 20000  # More points for accurate geometry
-  domain: "torus"  # Domain type: sphere, torus, ellipsoid, custom
-  domain_params:
-    radius: 1.0  # For sphere
-    tau: "0.5j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
-               # Default "1j" gives standard square torus
-               # Can also use dict format: {real: 0.5, imag: 0.866}
-    max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
-    center: [0.0, 0.0, 0.0]
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
   use_rotation_augmentation: true  # Apply random z-axis rotations for symmetry enforcement
@@ -71,9 +102,15 @@ loss:
   regularity_smoothness_weight: 1.0  # Penalize large derivatives
   # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
 
+  # Volume constraint for genus 0 (prevents sphere from collapsing to a point)
+  # Uses ReLU-style penalty: loss = relu(min_volume - current_volume)^2
+  volume_constraint:
+    enabled: true  # Enable for genus 0 surfaces
+    min_volume: 1.0  # Minimum allowed enclosed volume (prevents collapse)
+    weight: 10.0  # Weight for volume constraint loss
+
   # Disabled losses (moved to end of losses.py):
   # - area_weight: 0.0
-  # - volume_weight: 0.0
   # - symmetry_weight: 0.0
 
 # Optimization

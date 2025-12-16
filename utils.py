@@ -211,11 +211,24 @@ def plot_loss_curves(history: dict, output_path: str):
     Args:
         history: Dictionary containing training history with keys:
                  'epoch', 'total_loss', 'willmore_energy', 'regularity'
+                 Optional: 'volume_loss', 'current_volume' (for genus 0)
         output_path: Path to save the plot
     """
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    # Determine number of subplots based on what's in history
+    has_volume = 'volume_loss' in history and len(history['volume_loss']) > 0
+    genus = history.get('genus', 1)
+    
+    if has_volume:
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    else:
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     
     epochs = history['epoch']
+    
+    # Get genus-specific title
+    genus_names = {0: "Sphere/Ellipsoid", 1: "Torus", 2: "Double Torus"}
+    fig.suptitle(f"Training Progress - Genus {genus} ({genus_names.get(genus, 'Unknown')})", 
+                 fontsize=14, fontweight='bold')
     
     # Plot 1: Total Loss
     axes[0, 0].plot(epochs, history['total_loss'], 'b-', linewidth=2)
@@ -233,6 +246,16 @@ def plot_loss_curves(history: dict, output_path: str):
     axes[0, 1].set_yscale('log')
     axes[0, 1].grid(True, alpha=0.3, which='both')
     
+    # Add theoretical minimum line
+    from sampling import get_theoretical_minimum_willmore
+    try:
+        theoretical_min = get_theoretical_minimum_willmore(genus)
+        axes[0, 1].axhline(y=theoretical_min, color='g', linestyle='--', 
+                           linewidth=2, alpha=0.7, label=f'Theoretical min: {theoretical_min:.2f}')
+        axes[0, 1].legend(fontsize=10)
+    except:
+        pass
+    
     # Plot 3: Regularity Loss
     axes[1, 0].plot(epochs, history['regularity'], 'g-', linewidth=2)
     axes[1, 0].set_xlabel('Epoch', fontsize=12)
@@ -245,12 +268,30 @@ def plot_loss_curves(history: dict, output_path: str):
     axes[1, 1].plot(epochs, history['total_loss'], 'b-', linewidth=2, label='Total Loss', alpha=0.7)
     axes[1, 1].plot(epochs, history['willmore_energy'], 'r-', linewidth=2, label='Willmore Energy', alpha=0.7)
     axes[1, 1].plot(epochs, history['regularity'], 'g-', linewidth=2, label='Regularity', alpha=0.7)
+    if has_volume:
+        axes[1, 1].plot(epochs, history['volume_loss'], 'm-', linewidth=2, label='Volume Loss', alpha=0.7)
     axes[1, 1].set_xlabel('Epoch', fontsize=12)
     axes[1, 1].set_ylabel('Loss (log scale)', fontsize=12)
     axes[1, 1].set_title('All Loss Components', fontsize=14, fontweight='bold')
     axes[1, 1].set_yscale('log')
     axes[1, 1].legend(fontsize=10, loc='best')
     axes[1, 1].grid(True, alpha=0.3, which='both')
+    
+    # Additional plots for genus 0 (volume tracking)
+    if has_volume:
+        # Plot 5: Volume Loss
+        axes[0, 2].plot(epochs, history['volume_loss'], 'm-', linewidth=2)
+        axes[0, 2].set_xlabel('Epoch', fontsize=12)
+        axes[0, 2].set_ylabel('Volume Loss', fontsize=12)
+        axes[0, 2].set_title('Volume Constraint Loss', fontsize=14, fontweight='bold')
+        axes[0, 2].grid(True, alpha=0.3)
+        
+        # Plot 6: Current Volume
+        axes[1, 2].plot(epochs, history['current_volume'], 'c-', linewidth=2)
+        axes[1, 2].set_xlabel('Epoch', fontsize=12)
+        axes[1, 2].set_ylabel('Volume', fontsize=12)
+        axes[1, 2].set_title('Enclosed Volume', fontsize=14, fontweight='bold')
+        axes[1, 2].grid(True, alpha=0.3)
     
     plt.tight_layout()
     

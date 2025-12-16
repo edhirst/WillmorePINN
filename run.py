@@ -3,6 +3,11 @@ Training Script for Embedding-Based Willmore Energy Minimization
 
 This script trains a neural network to learn an embedding φ: (u,v) → (x,y,z)
 that minimizes the Willmore energy functional.
+
+Supported topologies:
+- Genus 0 (sphere/ellipsoid): Minimizes to round sphere (W = 4π)
+- Genus 1 (torus): Minimizes to Clifford torus (W = 2π²)
+- Genus 2 (double torus): Minimizes toward Lawson surface (W ≈ 4π²)
 """
 
 import torch
@@ -19,7 +24,10 @@ from typing import Dict, Optional
 
 from model import create_embedding_model
 from losses import create_embedding_loss
-from sampling import sample_parameters, compute_reference_willmore_energy
+from sampling import (
+    sample_parameters, compute_reference_willmore_energy,
+    get_domain_for_genus, get_theoretical_minimum_willmore
+)
 from utils import plot_loss_curves
 
 
@@ -139,16 +147,18 @@ def train_epoch(
     device: torch.device,
     dtype: torch.dtype,
     gradient_clip: Optional[float] = None,
-    use_rotation_augmentation: bool = True
+    use_rotation_augmentation: bool = True,
+    genus: Optional[int] = None
 ) -> Dict[str, float]:
     """Train for one epoch."""
     model.train()
     
-    # Sample parameter space points
-    uv = sample_parameters(num_points, domain, device, dtype)
+    # Sample parameter space points according to the topology
+    uv = sample_parameters(num_points, domain, device, dtype, genus=genus)
     
     # Apply random z-axis rotation augmentation if enabled
-    if use_rotation_augmentation and domain == 'torus':
+    # Only applicable for torus and double_torus (not ellipsoid due to poles)
+    if use_rotation_augmentation and domain in ['torus', 'double_torus']:
         # Random rotation angle in [0, 2π)
         theta = torch.rand(1, device=device, dtype=dtype).item() * 2 * 3.14159265359
         # Shift u coordinate by theta (rotates around z-axis)
@@ -161,6 +171,11 @@ def train_epoch(
         'willmore': 0.0,
         'regularity': 0.0
     }
+    
+    # Add volume tracking for genus 0
+    if genus == 0:
+        epoch_losses['volume_loss'] = 0.0
+        epoch_losses['current_volume'] = 0.0
     
     for batch_idx in range(num_batches):
         start_idx = batch_idx * batch_size
@@ -215,6 +230,24 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     # Get device
     device = get_device(config)
     dtype = torch.float32 if config.get("dtype", "float32") == "float32" else torch.float64
+    
+    # Get topology configuration
+    topology_config = config.get("topology", {})
+    genus = topology_config.get("genus", 1)  # Default to torus for backward compatibility
+    
+    # Validate genus
+    if genus < 0:
+        raise ValueError(f"Genus must be non-negative, got {genus}")
+    if genus > 2:
+        raise NotImplementedError(f"Genus {genus} is not supported. Only genus 0, 1, 2 are implemented.")
+    
+    # Get domain from genus
+    domain = get_domain_for_genus(genus)
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+    
+    print(f"\n{'='*60}")
+    print(f"Willmore Energy Minimization - Genus {genus} ({genus_names.get(genus, 'unknown')})")
+    print(f"{'='*60}")
     
     # Create model
     model = create_embedding_model(config, device)
@@ -271,7 +304,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     num_epochs = config["training"]["num_epochs"]
     batch_size = config["training"]["batch_size"]
     num_points = config["sampling"]["num_points"]
-    domain = config["sampling"]["domain"]
     log_frequency = config["training"].get("log_frequency", 10)
     save_frequency = config["training"].get("save_frequency", 50)
     gradient_clip = config["training"].get("gradient_clip", None)
@@ -288,9 +320,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     
-    print(f"\n{'='*60}")
-    print(f"Starting Training Run #{run_number}")
-    print(f"{'='*60}")
+    print(f"\nStarting Training Run #{run_number}")
     print(f"Checkpoints: {checkpoint_dir}")
     print(f"Logs: {log_dir}")
     
@@ -306,41 +336,62 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         start_epoch = checkpoint['epoch'] + 1
         best_willmore = checkpoint.get('loss', float('inf'))
     
-    # Compute reference Willmore energy (only meaningful in residual mode)
+    # Compute reference Willmore energy
     use_residual = config['model'].get('use_residual', True)
     ref_willmore = None
     
-    if use_residual:
-        try:
-            domain_params = config['sampling'].get('domain_params', {})
-            tau = parse_tau(domain_params.get('tau', 1j))
-            uv_ref = sample_parameters(100, domain, device, dtype)
-            ref_willmore = compute_reference_willmore_energy(uv_ref, domain, tau)
+    try:
+        # Get topology-specific parameters for reference computation
+        tau = None
+        if genus == 1:
+            torus_params = topology_config.get('torus', {})
+            tau = parse_tau(torus_params.get('tau', '1j'))
+        
+        uv_ref = sample_parameters(100, domain, device, dtype, genus=genus)
+        ref_willmore = compute_reference_willmore_energy(
+            uv_ref, domain, tau=tau if tau else 1j, 
+            genus=genus, topology_params=topology_config
+        )
+        
+        if use_residual:
             print(f"\nReference surface Willmore energy: {ref_willmore:.6f}")
             print(f"Mode: Learning residual corrections from reference")
-            if domain == 'torus':
-                print(f"Torus modulus τ = {tau:.4f}")
-        except Exception as e:
-            print(f"Warning: Could not compute reference Willmore energy: {e}")
-            pass
-    else:
-        domain_params = config['sampling'].get('domain_params', {})
-        tau = parse_tau(domain_params.get('tau', 1j))
-        uv_ref = sample_parameters(100, domain, device, dtype)
-        ref_willmore = compute_reference_willmore_energy(uv_ref, domain, tau)
-        print(f"\nMode: Learning full embedding from scratch (no reference)")
-        print(f"Starting from reference geometry: Willmore energy = {ref_willmore:.6f}")
-        if domain == 'torus':
+        else:
+            print(f"\nMode: Learning full embedding from scratch")
+            print(f"Initial reference geometry Willmore energy: {ref_willmore:.6f}")
+        
+        if genus == 1 and tau:
             print(f"Torus modulus τ = {tau:.4f}")
+    except Exception as e:
+        print(f"Warning: Could not compute reference Willmore energy: {e}")
     
     # Compute theoretical minimum for comparison
-    if domain == 'torus':
-        clifford_willmore = 2 * np.pi ** 2  # Clifford torus: W = 2π² ≈ 19.74
-        print(f"Optimization target: {clifford_willmore:.6f} (Clifford minimum)")
+    try:
+        theoretical_min = get_theoretical_minimum_willmore(genus)
+        target_names = {
+            0: "round sphere",
+            1: "Clifford torus", 
+            2: "Lawson surface ξ_{2,1}"
+        }
+        print(f"Optimization target: {theoretical_min:.6f} ({target_names.get(genus, 'optimal surface')})")
+    except Exception as e:
+        theoretical_min = None
+        print(f"Note: Theoretical minimum not available for genus {genus}")
     
+    # Print domain information
+    domain_ranges = {
+        "ellipsoid": "[0, 2π] × [0, π]",
+        "torus": "[0, 2π] × [0, 2π]",
+        "double_torus": "[0, 2π] × [0, 4π]"
+    }
     print(f"\nStarting training for {num_epochs} epochs...")
     print(f"Batch size: {batch_size}, Number of points: {num_points}")
-    print(f"Domain: {domain}, Parameter space: [0, 2π] × [0, 2π]\n")
+    print(f"Domain: {domain}, Parameter space: {domain_ranges.get(domain, 'custom')}")
+    
+    if genus == 0 and loss_fn.use_volume_constraint:
+        vol_config = config.get("loss", {}).get("volume_constraint", {})
+        print(f"Volume constraint: min_volume = {vol_config.get('min_volume', 1.0)}")
+    print()
     
     # Training history
     history = {
@@ -348,8 +399,14 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         'total_loss': [],
         'willmore_energy': [],
         'regularity': [],
-        'learning_rate': []
+        'learning_rate': [],
+        'genus': genus
     }
+    
+    # Add volume tracking for genus 0
+    if genus == 0:
+        history['volume_loss'] = []
+        history['current_volume'] = []
     
     # Initialize epoch_losses in case num_epochs is 0
     epoch_losses = {
@@ -357,6 +414,9 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         'willmore': ref_willmore if ref_willmore else 0.0,
         'regularity': 0.0
     }
+    if genus == 0:
+        epoch_losses['volume_loss'] = 0.0
+        epoch_losses['current_volume'] = 0.0
     
     # Training loop
     for epoch in range(start_epoch, num_epochs + 1):
@@ -369,7 +429,8 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             model, loss_fn, optimizer,
             num_points, batch_size, domain,
             device, dtype, gradient_clip,
-            use_rotation_augmentation=use_rotation_aug
+            use_rotation_augmentation=use_rotation_aug,
+            genus=genus
         )
         
         # Update learning rate
@@ -385,6 +446,11 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         history['regularity'].append(epoch_losses['regularity'])
         history['learning_rate'].append(current_lr)
         
+        # Track volume for genus 0
+        if genus == 0:
+            history['volume_loss'].append(epoch_losses.get('volume_loss', 0.0))
+            history['current_volume'].append(epoch_losses.get('current_volume', 0.0))
+        
         # Check if best model using the actual Willmore energy
         current_willmore = epoch_losses['willmore']
         is_best = current_willmore < best_willmore
@@ -398,12 +464,16 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             print(f"  Total Loss: {epoch_losses['total']:.6f}")
             print(f"  Willmore Energy: {epoch_losses['willmore']:.6f}")
             print(f"  Regularity: {epoch_losses['regularity']:.6f}")
-            if domain == 'torus':
-                ratio_to_optimal = epoch_losses['willmore'] / clifford_willmore
-                print(f"  Ratio to Clifford minimum: {ratio_to_optimal:.4f}x")
-            elif ref_willmore:
-                ratio = epoch_losses['willmore'] / ref_willmore
-                print(f"  Ratio to reference: {ratio:.4f}x")
+            
+            # Print topology-specific info
+            if theoretical_min:
+                ratio_to_optimal = epoch_losses['willmore'] / theoretical_min
+                print(f"  Ratio to theoretical minimum: {ratio_to_optimal:.4f}x")
+            
+            if genus == 0 and 'current_volume' in epoch_losses:
+                print(f"  Current Volume: {epoch_losses['current_volume']:.4f}")
+                if epoch_losses.get('volume_loss', 0) > 0:
+                    print(f"  Volume Loss: {epoch_losses['volume_loss']:.6f}")
         
         # Save checkpoint - save at regular intervals AND when we find a new best
         # Use separate condition to save regular checkpoints vs best model
@@ -441,19 +511,28 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     loss_curves_path = os.path.join(log_dir, 'loss_curves.png')
     plot_loss_curves(history, loss_curves_path)
     
-    print("\nTraining completed!")
+    # Final summary
+    print("\n" + "="*60)
+    print("Training Completed!")
+    print("="*60)
+    print(f"Genus: {genus} ({genus_names.get(genus, 'unknown')})")
     print(f"Best Willmore energy: {best_willmore:.6f}")
-    if domain == 'torus':
-        print(f"Clifford torus minimum: {clifford_willmore:.6f}")
-        print(f"Ratio to optimal: {best_willmore / clifford_willmore:.4f}x")
-        if use_residual and ref_willmore:
-            print(f"Reference surface: {ref_willmore:.6f}")
-    elif ref_willmore:
-        print(f"Reference Willmore energy: {ref_willmore:.6f}")
-        print(f"Ratio: {best_willmore / ref_willmore:.4f}x")
-    print(f"Final epoch - Total Loss: {epoch_losses['total']:.6f}")
-    print(f"             Willmore: {epoch_losses['willmore']:.6f}")
-    print(f"             Regularity: {epoch_losses['regularity']:.6f}")
+    
+    if theoretical_min:
+        print(f"Theoretical minimum: {theoretical_min:.6f}")
+        print(f"Ratio to optimal: {best_willmore / theoretical_min:.4f}x")
+    
+    if ref_willmore:
+        print(f"Initial reference energy: {ref_willmore:.6f}")
+        print(f"Improvement ratio: {ref_willmore / best_willmore:.4f}x")
+    
+    print(f"\nFinal epoch metrics:")
+    print(f"  Total Loss: {epoch_losses['total']:.6f}")
+    print(f"  Willmore: {epoch_losses['willmore']:.6f}")
+    print(f"  Regularity: {epoch_losses['regularity']:.6f}")
+    
+    if genus == 0 and 'current_volume' in epoch_losses:
+        print(f"  Final Volume: {epoch_losses['current_volume']:.4f}")
 
 
 def main():

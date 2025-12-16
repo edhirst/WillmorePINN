@@ -13,12 +13,14 @@ import argparse
 import os
 import json
 import numpy as np
+import matplotlib.pyplot as plt
 from datetime import datetime
 from typing import Dict, Optional
 
 from model import create_embedding_model
 from losses import create_embedding_loss
 from sampling import sample_parameters, compute_reference_willmore_energy
+from utils import plot_loss_curves
 
 
 def parse_tau(tau_value) -> complex:
@@ -434,6 +436,11 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         json.dump(history, f, indent=2)
     
     print(f"\nTraining history saved to {history_path}")
+    
+    # Plot loss curves
+    loss_curves_path = os.path.join(log_dir, 'loss_curves.png')
+    plot_loss_curves(history, loss_curves_path)
+    
     print("\nTraining completed!")
     print(f"Best Willmore energy: {best_willmore:.6f}")
     if domain == 'torus':

@@ -14,7 +14,7 @@ pip install -r environment/requirements.txt
 python run.py
 
 # Visualize
-python visualize.py
+python visualise.py
 ```
 
 ## Core Concept
@@ -31,8 +31,8 @@ where H is mean curvature computed via automatic differentiation of the embeddin
 # Basic training
 python run.py
 
-# Visualization
-python visualize.py --mode both
+# Visualisation
+python visualise.py --mode both
 
 # Analysis
 python utils.py --checkpoint logs/checkpoints/best_model.pt
@@ -46,7 +46,7 @@ Edit `hyperparameters.yaml` to configure model architecture, training parameters
 - **`losses.py`** - Willmore energy ∫∫H²dA computed via autodiff of fundamental forms
 - **`sampling.py`** - Parameter space sampling for torus, sphere, etc.
 - **`run.py`** - Training loop with checkpointing
-- **`visualize.py`** - 3D embedding visualization
+- **`visualise.py`** - 3D embedding visualization
 - **`utils.py`** - Model analysis and curvature statistics
 
 ## Theory
@@ -68,4 +68,4 @@ where H = (EN-2FM+GL)/(2(EG-F²)) is mean curvature, computed from:
 Training creates:
 - `logs/checkpoints/` - Model states (best_model.pt, latest_model.pt, epoch checkpoints)
 - `logs/training_history.json` - Loss curves and metrics
-- `logs/*.png` - Visualizations (when running visualize.py)
+- `logs/*.png` - Visualisations (when running visualise.py)

@@ -20,17 +20,17 @@ model:
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
-    num_epochs: 100  # More pretraining for better initialization
+    num_epochs: 500  # Many epochs for very smooth supervised learning
     learning_rate: 0.005  # Lower LR for more careful pretraining
     batch_size: 512  # Larger batches for stable pretraining
-    num_points_per_epoch: 4096  # More points for better coverage
+    num_points_per_epoch: 8192  # Many points for excellent coverage
     position_weight: 1.0  # Weight for position matching loss
     derivative_weight: 0.5  # Higher derivative weight for better geometry learning
 
 # Training Parameters
 training:
-  num_epochs: 200  # Long training run to converge to Clifford torus
-  batch_size: 256  # Larger batches for more stable gradients
+  num_epochs: 300  # Long training run to converge to Clifford torus
+  batch_size: 512  # Larger batches for more stable gradients
   learning_rate: 0.0001  # Much lower LR for smooth, stable optimization
   weight_decay: 0.00001  # Lighter weight decay to preserve learned features
   scheduler: "cosine"  # Learning rate scheduler: step, cosine, exponential, plateau, none
@@ -43,7 +43,7 @@ training:
 
 # Sampling Parameters
 sampling:
-  num_points: 3000  # More points for accurate geometry (power of 2 for efficiency)
+  num_points: 20000  # More points for accurate geometry
   domain: "torus"  # Domain type: sphere, torus, ellipsoid, custom
   domain_params:
     radius: 1.0  # For sphere

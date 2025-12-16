@@ -79,8 +79,6 @@ class EmbeddingNetwork(nn.Module):
         """
         Initialize the embedding network.
         
-        DEBUG: __init__ starting
-        
         Args:
             input_dim: Dimension of parameter space (2 for u,v)
             output_dim: Dimension of embedding space (3 for x,y,z)
@@ -93,9 +91,6 @@ class EmbeddingNetwork(nn.Module):
             initialization: Weight initialization method
         """
         super().__init__()
-        
-        # DEBUG_TAU_SWEEP: Remove after tau sweep verification
-        print(f"DEBUG: EmbeddingNetwork.__init__ called with domain={domain}, skip_init={skip_init}")
         
         self.input_dim = input_dim
         self.output_dim = output_dim
@@ -147,15 +142,8 @@ class EmbeddingNetwork(nn.Module):
         # For full embedding mode, initialize to approximate reference
         # Skip if loading from checkpoint or if pretraining is disabled
         pretrain_enabled = self.supervised_pretraining_config.get('enabled', True)
-        # DEBUG_TAU_SWEEP: Remove after tau sweep verification
-        print(f"DEBUG: skip_init={skip_init}, use_residual={use_residual}, domain={domain}, pretrain_enabled={pretrain_enabled}")
         if not skip_init and not use_residual and domain in ['torus', 'sphere'] and pretrain_enabled:
-            # DEBUG_TAU_SWEEP: Remove after tau sweep verification
-            print("DEBUG: Starting supervised pretraining...")
             self._init_near_reference()
-        else:
-            # DEBUG_TAU_SWEEP: Remove after tau sweep verification
-            print("DEBUG: Skipping supervised pretraining!")
     
     def _get_activation(self, activation: str) -> nn.Module:
         """Get activation function by name."""
@@ -277,7 +265,6 @@ class EmbeddingNetwork(nn.Module):
             avg_pos_loss = epoch_pos_loss / num_batches
             avg_deriv_loss = epoch_deriv_loss / num_batches
             
-            # DEBUG_TAU_SWEEP: Changed from 50 to 20 for more frequent updates
             # Print progress every 20 epochs
             if (epoch + 1) % 20 == 0 or epoch == 0:
                 print(f"  Supervised pretraining epoch [{epoch+1}/{num_init_epochs}]: "

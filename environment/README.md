@@ -44,7 +44,7 @@ pip install -r requirements.txt
 The `requirements.txt` includes:
 - **PyTorch** ≥2.0.0 - Deep learning framework with automatic differentiation
 - **NumPy** - Numerical computing
-- **Matplotlib** - Visualization
+- **Matplotlib** - Visualisation
 - **PyYAML** - Configuration file parsing
 
 ## Verification

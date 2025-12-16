@@ -87,7 +87,53 @@ def get_highest_run_number(base_checkpoint_dir: str) -> int:
     return max(run_numbers) if run_numbers else None
 
 
-def visualize_training_evolution(
+def plot_fundamental_domain_coloring(output_path, num_points=200):
+    """
+    Plot the fundamental domain [0,2π]×[0,2π] with rainbow coloring.
+    
+    Args:
+        output_path: Path to save the plot
+        num_points: Resolution of the grid
+    """
+    u = np.linspace(0, 2*np.pi, num_points)
+    v = np.linspace(0, 2*np.pi, num_points)
+    U, V = np.meshgrid(u, v)
+    
+    # Apply rainbow coloring based on v coordinate
+    v_norm = (V % (2 * np.pi)) / (2 * np.pi)
+    hue = v_norm
+    h = hue * 6.0
+    x = 1.0 - np.abs(h % 2.0 - 1.0)
+    
+    R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
+    G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
+    B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
+    
+    # Stack into RGB image
+    colors = np.stack([R, G, B], axis=-1)
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.imshow(colors, extent=[0, 2*np.pi, 0, 2*np.pi], origin='lower', aspect='auto')
+    ax.set_xlabel('u', fontsize=12)
+    ax.set_ylabel('v', fontsize=12)
+    ax.set_title('Fundamental Domain Coloring\n(Rainbow gradient in v)', fontsize=14)
+    ax.set_xticks([0, np.pi, 2*np.pi])
+    ax.set_xticklabels(['0', 'π', '2π'])
+    ax.set_yticks([0, np.pi, 2*np.pi])
+    ax.set_yticklabels(['0', 'π', '2π'])
+    
+    plt.tight_layout()
+    
+    # Save figure
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Saved fundamental domain to {output_path}")
+    
+    plt.close()
+
+
+def visualise_training_evolution(
     config_path='hyperparameters.yaml',
     checkpoint_dir='checkpoints',
     num_test_points=5000,
@@ -227,7 +273,7 @@ def visualize_training_evolution(
     plt.close()
 
 
-def visualize_single_model(
+def visualise_single_model(
     checkpoint_path='checkpoints/best_model.pt',
     config_path='hyperparameters.yaml',
     num_test_points=10000,
@@ -297,9 +343,9 @@ def main():
     parser.add_argument('--checkpoints', type=str, default='checkpoints',
                        help='Base directory containing checkpoint runs')
     parser.add_argument('--run-number', type=int, default=None,
-                       help='Specific run number to visualize (default: highest run number)')
+                       help='Specific run number to visualise (default: highest run number)')
     parser.add_argument('--mode', type=str, choices=['evolution', 'best', 'both'], default='both',
-                       help='Visualization mode')
+                       help='Visualisation mode')
     parser.add_argument('--points', type=int, default=5000,
                        help='Number of test points')
     parser.add_argument('--num-models', type=int, default=None,
@@ -307,7 +353,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Determine which run to visualize
+    # Determine which run to visualise
     if args.run_number is not None:
         run_number = args.run_number
     else:
@@ -325,15 +371,23 @@ def main():
     
     print(f"Using run #{run_number}")
     
-    # Set output directory to logs/run_# to match the run being visualized
+    # Set output directory to logs/run_# to match the run being visualised
     log_dir = os.path.join('logs', f'run_{run_number}')
     os.makedirs(log_dir, exist_ok=True)
+    
+    # Generate fundamental domain coloring plot
+    print("=" * 60)
+    print("Generating Fundamental Domain Coloring")
+    print("=" * 60)
+    plot_fundamental_domain_coloring(
+        output_path=os.path.join(log_dir, 'fundamental_domain.png')
+    )
     
     if args.mode in ['evolution', 'both']:
         print("=" * 60)
         print("Visualizing Training Evolution")
         print("=" * 60)
-        visualize_training_evolution(
+        visualise_training_evolution(
             config_path=args.config,
             checkpoint_dir=checkpoint_dir,
             num_test_points=args.points,
@@ -349,7 +403,7 @@ def main():
         latest_path = os.path.join(checkpoint_dir, 'latest_model.pt')
         
         if os.path.exists(best_path):
-            visualize_single_model(
+            visualise_single_model(
                 checkpoint_path=best_path,
                 config_path=args.config,
                 num_test_points=args.points * 2,
@@ -357,7 +411,7 @@ def main():
             )
         elif os.path.exists(latest_path):
             print(f"Best model not found, using latest model instead")
-            visualize_single_model(
+            visualise_single_model(
                 checkpoint_path=latest_path,
                 config_path=args.config,
                 num_test_points=args.points * 2,

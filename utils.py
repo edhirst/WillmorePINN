@@ -205,6 +205,63 @@ def plot_training_history(history_path: str = 'logs/training_history.json',
     plt.close()
 
 
+def plot_loss_curves(history: dict, output_path: str):
+    """Plot training loss curves.
+    
+    Args:
+        history: Dictionary containing training history with keys:
+                 'epoch', 'total_loss', 'willmore_energy', 'regularity'
+        output_path: Path to save the plot
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    epochs = history['epoch']
+    
+    # Plot 1: Total Loss
+    axes[0, 0].plot(epochs, history['total_loss'], 'b-', linewidth=2)
+    axes[0, 0].set_xlabel('Epoch', fontsize=12)
+    axes[0, 0].set_ylabel('Total Loss (log scale)', fontsize=12)
+    axes[0, 0].set_title('Total Loss', fontsize=14, fontweight='bold')
+    axes[0, 0].set_yscale('log')
+    axes[0, 0].grid(True, alpha=0.3, which='both')
+    
+    # Plot 2: Willmore Energy
+    axes[0, 1].plot(epochs, history['willmore_energy'], 'r-', linewidth=2)
+    axes[0, 1].set_xlabel('Epoch', fontsize=12)
+    axes[0, 1].set_ylabel('Willmore Energy (log scale)', fontsize=12)
+    axes[0, 1].set_title('Willmore Energy', fontsize=14, fontweight='bold')
+    axes[0, 1].set_yscale('log')
+    axes[0, 1].grid(True, alpha=0.3, which='both')
+    
+    # Plot 3: Regularity Loss
+    axes[1, 0].plot(epochs, history['regularity'], 'g-', linewidth=2)
+    axes[1, 0].set_xlabel('Epoch', fontsize=12)
+    axes[1, 0].set_ylabel('Regularity Loss (log scale)', fontsize=12)
+    axes[1, 0].set_title('Regularity Loss', fontsize=14, fontweight='bold')
+    axes[1, 0].set_yscale('log')
+    axes[1, 0].grid(True, alpha=0.3, which='both')
+    
+    # Plot 4: All losses together
+    axes[1, 1].plot(epochs, history['total_loss'], 'b-', linewidth=2, label='Total Loss', alpha=0.7)
+    axes[1, 1].plot(epochs, history['willmore_energy'], 'r-', linewidth=2, label='Willmore Energy', alpha=0.7)
+    axes[1, 1].plot(epochs, history['regularity'], 'g-', linewidth=2, label='Regularity', alpha=0.7)
+    axes[1, 1].set_xlabel('Epoch', fontsize=12)
+    axes[1, 1].set_ylabel('Loss (log scale)', fontsize=12)
+    axes[1, 1].set_title('All Loss Components', fontsize=14, fontweight='bold')
+    axes[1, 1].set_yscale('log')
+    axes[1, 1].legend(fontsize=10, loc='best')
+    axes[1, 1].grid(True, alpha=0.3, which='both')
+    
+    plt.tight_layout()
+    
+    # Save figure
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Loss curves saved to {output_path}")
+    
+    plt.close()
+
+
 def plot_curvature_distribution(
     model: torch.nn.Module,
     uv: torch.Tensor,

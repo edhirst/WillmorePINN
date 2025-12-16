@@ -152,14 +152,14 @@ def get_flat_torus_embedding(
     For a flat torus, we embed the parallelogram [0, 2π] × [0, 2π*τ] into R³
     by wrapping it around to form a torus. The embedding maps:
     - The u-direction (along [0, 2π]) wraps around the major circle
-    - The v-direction (along [0, 2π*τ]) wraps around the minor circle with twist
-    - Re(τ) creates a helical twist in the minor circle as we go around the major circle
+    - The v-direction (along [0, 2π*τ]) wraps around the minor circle
+    - Re(τ) creates a helical twist: the minor circle rotates as we go around the major circle
     - Im(τ) controls the minor radius
     
     Args:
         uv: Parameter coordinates (batch_size, 2) on the parallelogram domain
         tau: Complex modulus (default: 1j gives standard circular cross-section)
-             Re(τ) controls twist/shear, Im(τ) controls minor radius
+             Re(τ) controls helical twist, Im(τ) controls minor radius
     
     Returns:
         Embedding coordinates (batch_size, 3) in R³
@@ -179,22 +179,21 @@ def get_flat_torus_embedding(
     # Renormalize v to [0, 2π] for standard torus parametrization
     v_normalized = v / abs(tau_imag) if abs(tau_imag) > 1e-10 else v
     
+    # Add helical twist from Re(τ): as we go around in u, rotate the v angle
+    # This respects the parallelogram identification geometrically
+    twist_angle = tau_real * u if abs(tau_imag) > 1e-10 else 0.0
+    v_twisted = v_normalized + twist_angle
+    
     # Scale to reasonable size
     scale = 3.0  # Scaling factor for visualization
     R_scaled = scale * R
     r_scaled = scale * r
     
-    # Standard torus embedding
-    x = (R_scaled + r_scaled * torch.cos(v_normalized)) * torch.cos(u)
-    y = (R_scaled + r_scaled * torch.cos(v_normalized)) * torch.sin(u)
-    z = r_scaled * torch.sin(v_normalized)
-    
-    # Add distortion from xy-plane based on Re(τ)
-    # Creates a "tilted" or "wavy" torus that deviates from horizontal
-    # The distortion is proportional to Re(τ) and varies around the major circle
-    distortion_strength = tau_real * 0.3  # Scale factor to keep distortion reasonable
-    z_distortion = distortion_strength * torch.cos(u) * (R_scaled + r_scaled * torch.cos(v_normalized))
-    z = z + z_distortion
+    # Twisted torus embedding (symmetric about z=0)
+    # The twist causes the minor circle to rotate around as we traverse the major circle
+    x = (R_scaled + r_scaled * torch.cos(v_twisted)) * torch.cos(u)
+    y = (R_scaled + r_scaled * torch.cos(v_twisted)) * torch.sin(u)
+    z = r_scaled * torch.sin(v_twisted)
     
     return torch.stack([x, y, z], dim=1)
 

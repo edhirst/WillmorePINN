@@ -57,6 +57,9 @@ logs/**
 # Model checkpoints
 checkpoints/
 
+# Scratch/experimental scripts
+scratch/
+
 # Temporary files
 *.tmp
 *.bak

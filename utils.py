@@ -12,9 +12,37 @@ import json
 from typing import Optional, Dict
 import os
 import yaml
+import glob
+import re
 
 from model import create_embedding_model
 from sampling import sample_parameters, compute_reference_willmore_energy
+
+
+def get_next_run_number(base_dir: str, prefix: str = "run_") -> int:
+    """
+    Find the next available run number for the given prefix.
+    
+    Args:
+        base_dir: Base directory containing run folders
+        prefix: Prefix for run folders (e.g., "run_", "analytic_run_", "supervised_run_")
+    
+    Returns:
+        Next available run number (1 if no existing runs)
+    """
+    os.makedirs(base_dir, exist_ok=True)
+    existing = glob.glob(os.path.join(base_dir, f"{prefix}*"))
+    if not existing:
+        return 1
+    
+    numbers = []
+    for path in existing:
+        dirname = os.path.basename(path)
+        match = re.search(rf'{prefix}(\d+)', dirname)
+        if match:
+            numbers.append(int(match.group(1)))
+    
+    return max(numbers) + 1 if numbers else 1
 
 
 def load_checkpoint(checkpoint_path: str, config: dict, device: torch.device):

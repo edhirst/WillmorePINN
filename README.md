@@ -13,8 +13,14 @@ pip install -r environment/requirements.txt
 # Train
 python run.py
 
-# Visualize
-python visualise.py
+# Visualize training evolution
+python visualisation/visualise.py
+
+# Visualize analytical reference surfaces
+python visualisation/visualise_analytic.py --genus 1
+
+# Visualize supervised pretraining results
+python visualisation/visualise_supervised.py --genus 1
 ```
 
 ## Core Concept
@@ -31,23 +37,32 @@ where H is mean curvature computed via automatic differentiation of the embeddin
 # Basic training
 python run.py
 
-# Visualisation
-python visualise.py --mode both
+# Visualize training evolution
+python visualisation/visualise.py --mode both
+
+# Visualize analytical surfaces (genus 0, 1, or 2)
+python visualisation/visualise_analytic.py --genus 1
+
+# Train and visualize supervised pretraining
+python visualisation/visualise_supervised.py --genus 1 --points 20000
 
 # Analysis
-python utils.py --checkpoint logs/checkpoints/best_model.pt
+python utils.py --checkpoint checkpoints/run_1/best_model.pt
 ```
 
-Edit `hyperparameters.yaml` to configure model architecture, training parameters, and domain settings.
+Edit `hyperparameters.yaml` to configure model architecture, training parameters, topology (genus), and domain settings.
 
 ## Files
 
 - **`model.py`** - EmbeddingNetwork: φ(u,v)→(x,y,z) with Fourier features for periodicity
 - **`losses.py`** - Willmore energy ∫∫H²dA computed via autodiff of fundamental forms
-- **`sampling.py`** - Parameter space sampling for torus, sphere, etc.
+- **`sampling.py`** - Parameter space sampling for torus, sphere, double torus, etc.
 - **`run.py`** - Training loop with checkpointing
-- **`visualise.py`** - 3D embedding visualization
-- **`utils.py`** - Model analysis and curvature statistics
+- **`utils.py`** - Model analysis, curvature statistics, and utility functions
+- **`visualisation/`** - Visualization scripts:
+  - `visualise.py` - Training evolution visualization
+  - `visualise_analytic.py` - Analytical reference surface visualization
+  - `visualise_supervised.py` - Supervised pretraining visualization
 
 ## Theory
 

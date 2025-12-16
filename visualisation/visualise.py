@@ -5,17 +5,22 @@ Plots 3D embeddings at different checkpoints to show how the surface
 evolves toward the Willmore-optimal geometry.
 """
 
+import sys
+import os
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import yaml
-import os
 import glob
 from pathlib import Path
 
 from model import create_embedding_model
-from sampling import sample_parameters
+from sampling import sample_parameters, get_domain_for_genus
+from utils import get_next_run_number
 
 
 def load_checkpoint_model(checkpoint_path, config, device):
@@ -162,8 +167,6 @@ def visualise_training_evolution(
     topology_config = config.get("topology", {})
     genus = topology_config.get("genus", 1)
     
-    # Import get_domain_for_genus
-    from sampling import get_domain_for_genus
     domain = get_domain_for_genus(genus)
     
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
@@ -347,10 +350,16 @@ def main():
     """Main visualization function."""
     import argparse
     
+    # Default paths relative to parent directory (project root)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    default_config = os.path.join(project_root, 'hyperparameters.yaml')
+    default_checkpoints = os.path.join(project_root, 'checkpoints')
+    
     parser = argparse.ArgumentParser(description="Visualize learned embeddings")
-    parser.add_argument('--config', type=str, default='hyperparameters.yaml',
+    parser.add_argument('--config', type=str, default=default_config,
                        help='Path to configuration file')
-    parser.add_argument('--checkpoints', type=str, default='checkpoints',
+    parser.add_argument('--checkpoints', type=str, default=default_checkpoints,
                        help='Base directory containing checkpoint runs')
     parser.add_argument('--run-number', type=int, default=None,
                        help='Specific run number to visualise (default: highest run number)')
@@ -382,7 +391,7 @@ def main():
     print(f"Using run #{run_number}")
     
     # Set output directory to logs/run_# to match the run being visualised
-    log_dir = os.path.join('logs', f'run_{run_number}')
+    log_dir = os.path.join(project_root, 'logs', f'run_{run_number}')
     os.makedirs(log_dir, exist_ok=True)
     
     # Generate fundamental domain coloring plot

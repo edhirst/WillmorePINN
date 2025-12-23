@@ -215,47 +215,52 @@ def train_epoch(
     return epoch_losses
 
 
-def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] = None):
+def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] = None, config_dict: Optional[dict] = None):
     """Main training loop."""
-    
     # Load configuration
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
+    if config_dict is not None:
+        config = config_dict
+    else:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
     # Set random seed
     seed = config.get("seed", 42)
     torch.manual_seed(seed)
     np.random.seed(seed)
-    
+
     # Get device
     device = get_device(config)
     dtype = torch.float32 if config.get("dtype", "float32") == "float32" else torch.float64
-    
+
     # Get topology configuration
     topology_config = config.get("topology", {})
     genus = topology_config.get("genus", 1)  # Default to torus for backward compatibility
-    
+
+    # Print genus being used
+    print(f"[INFO] Using genus: {genus}")
+
     # Validate genus
     if genus < 0:
         raise ValueError(f"Genus must be non-negative, got {genus}")
     if genus > 2:
         raise NotImplementedError(f"Genus {genus} is not supported. Only genus 0, 1, 2 are implemented.")
-    
+
     # Get domain from genus
     domain = get_domain_for_genus(genus)
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
-    
+
     print(f"\n{'='*60}")
     print(f"Willmore Energy Minimization - Genus {genus} ({genus_names.get(genus, 'unknown')})")
     print(f"{'='*60}")
-    
+
     # Create model
     model = create_embedding_model(config, device)
-    
+
     # Create loss function
     loss_fn = create_embedding_loss(config)
     loss_fn = loss_fn.to(device)
-    
+
     # Create optimizer
     optimizer_config = config.get("optimizer", {})
     optimizer_type = optimizer_config.get("type", "adam").lower()
@@ -552,11 +557,26 @@ def main():
         default=None,
         help="Path to checkpoint to resume from"
     )
-    
+    parser.add_argument(
+        "--genus",
+        type=int,
+        default=None,
+        help="Override genus from config file (0=sphere, 1=torus, 2=double torus)"
+    )
+
     args = parser.parse_args()
-    
-    # Run training
-    train(config_path=args.config, resume_from=args.resume)
+
+    # If genus is provided, override genus in config before training
+    if args.genus is not None:
+        with open(args.config, 'r') as f:
+            config = yaml.safe_load(f)
+        if 'topology' not in config:
+            config['topology'] = {}
+        config['topology']['genus'] = args.genus
+        print(f"[INFO] Overriding genus from command line: genus = {args.genus}")
+        train(config_dict=config, resume_from=args.resume)
+    else:
+        train(config_path=args.config, resume_from=args.resume)
 
 
 if __name__ == "__main__":

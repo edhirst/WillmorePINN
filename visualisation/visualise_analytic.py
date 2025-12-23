@@ -52,7 +52,7 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1):
     if genus == 0:
         period = np.pi  # v goes from 0 to π for ellipsoid
     elif genus == 2:
-        period = 4 * np.pi  # v goes from 0 to 4π for double torus
+        period = 5 * np.pi  # v goes from 0 to 5π for double torus
     else:
         period = 2 * np.pi  # v goes from 0 to 2π for torus
     
@@ -84,15 +84,27 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1):
     ax.set_zlim(mid_z - max_range, mid_z + max_range)
 
 
-def plot_fundamental_domain_coloring(ax, genus=1, num_points=100):
-    """Plot the fundamental domain with the periodic coloring."""
+def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=1j, neck_radius=0.3):
+    """Plot the fundamental domain with the periodic coloring.
+    
+    For genus 2, draws 2 parallelogram domains (one per torus) with the neck region indicated.
+    
+    Args:
+        ax: Matplotlib axes
+        genus: Surface genus (0, 1, or 2)
+        num_points: Grid resolution for genus 0/1
+        tau1, tau2: Complex modular parameters for genus 2 tori
+        neck_radius: Neck radius for genus 2
+    """
+    if genus == 2:
+        # Draw two parallelograms for connected sum T² # T²
+        plot_connected_sum_domain(ax, tau1=tau1, tau2=tau2, neck_radius=neck_radius)
+        return
+    
     # Domain depends on genus
     if genus == 0:
         u_max, v_max = 2 * np.pi, np.pi
         v_label = 'π'
-    elif genus == 2:
-        u_max, v_max = 2 * np.pi, 4 * np.pi
-        v_label = '4π'
     else:
         u_max, v_max = 2 * np.pi, 2 * np.pi
         v_label = '2π'
@@ -116,12 +128,109 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100):
     ax.imshow(colors, extent=[0, u_max, 0, v_max], origin='lower', aspect='auto')
     ax.set_xlabel('u')
     ax.set_ylabel('v')
-    ax.set_title(f'Fundamental Domain (Genus {genus})\n(Rainbow gradient in v)', fontsize=10)
+    ax.set_title(f'Fundamental Domain (Genus {genus})', fontsize=10)
+    
     ax.set_xticks([0, np.pi, 2*np.pi])
     ax.set_xticklabels(['0', 'π', '2π'])
     ax.set_yticks([0, v_max/2, v_max])
     ax.set_yticklabels(['0', f'{v_label}/2', v_label])
 
+
+def plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3, num_points=100):
+    """
+    Draw the fundamental domain for connected sum T² # T².
+    
+    Three regions stacked vertically:
+        - v ∈ [0, 2π): Torus 1 (parallelogram with shear from Re(τ₁))
+        - v ∈ [2π, 3π): Catenoid bridge
+        - v ∈ [3π, 4π): Torus 2 (parallelogram with shear from Re(τ₂))
+    
+    Domain: u ∈ [0, 2π], v ∈ [0, 4π]
+    
+    Coloring is continuous across boundaries (matching colors where regions join).
+    """
+    from matplotlib.patches import Polygon, FancyArrowPatch
+    from matplotlib.collections import PatchCollection
+    import matplotlib.colors as mcolors
+    
+    # Parse complex parameters
+    if isinstance(tau1, (int, float)):
+        tau1 = complex(0, float(tau1))
+    if isinstance(tau2, (int, float)):
+        tau2 = complex(0, float(tau2))
+    
+    tau1_re, tau1_im = tau1.real, max(tau1.imag, 0.3)
+    tau2_re, tau2_im = tau2.real, max(tau2.imag, 0.3)
+    
+    # Create colored grid for the full domain
+    u = np.linspace(0, 2*np.pi, num_points)
+    v = np.linspace(0, 5*np.pi, num_points)
+    U, V = np.meshgrid(u, v)
+    # Use the same HSV mapping as the 3D plot: v in [0, 5π], period=5π
+    v_norm = (V % (5 * np.pi)) / (5 * np.pi)
+    hue = v_norm
+    h = hue * 6.0
+    x = 1.0 - np.abs(h % 2.0 - 1.0)
+    R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
+    G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
+    B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
+    colors = np.stack([R, G, B], axis=-1)
+    # Display the colored domain
+    ax.imshow(colors, extent=[0, 2*np.pi, 0, 5*np.pi], origin='lower', aspect='auto')
+    
+    # Draw boundaries between regions
+    # T1 -> Catenoid boundary at v = 2π
+    ax.axhline(y=2*np.pi, color='white', linewidth=2, linestyle='-')
+    ax.axhline(y=2*np.pi, color='black', linewidth=1, linestyle='--')
+    
+    # Catenoid -> T2 boundary at v = 3π
+    ax.axhline(y=3*np.pi, color='white', linewidth=2, linestyle='-')
+    ax.axhline(y=3*np.pi, color='black', linewidth=1, linestyle='--')
+    
+    # Add labels for each region
+    ax.text(np.pi, np.pi, f'Torus 1\nτ₁ = {tau1_re:.1f}+{tau1_im:.1f}i', 
+            ha='center', va='center', fontsize=9, fontweight='bold',
+            color='white', bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+    ax.text(np.pi, 2.5*np.pi, 'Catenoid', 
+            ha='center', va='center', fontsize=9, fontweight='bold',
+            color='white', bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+    ax.text(np.pi, 4*np.pi, f'Torus 2\nτ₂ = {tau2_re:.1f}+{tau2_im:.1f}i', 
+            ha='center', va='center', fontsize=9, fontweight='bold',
+            color='white', bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
+    
+    # Draw parallelogram outlines showing the shear from Re(τ)
+    shear1 = tau1_re * 0.3  # Scale shear for visibility
+    shear2 = tau2_re * 0.3
+    
+    # Parallelogram edges for torus 1 (showing shear)
+    if abs(shear1) > 0.01:
+        ax.plot([0, shear1], [0, 2*np.pi], 'w-', linewidth=1.5, alpha=0.7)
+        ax.plot([2*np.pi, 2*np.pi + shear1], [0, 2*np.pi], 'w-', linewidth=1.5, alpha=0.7)
+        ax.annotate('', xy=(shear1/2, np.pi), xytext=(0, np.pi),
+                   arrowprops=dict(arrowstyle='->', color='white', lw=1.5))
+        ax.text(shear1/4, np.pi + 0.3, f'Re(τ₁)={tau1_re:.1f}', fontsize=7, color='white')
+    
+    # Parallelogram edges for torus 2 (showing shear) - T2 at v ∈ [3π, 5π)
+    if abs(shear2) > 0.01:
+        ax.plot([0, shear2], [3*np.pi, 5*np.pi], 'w-', linewidth=1.5, alpha=0.7)
+        ax.plot([2*np.pi, 2*np.pi + shear2], [3*np.pi, 5*np.pi], 'w-', linewidth=1.5, alpha=0.7)
+        ax.annotate('', xy=(shear2/2, 4*np.pi), xytext=(0, 4*np.pi),
+                   arrowprops=dict(arrowstyle='->', color='white', lw=1.5))
+        ax.text(shear2/4, 4*np.pi + 0.3, f'Re(τ₂)={tau2_re:.1f}', fontsize=7, color='white')
+    
+    # Axis setup
+    ax.set_xlabel('u')
+    ax.set_ylabel('v')
+    ax.set_title('Three-Region Domain: T₁ + Catenoid + T₂', fontsize=10)
+    
+    ax.set_xlim(-0.5, 2*np.pi + 0.8)
+    ax.set_ylim(-0.3, 5*np.pi + 0.3)
+    
+    ax.set_xticks([0, np.pi, 2*np.pi])
+    ax.set_xticklabels(['0', 'π', '2π'])
+    ax.set_yticks([0, np.pi, 2*np.pi, 3*np.pi, 4*np.pi, 5*np.pi])
+    ax.set_yticklabels(['0', 'π', '2π', '3π', '4π', '5π'])
+    
 
 def visualise_analytic_genus0(output_dir: str, num_points: int = 10000, config_path: str = None):
     """Visualize analytic ellipsoid embeddings (genus 0) for different semi-axes."""
@@ -154,7 +263,7 @@ def visualise_analytic_genus0(output_dir: str, num_points: int = 10000, config_p
         plot_surface_3d(ax, xyz, uv, cfg['label'], genus=0)
     
     plt.tight_layout()
-    output_path = os.path.join(output_dir, 'analytic_genus0_ellipsoids.png')
+    output_path = os.path.join(output_dir, 'analytic_genus0.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"Saved genus 0 (ellipsoid) visualisation to {output_path}")
     plt.close()
@@ -189,35 +298,66 @@ def visualise_analytic_genus1(output_dir: str, num_points: int = 10000, config_p
         plot_surface_3d(ax, xyz, uv, label, genus=1)
     
     plt.tight_layout()
-    output_path = os.path.join(output_dir, 'analytic_genus1_tori.png')
+    output_path = os.path.join(output_dir, 'analytic_genus1.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"Saved genus 1 (torus) visualisation to {output_path}")
     plt.close()
 
 
 def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_path: str = None):
-    """Visualize analytic double torus embeddings (genus 2) for different parameters."""
+    """Visualize analytic double torus embeddings (genus 2).
+    
+    Two independent tori connected by a catenoid bridge.
+    
+    Parameters:
+    - τ₁, τ₂ ∈ ℂ: modular parameters of each torus
+    - neck_length > 0: length of catenoid bridge
+    - neck_twist ∈ ℝ: twist at bridge (placeholder)
+    
+    Three fundamental domains: T1 parallelogram, catenoid rectangle, T2 parallelogram.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float32
     
-    # Different double torus configurations with quantitative labels
+    # Different configurations showing parameter variations
+    # Use distinct parameters to show visible differences:
+    # - Im(τ) controls tube thickness (larger → thinner tube, r ~ exp(-k*Im(τ)))
+    # - Re(τ) controls helical twist (shear of fundamental domain)
+    # - bridge_radius controls the catenoid neck narrowness
     dt_configs = [
-        {'torus_separation': 3.0, 'torus_major_radius': 1.5, 'torus_minor_radius': 0.6, 
-         'bridge_radius': 0.4, 'bridge_length': 1.0, 'label': 'R=1.5, r=0.6, sep=3'},
-        {'torus_separation': 2.5, 'torus_major_radius': 1.2, 'torus_minor_radius': 0.5, 
-         'bridge_radius': 0.3, 'bridge_length': 0.8, 'label': 'R=1.2, r=0.5, sep=2.5'},
-        {'torus_separation': 4.0, 'torus_major_radius': 1.8, 'torus_minor_radius': 0.7, 
-         'bridge_radius': 0.5, 'bridge_length': 1.5, 'label': 'R=1.8, r=0.7, sep=4'},
-        {'torus_separation': 3.0, 'torus_major_radius': 1.5, 'torus_minor_radius': 0.4, 
-         'bridge_radius': 0.35, 'bridge_length': 1.2, 'label': 'R=1.5, r=0.4, sep=3'},
-        {'torus_separation': 3.5, 'torus_major_radius': 2.0, 'torus_minor_radius': 0.8, 
-         'bridge_radius': 0.6, 'bridge_length': 1.0, 'label': 'R=2, r=0.8, sep=3.5'},
+        # Config 1: Standard symmetric double torus
+        {'tau1': {'real': 0.0, 'imag': 1.0}, 'tau2': {'real': 0.0, 'imag': 1.0},
+         'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2,
+         'label': 'τ₁=τ₂=i (symmetric)'},
+        # Config 2: Asymmetric tube thicknesses (T1 thicker, T2 thinner)
+        {'tau1': {'real': 0.0, 'imag': 0.5}, 'tau2': {'real': 0.0, 'imag': 2.0},
+         'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2,
+         'label': 'τ₁=0.5i (thick), τ₂=2i (thin)'},
+        # Config 3: Opposite twists on each torus
+        {'tau1': {'real': 0.5, 'imag': 1.0}, 'tau2': {'real': -0.5, 'imag': 1.0},
+         'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2,
+         'label': 'τ₁=0.5+i, τ₂=-0.5+i (twisted)'},
+        # Config 4: Strong twist on T1 only
+        {'tau1': {'real': 1.0, 'imag': 0.8}, 'tau2': {'real': 0.0, 'imag': 1.2},
+         'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2,
+         'label': 'τ₁=1+0.8i (strong twist)'},
+        # Config 5: Narrow neck catenoid
+        {'tau1': {'real': 0.0, 'imag': 0.7}, 'tau2': {'real': 0.0, 'imag': 0.7},
+         'bridge_radius': 0.12, 'neck_twist': 0.0, 'scale': 1.2,
+         'label': 'bridge_radius=0.12 (narrow)'},
     ]
     
     fig = plt.figure(figsize=(15, 10))
     
+    # Use first config for the fundamental domain plot
+    first_cfg = dt_configs[0]
+    tau1 = complex(first_cfg['tau1']['real'], first_cfg['tau1']['imag'])
+    tau2 = complex(first_cfg['tau2']['real'], first_cfg['tau2']['imag'])
+    
     ax_domain = fig.add_subplot(2, 3, 1)
-    plot_fundamental_domain_coloring(ax_domain, genus=2)
+    plot_fundamental_domain_coloring(ax_domain, genus=2, 
+                                     tau1=tau1, tau2=tau2,
+                                     neck_radius=0.3)  # Legacy param name for domain plot
     
     for idx, cfg in enumerate(dt_configs):
         label = cfg.pop('label')
@@ -232,7 +372,7 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
         cfg['label'] = label  # Restore for summary
     
     plt.tight_layout()
-    output_path = os.path.join(output_dir, 'analytic_genus2_double_tori.png')
+    output_path = os.path.join(output_dir, 'analytic_genus2.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"Saved genus 2 (double torus) visualisation to {output_path}")
     plt.close()

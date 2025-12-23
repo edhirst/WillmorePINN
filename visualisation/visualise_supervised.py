@@ -1,25 +1,36 @@
+
 """
 Train and visualise surface embeddings after supervised pretraining for different genus values.
-
-This script trains surfaces with supervised pretraining only (fast), then generates visualizations.
 """
+
+# =====================
+# Hyperparameters
+# =====================
+DEFAULT_NUM_EPOCHS = 100
+DEFAULT_NUM_POINTS_PER_EPOCH = 5000
+DEFAULT_BATCH_SIZE = 512
+DEFAULT_LEARNING_RATE = 1e-3
+FIGSIZE = (15, 10)
+
+# =====================
+# Imports and Setup
+# =====================
 
 import sys
 import os
-# Add parent directory to path
+# Ensure parent directory is in sys.path for module imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 import yaml
 import copy
 from pathlib import Path
-
+from mpl_toolkits.mplot3d import Axes3D
 from model import create_embedding_model
-from sampling import sample_parameters, get_domain_for_genus
+from sampling import sample_parameters, get_domain_for_genus, get_reference_embedding
 from utils import get_next_run_number
+from visualise_analytic import plot_fundamental_domain_coloring as analytic_domain
 
 
 def hsv_to_rgb_colors(values: np.ndarray, period: float = 2 * np.pi) -> np.ndarray:
@@ -48,14 +59,19 @@ def hsv_to_rgb_colors(values: np.ndarray, period: float = 2 * np.pi) -> np.ndarr
 
 
 def plot_fundamental_domain_coloring(ax, genus=1, num_points=100):
-    """Plot the fundamental domain with the periodic coloring."""
+    """Plot the fundamental domain with the periodic coloring.
+    
+    For genus 2, draws the Fenchel-Nielsen fundamental domain (4 hexagons).
+    """
+    if genus == 2:
+        # For genus 2, always use the analytic domain plot
+        analytic_domain(ax, genus=2, num_points=num_points)
+        return
+    
     # Domain depends on genus
     if genus == 0:
         u_max, v_max = 2 * np.pi, np.pi
         v_label = 'π'
-    elif genus == 2:
-        u_max, v_max = 2 * np.pi, 4 * np.pi
-        v_label = '4π'
     else:
         u_max, v_max = 2 * np.pi, 2 * np.pi
         v_label = '2π'
@@ -79,40 +95,28 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100):
     ax.imshow(colors, extent=[0, u_max, 0, v_max], origin='lower', aspect='auto')
     ax.set_xlabel('u')
     ax.set_ylabel('v')
-    ax.set_title(f'Fundamental Domain (Genus {genus})\n(Rainbow gradient in v)', fontsize=10)
+    ax.set_title(f'Fundamental Domain (Genus {genus})', fontsize=10)
     ax.set_xticks([0, np.pi, 2*np.pi])
     ax.set_xticklabels(['0', 'π', '2π'])
     ax.set_yticks([0, v_max/2, v_max])
     ax.set_yticklabels(['0', f'{v_label}/2', v_label])
+    if genus == 2:
+        # Import and call the analytic domain plot for double torus
+        from visualise_analytic import plot_fundamental_domain_coloring as analytic_domain
+        analytic_domain(ax, genus=2, num_points=num_points)
+        return
 
 
-def train_surface(config: dict, label: str, output_dir: str, device: torch.device) -> str:
-    """
-    Train a single surface with supervised pretraining.
-    
-    Returns:
-        Path to saved model checkpoint
-    """
-    print(f"\n{'='*60}")
-    print(f"Training: {label}")
-    print(f"{'='*60}\n")
-    
-    # Create model with supervised pretraining
-    model = create_embedding_model(config, device, skip_init=False)
-    
-    # Generate safe filename from label
-    safe_label = label.replace(" ", "_").replace("=", "_").replace("+", "_").replace(".", "_").replace(",", "_")
-    model_path = os.path.join(output_dir, f'model_{safe_label}.pt')
-    
-    checkpoint = {
-        'model_state_dict': model.state_dict(),
-        'config': config,
-        'label': label
-    }
-    torch.save(checkpoint, model_path)
-    print(f"Saved model to {model_path}\n")
-    
-    return model_path
+def train_surface(model, optimizer, uv, xyz_target, num_epochs):
+    """Train model(uv) to xyz_target for num_epochs."""
+    for epoch in range(num_epochs):
+        model.train()
+        optimizer.zero_grad()
+        pred = model(uv)
+        loss = torch.nn.functional.mse_loss(pred, xyz_target)
+        loss.backward()
+        optimizer.step()
+    return model
 
 
 def load_model_from_checkpoint(checkpoint_path: str, device: torch.device):
@@ -128,45 +132,32 @@ def load_model_from_checkpoint(checkpoint_path: str, device: torch.device):
     return model, config, label
 
 
-def plot_surface_3d(ax, model, num_points: int, domain: str, genus: int,
-                    device: torch.device, title: str, alpha: float = 0.7):
-    """Plot a surface in 3D."""
-    uv = sample_parameters(num_points, domain, device, torch.float32)
-    
-    with torch.no_grad():
-        xyz = model(uv).cpu().numpy()
-    
-    uv_np = uv.cpu().numpy()
+
+def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.7):
+    """Plot a 3D surface with coloring."""
+    xyz_np = xyz.detach().cpu().numpy() if torch.is_tensor(xyz) else xyz
+    uv_np = uv.cpu().numpy() if torch.is_tensor(uv) else uv
     v = uv_np[:, 1]
-    
-    # Determine period based on genus
     if genus == 0:
         period = np.pi
     elif genus == 2:
-        period = 4 * np.pi
+        period = 5 * np.pi
     else:
         period = 2 * np.pi
-    
     colors = hsv_to_rgb_colors(v, period)
-    
-    ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=colors, alpha=alpha, s=2)
-    
+    ax.scatter(xyz_np[:, 0], xyz_np[:, 1], xyz_np[:, 2], c=colors, alpha=alpha, s=2)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
     ax.set_title(title, fontsize=10)
-    
-    # Equal aspect ratio
     max_range = np.array([
-        xyz[:, 0].max() - xyz[:, 0].min(),
-        xyz[:, 1].max() - xyz[:, 1].min(),
-        xyz[:, 2].max() - xyz[:, 2].min()
+        xyz_np[:, 0].max() - xyz_np[:, 0].min(),
+        xyz_np[:, 1].max() - xyz_np[:, 1].min(),
+        xyz_np[:, 2].max() - xyz_np[:, 2].min()
     ]).max() / 2.0
-    
-    mid_x = (xyz[:, 0].max() + xyz[:, 0].min()) * 0.5
-    mid_y = (xyz[:, 1].max() + xyz[:, 1].min()) * 0.5
-    mid_z = (xyz[:, 2].max() + xyz[:, 2].min()) * 0.5
-    
+    mid_x = (xyz_np[:, 0].max() + xyz_np[:, 0].min()) * 0.5
+    mid_y = (xyz_np[:, 1].max() + xyz_np[:, 1].min()) * 0.5
+    mid_z = (xyz_np[:, 2].max() + xyz_np[:, 2].min()) * 0.5
     ax.set_xlim(mid_x - max_range, mid_x + max_range)
     ax.set_ylim(mid_y - max_range, mid_y + max_range)
     ax.set_zlim(mid_z - max_range, mid_z + max_range)
@@ -186,19 +177,25 @@ def visualise_supervised_genus0(output_dir: str, num_points: int, config_path: s
         {'a': 2.0, 'b': 0.8, 'c': 0.8, 'label': 'a=2, b=0.8, c=0.8'},
     ]
     
-    # Configure for supervised pretraining
     model_paths = []
     for cfg in ellipsoid_configs:
         config = copy.deepcopy(base_config)
         config['topology'] = config.get('topology', {})
         config['topology']['genus'] = 0
         config['topology']['ellipsoid'] = {'a': cfg['a'], 'b': cfg['b'], 'c': cfg['c']}
-        config['model']['supervised_pretraining']['num_epochs'] = 100
-        config['model']['supervised_pretraining']['num_points_per_epoch'] = 5000
-        config['model']['supervised_pretraining']['batch_size'] = 512
-        
-        model_path = train_surface(config, f"genus0_{cfg['label']}", output_dir, device)
-        model_paths.append((model_path, cfg['label']))
+        config['model']['supervised_pretraining']['num_epochs'] = DEFAULT_NUM_EPOCHS
+        config['model']['supervised_pretraining']['num_points_per_epoch'] = DEFAULT_NUM_POINTS_PER_EPOCH
+        config['model']['supervised_pretraining']['batch_size'] = DEFAULT_BATCH_SIZE
+        model = create_embedding_model(config, device, skip_init=False)
+        uv = sample_parameters(num_points, domain="ellipsoid", device=device, dtype=torch.float32)
+        with torch.no_grad():
+            xyz_target = get_reference_embedding(uv, genus=0, topology_params={'ellipsoid': cfg})
+        optimizer = torch.optim.Adam(model.parameters(), lr=DEFAULT_LEARNING_RATE)
+        model = train_surface(model, optimizer, uv, xyz_target, DEFAULT_NUM_EPOCHS)
+        safe_label = cfg['label'].replace(" ", "_").replace("=", "_").replace("+", "_").replace(".", "_").replace(",", "_")
+        model_path = os.path.join(output_dir, f'model_genus0_{safe_label}.pt')
+        torch.save({'model_state_dict': model.state_dict(), 'config': config, 'label': cfg['label']}, model_path)
+        model_paths.append((model_path, cfg['label'], uv))
     
     # Visualize with fundamental domain
     fig = plt.figure(figsize=(15, 10))
@@ -207,14 +204,16 @@ def visualise_supervised_genus0(output_dir: str, num_points: int, config_path: s
     ax_domain = fig.add_subplot(2, 3, 1)
     plot_fundamental_domain_coloring(ax_domain, genus=0)
     
-    for idx, (model_path, label) in enumerate(model_paths):
+    for idx, (model_path, label, uv) in enumerate(model_paths):
         model, config, _ = load_model_from_checkpoint(model_path, device)
+        with torch.no_grad():
+            xyz_pred = model(uv).cpu()
         ax = fig.add_subplot(2, 3, idx + 2, projection='3d')
-        plot_surface_3d(ax, model, num_points, 'ellipsoid', 0, device, label)
+        plot_surface_3d(ax, xyz_pred, uv, label, genus=0)
         ax.view_init(elev=20, azim=45)
     
     plt.tight_layout()
-    output_path = os.path.join(output_dir, 'supervised_genus0_comparison.png')
+    output_path = os.path.join(output_dir, 'supervised_genus0.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\nSaved genus 0 comparison to {output_path}")
     plt.close()
@@ -240,15 +239,19 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
         config['topology']['genus'] = 1
         config['topology']['torus'] = config['topology'].get('torus', {})
         config['topology']['torus']['tau'] = tau_str
-        config['sampling'] = config.get('sampling', {})
-        config['sampling']['domain_params'] = config['sampling'].get('domain_params', {})
-        config['sampling']['domain_params']['tau'] = tau_str
-        config['model']['supervised_pretraining']['num_epochs'] = 100
-        config['model']['supervised_pretraining']['num_points_per_epoch'] = 5000
-        config['model']['supervised_pretraining']['batch_size'] = 512
-        
-        model_path = train_surface(config, f"genus1_{label}", output_dir, device)
-        model_paths.append((model_path, label, tau_str))
+        config['model']['supervised_pretraining']['num_epochs'] = DEFAULT_NUM_EPOCHS
+        config['model']['supervised_pretraining']['num_points_per_epoch'] = DEFAULT_NUM_POINTS_PER_EPOCH
+        config['model']['supervised_pretraining']['batch_size'] = DEFAULT_BATCH_SIZE
+        model = create_embedding_model(config, device, skip_init=False)
+        uv = sample_parameters(num_points, domain="torus", device=device, dtype=torch.float32)
+        with torch.no_grad():
+            xyz_target = get_reference_embedding(uv, domain="torus", tau=complex(tau_str.replace('i', 'j')))
+        optimizer = torch.optim.Adam(model.parameters(), lr=DEFAULT_LEARNING_RATE)
+        model = train_surface(model, optimizer, uv, xyz_target, DEFAULT_NUM_EPOCHS)
+        safe_label = label.replace(" ", "_").replace("=", "_").replace("+", "_").replace(".", "_").replace(",", "_")
+        model_path = os.path.join(output_dir, f'model_genus1_{safe_label}.pt')
+        torch.save({'model_state_dict': model.state_dict(), 'config': config, 'label': label}, model_path)
+        model_paths.append((model_path, label, uv))
     
     # Visualize with fundamental domain
     fig = plt.figure(figsize=(15, 10))
@@ -257,68 +260,77 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
     ax_domain = fig.add_subplot(2, 3, 1)
     plot_fundamental_domain_coloring(ax_domain, genus=1)
     
-    for idx, (model_path, label, tau_str) in enumerate(model_paths):
+    for idx, (model_path, label, uv) in enumerate(model_paths):
         model, config, _ = load_model_from_checkpoint(model_path, device)
+        with torch.no_grad():
+            xyz_pred = model(uv).cpu()
         ax = fig.add_subplot(2, 3, idx + 2, projection='3d')
-        plot_surface_3d(ax, model, num_points, 'torus', 1, device, label)
+        plot_surface_3d(ax, xyz_pred, uv, label, genus=1)
         ax.view_init(elev=20, azim=45)
     
     plt.tight_layout()
-    output_path = os.path.join(output_dir, 'supervised_genus1_comparison.png')
+    output_path = os.path.join(output_dir, 'supervised_genus1.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\nSaved genus 1 comparison to {output_path}")
     plt.close()
 
 
 def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: str, device: torch.device):
-    """Train and visualize supervised double torus embeddings (genus 2)."""
-    with open(config_path, 'r') as f:
-        base_config = yaml.safe_load(f)
+    """Train and visualize supervised double torus embeddings (genus 2).
     
-    # Quantitative labels based on hyperparams
+    Uses Fenchel-Nielsen coordinates:
+    - l₁, l₂, l₃ > 0: lengths of the 3 gluing geodesics
+    - τ₁, τ₂, τ₃ ∈ ℝ: twist parameters
+    
+    The fundamental domain is 4 right-angled hexagons (2 per pair of pants).
+    """
+    # Use the same configs as analytic for demonstration
+    # Use the same configs as analytic script
     dt_configs = [
-        {'torus_separation': 3.0, 'torus_major_radius': 1.5, 'torus_minor_radius': 0.6,
-         'bridge_radius': 0.4, 'bridge_length': 1.0, 'label': 'R=1.5, r=0.6, sep=3'},
-        {'torus_separation': 2.5, 'torus_major_radius': 1.2, 'torus_minor_radius': 0.5,
-         'bridge_radius': 0.3, 'bridge_length': 0.8, 'label': 'R=1.2, r=0.5, sep=2.5'},
-        {'torus_separation': 4.0, 'torus_major_radius': 1.8, 'torus_minor_radius': 0.7,
-         'bridge_radius': 0.5, 'bridge_length': 1.5, 'label': 'R=1.8, r=0.7, sep=4'},
-        {'torus_separation': 3.0, 'torus_major_radius': 1.5, 'torus_minor_radius': 0.4,
-         'bridge_radius': 0.35, 'bridge_length': 1.2, 'label': 'R=1.5, r=0.4, sep=3'},
-        {'torus_separation': 3.5, 'torus_major_radius': 2.0, 'torus_minor_radius': 0.8,
-         'bridge_radius': 0.6, 'bridge_length': 1.0, 'label': 'R=2, r=0.8, sep=3.5'},
+        {'tau1': {'real': 0.0, 'imag': 1.0}, 'tau2': {'real': 0.0, 'imag': 1.0}, 'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'τ₁=τ₂=i (symmetric)'},
+        {'tau1': {'real': 0.0, 'imag': 0.5}, 'tau2': {'real': 0.0, 'imag': 2.0}, 'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'τ₁=0.5i (thick), τ₂=2i (thin)'},
+        {'tau1': {'real': 0.5, 'imag': 1.0}, 'tau2': {'real': -0.5, 'imag': 1.0}, 'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'τ₁=0.5+i, τ₂=-0.5+i (twisted)'},
+        {'tau1': {'real': 1.0, 'imag': 0.8}, 'tau2': {'real': 0.0, 'imag': 1.2}, 'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'τ₁=1+0.8i (strong twist)'},
+        {'tau1': {'real': 0.0, 'imag': 0.7}, 'tau2': {'real': 0.0, 'imag': 0.7}, 'bridge_radius': 0.12, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'bridge_radius=0.12 (narrow)'},
     ]
-    
     model_paths = []
     for cfg in dt_configs:
-        label = cfg.pop('label')
-        config = copy.deepcopy(base_config)
+        label = cfg['label']
+        topology_params = {'double_torus': {k: v for k, v in cfg.items() if k != 'label'}}
+        uv = sample_parameters(num_points, domain="double_torus", device=device, dtype=torch.float32)
+        with torch.no_grad():
+            xyz_target = get_reference_embedding(uv, genus=2, topology_params=topology_params)
+        config = yaml.safe_load(open(config_path, 'r'))
         config['topology'] = config.get('topology', {})
         config['topology']['genus'] = 2
-        config['topology']['double_torus'] = cfg.copy()
-        config['model']['supervised_pretraining']['num_epochs'] = 100
-        config['model']['supervised_pretraining']['num_points_per_epoch'] = 5000
-        config['model']['supervised_pretraining']['batch_size'] = 512
-        
-        model_path = train_surface(config, f"genus2_{label}", output_dir, device)
-        model_paths.append((model_path, label))
-        cfg['label'] = label  # Restore
-    
+        config['topology']['double_torus'] = {k: v for k, v in cfg.items() if k != 'label'}
+        config['model']['supervised_pretraining']['num_epochs'] = DEFAULT_NUM_EPOCHS
+        config['model']['supervised_pretraining']['num_points_per_epoch'] = DEFAULT_NUM_POINTS_PER_EPOCH
+        config['model']['supervised_pretraining']['batch_size'] = DEFAULT_BATCH_SIZE
+        model = create_embedding_model(config, device, skip_init=False)
+        optimizer = torch.optim.Adam(model.parameters(), lr=DEFAULT_LEARNING_RATE)
+        model = train_surface(model, optimizer, uv, xyz_target, DEFAULT_NUM_EPOCHS)
+        safe_label = label.replace(" ", "_").replace("=", "_").replace("+", "_").replace(".", "_").replace(",", "_")
+        model_path = os.path.join(output_dir, f'model_genus2_{safe_label}.pt')
+        torch.save({'model_state_dict': model.state_dict(), 'config': config, 'label': label}, model_path)
+        model_paths.append((model_path, label, uv))
     # Visualize with fundamental domain
     fig = plt.figure(figsize=(15, 10))
-    
     # Add fundamental domain coloring first
     ax_domain = fig.add_subplot(2, 3, 1)
-    plot_fundamental_domain_coloring(ax_domain, genus=2)
-    
-    for idx, (model_path, label) in enumerate(model_paths):
+    first_cfg = dt_configs[0]
+    tau1 = complex(first_cfg['tau1']['real'], first_cfg['tau1']['imag'])
+    tau2 = complex(first_cfg['tau2']['real'], first_cfg['tau2']['imag'])
+    analytic_domain(ax_domain, genus=2, tau1=tau1, tau2=tau2, neck_radius=0.3)
+    for idx, (model_path, label, uv) in enumerate(model_paths):
         model, config, _ = load_model_from_checkpoint(model_path, device)
+        with torch.no_grad():
+            xyz_pred = model(uv).cpu()
         ax = fig.add_subplot(2, 3, idx + 2, projection='3d')
-        plot_surface_3d(ax, model, num_points, 'double_torus', 2, device, label)
+        plot_surface_3d(ax, xyz_pred, uv, label, genus=2)
         ax.view_init(elev=20, azim=45)
-    
     plt.tight_layout()
-    output_path = os.path.join(output_dir, 'supervised_genus2_comparison.png')
+    output_path = os.path.join(output_dir, 'supervised_genus2.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"\nSaved genus 2 comparison to {output_path}")
     plt.close()

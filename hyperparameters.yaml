@@ -3,12 +3,12 @@
 # Topology Parameters
 # The genus defines the topology of the surface being optimized
 topology:
-  genus: 1  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
+  genus: 0  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
   
   # Genus 0 (sphere/ellipsoid) initialization parameters
   # Uses polar coordinates on [0, π] × [0, 2π]
   ellipsoid:
-    a: 1.5  # Semi-axis along x
+    a: 2.0  # Semi-axis along x
     b: 1.5  # Semi-axis along y  
     c: 1.0  # Semi-axis along z
     # For a sphere, set a = b = c
@@ -21,18 +21,55 @@ topology:
                # Default "1j" gives standard square torus
                # Can also use dict format: {real: 0.5, imag: 0.866}
     max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
-    major_radius: 2.0  # R: distance from center of tube to center of torus
+    major_radius: 3.0  # R: distance from center of tube to center of torus
     minor_radius: 1.0  # r: radius of the tube
     # Clifford torus (R = √2, r = 1) has minimum Willmore energy 2π² ≈ 19.74
   
   # Genus 2 (double torus) initialization parameters
-  # Constructed via catenoid bridge between two tori
+  # Two independent tori connected by a catenoid (capillary bridge)
+  #
+  # GEOMETRY:
+  # - Two tori with major radius axes parallel to z-axis (standard orientation)
+  # - Centers at y=0, z=0, separated along x-axis
+  # - Catenoid bridge parallel to x-axis, centered at y=0, z=0
+  #
+  # SEPARATION:
+  # x_separation = r1 + R1 + R2 + r2 + neck_length
+  # (outer edges of tori are neck_length apart)
+  #
+  # THREE FUNDAMENTAL DOMAINS:
+  # 1. Torus 1 parallelogram (with gluing disk excluded)
+  # 2. Catenoid rectangle
+  # 3. Torus 2 parallelogram (with gluing disk excluded)
+  #
+  # Parameters:
+  #   τ₁, τ₂ ∈ ℂ: modular parameters for each torus
+  #     - Im(τ) > 0: controls tube thickness (larger = thinner)
+  #     - Re(τ): shear of the fundamental domain
+  #   neck_length: physical length of the catenoid bridge
+  #   neck_twist: twist at the bridge (placeholder, not yet implemented)
+  #
   double_torus:
-    torus_separation: 3.0  # Distance between torus centers
-    torus_major_radius: 1.5  # R: major radius of each torus component
-    torus_minor_radius: 0.6  # r: minor radius of each torus component
-    bridge_radius: 0.4  # Radius of connecting catenoid bridge
-    bridge_length: 1.0  # Length of the catenoid bridge section
+    # Torus 1 modular parameter (complex number as dict)
+    tau1:
+      real: 0.0   # Re(τ₁): shear parameter
+      imag: 1.0   # Im(τ₁): aspect ratio (must be > 0)
+    
+    # Torus 2 modular parameter (complex number as dict)  
+    tau2:
+      real: 0.0   # Re(τ₂): shear parameter
+      imag: 1.0   # Im(τ₂): aspect ratio (must be > 0)
+    
+    # Catenoid bridge parameters
+    # bridge_radius: minimum radius at the catenoid neck
+    # The catenoid length is computed automatically to match tube radii
+    # r(s) = a * cosh(s/a), where a = bridge_radius
+    bridge_radius: 0.25  # Neck radius (must be < tube radii)
+    neck_twist: 0.0      # Twist angle applied to torus 2
+    
+    # Embedding scale
+    scale: 1.5
+    
     # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 2π² × 2 = 4π² ≈ 39.48
 
 # Model Architecture
@@ -55,7 +92,7 @@ model:
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
-    num_epochs: 500  # Many epochs for very smooth supervised learning
+    num_epochs: 300  # Many epochs for very smooth supervised learning
     learning_rate: 0.005  # Lower LR for more careful pretraining
     batch_size: 512  # Larger batches for stable pretraining
     num_points_per_epoch: 8192  # Many points for excellent coverage
@@ -65,8 +102,8 @@ model:
 # Training Parameters
 training:
   num_epochs: 300  # Long training run to converge to Clifford torus
-  batch_size: 512  # Larger batches for more stable gradients
-  learning_rate: 0.0001  # Much lower LR for smooth, stable optimization
+  batch_size: 1024  # Larger batches for more stable gradients
+  learning_rate: 0.00001  # Much lower LR for smooth, stable optimization
   weight_decay: 0.00001  # Lighter weight decay to preserve learned features
   scheduler: "cosine"  # Learning rate scheduler: step, cosine, exponential, plateau, none
   scheduler_params:
@@ -82,14 +119,14 @@ training:
 # - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
 # - genus 2: double_torus domain with custom parametrization
 sampling:
-  num_points: 20000  # More points for accurate geometry
+  num_points: 200000  # More points for accurate geometry
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
   use_rotation_augmentation: true  # Apply random z-axis rotations for symmetry enforcement
 
 # Loss Function Parameters
 loss:
-  willmore_weight: 0.05  # Start very low, increase gradually (prevents roughness)
+  willmore_weight: 1.0  # Start very low, increase gradually (prevents roughness)
   regularity_weight: 10.0  # Metric regularity preservation (decreases to 5.0)
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   target_volume: null  # Target enclosed volume (null for adaptive constraint with bounds)

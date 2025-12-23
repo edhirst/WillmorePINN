@@ -33,16 +33,45 @@ def load_checkpoint_model(checkpoint_path, config, device):
     return model, checkpoint.get('epoch', 0), checkpoint.get('loss', 0)
 
 
-def plot_embedding_3d(ax, xyz, title, color='viridis', alpha=0.6):
+def plot_embedding_3d(ax, xyz, title, color='viridis', alpha=0.6, period=None):
     """Plot a 3D embedding."""
     xyz_np = xyz.detach().cpu().numpy()
     
-    # Color by z-coordinate for better visualization
-    colors = xyz_np[:, 2]
-    
+    # Color by v coordinate (assume input order matches uv sampling)
+    # If uv is available, use its second column for coloring; otherwise, use z as fallback
+    # For genus 2, use a full rainbow (HSV) mapping to match the fundamental domain
+    # We'll use a helper for HSV coloring
+    def hsv_to_rgb_colors(values, period=2 * np.pi):
+        v_norm = (values % period) / period
+        hue = v_norm
+        h = hue * 6.0
+        x = 1.0 - np.abs(h % 2.0 - 1.0)
+        colors = np.zeros((len(values), 3))
+        mask0 = (h >= 0) & (h < 1)
+        mask1 = (h >= 1) & (h < 2)
+        mask2 = (h >= 2) & (h < 3)
+        mask3 = (h >= 3) & (h < 4)
+        mask4 = (h >= 4) & (h < 5)
+        mask5 = (h >= 5) & (h < 6)
+        colors[mask0] = np.stack([np.ones(np.sum(mask0)), x[mask0], np.zeros(np.sum(mask0))], axis=1)
+        colors[mask1] = np.stack([x[mask1], np.ones(np.sum(mask1)), np.zeros(np.sum(mask1))], axis=1)
+        colors[mask2] = np.stack([np.zeros(np.sum(mask2)), np.ones(np.sum(mask2)), x[mask2]], axis=1)
+        colors[mask3] = np.stack([np.zeros(np.sum(mask3)), x[mask3], np.ones(np.sum(mask3))], axis=1)
+        colors[mask4] = np.stack([x[mask4], np.zeros(np.sum(mask4)), np.ones(np.sum(mask4))], axis=1)
+        colors[mask5] = np.stack([np.ones(np.sum(mask5)), np.zeros(np.sum(mask5)), x[mask5]], axis=1)
+        return colors
+
+    # Try to infer the period for coloring (for genus 2, use 4*pi, else 2*pi)
+    if period is None:
+        period = 2 * np.pi
+    # If xyz has shape (N, 3), we don't have uv directly. If available, pass uv as an argument in future for best results.
+    # For now, fallback to z-coordinate, but use HSV mapping for more colors
+    values = xyz_np[:, 2]
+    colors = hsv_to_rgb_colors(values, period)
+
     scatter = ax.scatter(
         xyz_np[:, 0], xyz_np[:, 1], xyz_np[:, 2],
-        c=colors, cmap=color, alpha=alpha, s=1
+        c=colors, alpha=alpha, s=1
     )
     
     ax.set_xlabel('X')
@@ -122,7 +151,7 @@ def plot_fundamental_domain_coloring(output_path, num_points=200):
     ax.imshow(colors, extent=[0, 2*np.pi, 0, 2*np.pi], origin='lower', aspect='auto')
     ax.set_xlabel('u', fontsize=12)
     ax.set_ylabel('v', fontsize=12)
-    ax.set_title('Fundamental Domain Coloring\n(Rainbow gradient in v)', fontsize=14)
+    ax.set_title('Fundamental Domain Coloring', fontsize=14)
     ax.set_xticks([0, np.pi, 2*np.pi])
     ax.set_xticklabels(['0', 'π', '2π'])
     ax.set_yticks([0, np.pi, 2*np.pi])
@@ -271,7 +300,8 @@ def visualise_training_evolution(
                 print(f"  WARNING: Checkpoint {checkpoint_name} has epoch {epoch} but filename suggests {expected_epoch}")
             title = f'Epoch {epoch}\nW={loss:.2f}'
         
-        plot_embedding_3d(ax, xyz, title)
+        # For genus 2, use period=4*pi for coloring to match domain
+        plot_embedding_3d(ax, xyz, title, period=4 * np.pi if genus == 2 else 2 * np.pi)
         
         # Set viewing angle
         ax.view_init(elev=20, azim=45)
@@ -306,7 +336,9 @@ def visualise_single_model(
         config = yaml.safe_load(f)
     
     device = torch.device('cpu')
-    domain = config['sampling']['domain']
+    # Infer domain from topology.genus
+    genus = config['topology']['genus']
+    domain = get_domain_for_genus(genus)
     
     print(f"Visualizing model from {checkpoint_path}")
     
@@ -332,7 +364,8 @@ def visualise_single_model(
     
     for idx, (elev, azim) in enumerate(angles):
         ax = fig.add_subplot(1, 3, idx + 1, projection='3d')
-        plot_embedding_3d(ax, xyz, f'{view_names[idx]} View', alpha=0.7)
+        # For genus 2, use period=4*pi for coloring to match domain
+        plot_embedding_3d(ax, xyz, f'{view_names[idx]} View', alpha=0.7, period=4 * np.pi if genus == 2 else 2 * np.pi)
         ax.view_init(elev=elev, azim=azim)
     
     fig.suptitle(f'Best Model - Epoch {epoch}, Willmore Energy = {loss:.4f}', fontsize=14, y=0.98)
@@ -421,12 +454,14 @@ def main():
         best_path = os.path.join(checkpoint_dir, 'best_model.pt')
         latest_path = os.path.join(checkpoint_dir, 'latest_model.pt')
         
+        out_name = 'best_embedding.png'
+        out_name_latest = 'latest_embedding.png'
         if os.path.exists(best_path):
             visualise_single_model(
                 checkpoint_path=best_path,
                 config_path=args.config,
                 num_test_points=args.points * 2,
-                output_path=os.path.join(log_dir, 'best_embedding.png')
+                output_path=os.path.join(log_dir, out_name)
             )
         elif os.path.exists(latest_path):
             print(f"Best model not found, using latest model instead")
@@ -434,7 +469,7 @@ def main():
                 checkpoint_path=latest_path,
                 config_path=args.config,
                 num_test_points=args.points * 2,
-                output_path=os.path.join(log_dir, 'latest_embedding.png')
+                output_path=os.path.join(log_dir, out_name_latest)
             )
         else:
             print(f"No models found at {best_path} or {latest_path}")

@@ -75,22 +75,26 @@ class PeriodicEmbedding(nn.Module):
                 features.append(torch.cos(freq * uv[:, 1:2]))
                 
             elif self.domain in ["ellipsoid", "sphere"]:
-                # u is periodic with period 2π, v is NOT periodic (polar angle)
-                # For v, we use features that respect the [0, π] boundary
+                # u is periodic with period 2π
                 features.append(torch.sin(freq * uv[:, 0:1]))
                 features.append(torch.cos(freq * uv[:, 0:1]))
-                # For polar angle v, use sin(v) and cos(v) based features
-                # These naturally handle the poles
-                features.append(torch.sin(freq * uv[:, 1:2]))
-                features.append(torch.cos(freq * uv[:, 1:2]))
+                # v is NOT periodic - it's a polar angle in [0, π]
+                # Use Legendre-like basis that respects pole topology:
+                # sin(v) = 0 at poles, sin(n*v) captures latitude bands
+                # We include both sin and cos but they should be understood
+                # as non-periodic basis functions on [0, π]
+                v_scaled = uv[:, 1:2]  # v ∈ [0, π]
+                features.append(torch.sin(freq * v_scaled))
+                features.append(torch.cos(freq * v_scaled))
                 
             elif self.domain == "double_torus":
                 # u has period 2π, v has period 4π
                 features.append(torch.sin(freq * uv[:, 0:1]))
                 features.append(torch.cos(freq * uv[:, 0:1]))
-                # Scale v to have effective period 2π for the Fourier features
-                features.append(torch.sin(freq * uv[:, 1:2] / 2))
-                features.append(torch.cos(freq * uv[:, 1:2] / 2))
+                # Scale v so that period 4π maps to 2π for Fourier basis
+                v_scaled = uv[:, 1:2] * 0.5  # Now effectively period 2π
+                features.append(torch.sin(freq * v_scaled))
+                features.append(torch.cos(freq * v_scaled))
             
             else:
                 # Default: treat as doubly periodic

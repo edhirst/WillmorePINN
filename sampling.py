@@ -14,6 +14,9 @@ import torch
 import numpy as np
 from typing import Tuple, Optional, Dict
 
+# Track which tau values have been warned about for self-intersection
+_warned_tau_values = set()
+
 
 def get_domain_for_genus(genus: int) -> str:
     """
@@ -160,7 +163,7 @@ def sample_parameters(
     
     Args:
         num_points: Number of points to sample
-        domain: Type of surface ('torus', 'sphere', 'ellipsoid', 'double_torus', 'klein_bottle')
+        domain: Type of surface ('torus', 'sphere', 'ellipsoid', 'double_torus')
         device: Device to place tensor on
         dtype: Data type for tensor
         genus: If provided, overrides domain selection (0=ellipsoid, 1=torus, 2=double_torus)
@@ -175,13 +178,26 @@ def sample_parameters(
     domain_lower = domain.lower()
     
     if domain_lower == "torus":
-        return sample_rectangular_domain(num_points, (0, 2*np.pi), (0, 2*np.pi), device, dtype)
+        # Get tau_imag from config if available, else default to 1.0
+        tau_imag = 1.0
+        import inspect
+        frame = inspect.currentframe()
+        tau = None
+        # Try to get tau from the calling context if possible
+        if 'tau' in frame.f_back.f_locals:
+            tau = frame.f_back.f_locals['tau']
+        elif 'tau' in frame.f_back.f_globals:
+            tau = frame.f_back.f_globals['tau']
+        if tau is not None:
+            try:
+                tau_imag = abs(complex(tau).imag)
+            except Exception:
+                tau_imag = 1.0
+        return sample_rectangular_domain(num_points, (0, 2*np.pi), (0, 2*np.pi * tau_imag), device, dtype)
     elif domain_lower in ["sphere", "ellipsoid"]:
         return sample_ellipsoid_parameters(num_points, device, dtype)
     elif domain_lower == "double_torus":
         return sample_double_torus_parameters(num_points, device, dtype)
-    elif domain_lower == "klein_bottle":
-        return sample_rectangular_domain(num_points, (0, 2*np.pi), (0, 2*np.pi), device, dtype)
     else:
         raise ValueError(f"Unknown domain: {domain}")
 
@@ -259,15 +275,21 @@ def get_flat_torus_embedding(
     tau_real = tau.real
     tau_imag = abs(tau.imag)
     
-    # The minor/major radius ratio should reflect the shape of the fundamental domain
-    # For standard torus (τ=i): ratio ~ 0.4 (conventional)
-    # As Im(τ) increases, the minor radius increases relative to major
-    # As Im(τ) decreases, the torus becomes thinner (like a bicycle tire)
-    R = 1.0  # Major radius (fixed)
-    r = 0.4 * tau_imag  # Minor radius scales with Im(τ)
+    # Set major/minor radii so that r/R = Im(tau) (standard aspect ratio for rectangular domain)
+    # R = 1.0 (major radius fixed), r = Im(tau) (minor radius)
+    R = 1.0
+    r = abs(tau.imag)
     
-    # Clamp r to avoid self-intersection (r must be < R)
-    r = min(r, 0.9 * R)
+    # Warn if self-intersection will occur (only once per tau value)
+    if r >= 1.0:
+        tau_key = (round(tau.real, 6), round(tau.imag, 6))
+        if tau_key not in _warned_tau_values:
+            _warned_tau_values.add(tau_key)
+            print(f"Warning: Im(τ) = {r:.2f} >= 1.0 will cause torus self-intersection (r >= R)")
+    
+    # Wrap u to [0, 2π] since it parametrizes the major circle (period 2π)
+    # When Re(τ) ≠ 0, the parallelogram transformation can produce u outside [0, 2π]
+    u = u % (2 * np.pi)
     
     # Normalize v to [0, 2π] for the minor circle parametrization
     # v comes in as the parallelogram v-coordinate, which has range [0, 2π*Im(τ)]

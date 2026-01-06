@@ -236,6 +236,8 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     # Get topology configuration
     topology_config = config.get("topology", {})
     genus = topology_config.get("genus", 1)  # Default to torus for backward compatibility
+    # If genus is overridden (e.g., via command line), ensure config is updated
+    config['topology']['genus'] = genus
 
     # Print genus being used
     print(f"[INFO] Using genus: {genus}")

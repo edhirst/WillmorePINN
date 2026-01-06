@@ -9,7 +9,7 @@ topology:
   # Uses polar coordinates on [0, π] × [0, 2π]
   ellipsoid:
     a: 2.0  # Semi-axis along x
-    b: 1.5  # Semi-axis along y  
+    b: 1.0  # Semi-axis along y  
     c: 1.0  # Semi-axis along z
     # For a sphere, set a = b = c
     # Willmore energy of a sphere is 4π ≈ 12.566 (the minimum for genus 0)
@@ -17,12 +17,10 @@ topology:
   # Genus 1 (torus) initialization parameters
   # Uses doubly-periodic coordinates on [0, 2π] × [0, 2π]
   torus:
-    tau: "1j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
+    tau: "0.5j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
                # Default "1j" gives standard square torus
                # Can also use dict format: {real: 0.5, imag: 0.866}
     max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
-    major_radius: 3.0  # R: distance from center of tube to center of torus
-    minor_radius: 1.0  # r: radius of the tube
     # Clifford torus (R = √2, r = 1) has minimum Willmore energy 2π² ≈ 19.74
   
   # Genus 2 (double torus) initialization parameters
@@ -92,7 +90,7 @@ model:
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
-    num_epochs: 300  # Many epochs for very smooth supervised learning
+    num_epochs: 100  # Many epochs for very smooth supervised learning
     learning_rate: 0.005  # Lower LR for more careful pretraining
     batch_size: 512  # Larger batches for stable pretraining
     num_points_per_epoch: 8192  # Many points for excellent coverage
@@ -101,13 +99,13 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 300  # Long training run to converge to Clifford torus
+  num_epochs: 1000  # Long training run to converge to Clifford torus
   batch_size: 1024  # Larger batches for more stable gradients
   learning_rate: 0.00001  # Much lower LR for smooth, stable optimization
-  weight_decay: 0.00001  # Lighter weight decay to preserve learned features
+  weight_decay: 0.000001  # Lighter weight decay to preserve learned features
   scheduler: "cosine"  # Learning rate scheduler: step, cosine, exponential, plateau, none
   scheduler_params:
-    T_max: 100  # Match num_epochs for full cosine cycle
+    T_max: 500  # Match num_epochs for full cosine cycle
     eta_min: 0.00001  # Low final LR for fine-tuning
   gradient_clip: 0.5  # Tighter gradient clipping to prevent large jumps
   save_frequency: 25  # Save checkpoint every n epochs
@@ -119,7 +117,7 @@ training:
 # - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
 # - genus 2: double_torus domain with custom parametrization
 sampling:
-  num_points: 200000  # More points for accurate geometry
+  num_points: 20000  # More points for accurate geometry
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
   use_rotation_augmentation: true  # Apply random z-axis rotations for symmetry enforcement

@@ -129,34 +129,36 @@ def plot_fundamental_domain_coloring(output_path, num_points=200):
         output_path: Path to save the plot
         num_points: Resolution of the grid
     """
+    # Get tau from config or use default
+    tau = 1j
+    try:
+        import yaml
+        with open('hyperparameters.yaml', 'r') as f:
+            config = yaml.safe_load(f)
+        tau_str = config.get('topology', {}).get('torus', {}).get('tau', '1j')
+        tau = complex(tau_str.replace('i', 'j'))
+    except Exception:
+        pass
+    tau_real = np.real(tau)
+    tau_imag = np.imag(tau)
     u = np.linspace(0, 2*np.pi, num_points)
     v = np.linspace(0, 2*np.pi, num_points)
     U, V = np.meshgrid(u, v)
-    
-    # Apply rainbow coloring based on v coordinate
+    X = U + V * tau_real / (2*np.pi)
+    Y = V * tau_imag / (2*np.pi)
     v_norm = (V % (2 * np.pi)) / (2 * np.pi)
     hue = v_norm
     h = hue * 6.0
     x = 1.0 - np.abs(h % 2.0 - 1.0)
-    
     R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
     G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
     B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
-    
-    # Stack into RGB image
     colors = np.stack([R, G, B], axis=-1)
-    
-    # Create figure
     fig, ax = plt.subplots(figsize=(8, 8))
-    ax.imshow(colors, extent=[0, 2*np.pi, 0, 2*np.pi], origin='lower', aspect='auto')
-    ax.set_xlabel('u', fontsize=12)
-    ax.set_ylabel('v', fontsize=12)
-    ax.set_title('Fundamental Domain Coloring', fontsize=14)
-    ax.set_xticks([0, np.pi, 2*np.pi])
-    ax.set_xticklabels(['0', 'π', '2π'])
-    ax.set_yticks([0, np.pi, 2*np.pi])
-    ax.set_yticklabels(['0', 'π', '2π'])
-    
+    ax.imshow(colors, extent=[X.min(), X.max(), Y.min(), Y.max()], origin='lower', aspect='auto')
+    ax.set_xlabel('u + v·Re(τ)/2π', fontsize=12)
+    ax.set_ylabel('v·Im(τ)/2π', fontsize=12)
+    ax.set_title(f'Fundamental Domain Coloring (τ={tau_real:.2f}+{tau_imag:.2f}i)', fontsize=14)
     plt.tight_layout()
     
     # Save figure
@@ -263,8 +265,13 @@ def visualise_training_evolution(
     
     print(f"\nVisualizing {len(selected_checkpoints)} checkpoints:")
     
-    # Generate test data according to the domain/genus
-    uv_test = sample_parameters(num_test_points, domain, device, genus=genus)
+    # Always use genus from checkpoint config for correct sampling
+    # (Assume all checkpoints in a run have the same genus)
+    first_checkpoint = torch.load(selected_checkpoints[0], map_location='cpu')
+    config_ckpt = first_checkpoint.get('config', config)
+    genus_ckpt = config_ckpt['topology']['genus']
+    domain_ckpt = get_domain_for_genus(genus_ckpt)
+    uv_test = sample_parameters(num_test_points, domain_ckpt, device, genus=genus_ckpt)
     
     # Create figure with subplots
     n_plots = len(selected_checkpoints)
@@ -272,39 +279,36 @@ def visualise_training_evolution(
     n_rows = (n_plots + n_cols - 1) // n_cols
     
     fig = plt.figure(figsize=(6 * n_cols, 5 * n_rows))
-    fig.suptitle(f"Willmore Minimization - Genus {genus} ({genus_names.get(genus, 'unknown')})", fontsize=14)
+    # Force genus=1 for the plot title, since we always visualize genus 1 embedding evolution
+    plot_genus = 1
+    fig.suptitle(f"Willmore Minimization - Genus {plot_genus} ({genus_names.get(plot_genus, 'unknown')})", fontsize=14)
     
-    # Plot each checkpoint
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     for idx, checkpoint_path in enumerate(selected_checkpoints):
         checkpoint_name = Path(checkpoint_path).name
         print(f"  Loading {checkpoint_name}...")
-        
-        model, epoch, loss = load_checkpoint_model(checkpoint_path, config, device)
-        
-        # Compute embedding
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        config_ckpt = checkpoint.get('config', config)
+        genus_ckpt = config_ckpt['topology']['genus']
+        domain_ckpt = get_domain_for_genus(genus_ckpt)
+        print(f"Embedding model created for genus {genus_ckpt} ({genus_names.get(genus_ckpt, 'unknown')})")
+        print(f"  Domain: {domain_ckpt}")
+        print(f"  Parameters: {sum(p.numel() for p in create_embedding_model(config_ckpt, device, skip_init=True).parameters())} trainable")
+        model, epoch, loss = load_checkpoint_model(checkpoint_path, config_ckpt, device)
         with torch.no_grad():
             xyz = model(uv_test)
-        
-        # Create subplot
         ax = fig.add_subplot(n_rows, n_cols, idx + 1, projection='3d')
-        
-        # Determine title - verify epoch matches filename
         if 'best' in checkpoint_path:
             title = f'Best Model\nEpoch {epoch}, W={loss:.2f}'
         elif 'latest' in checkpoint_path:
             title = f'Latest Model\nEpoch {epoch}, W={loss:.2f}'
         else:
-            # Verify the epoch in the checkpoint matches the filename
             expected_epoch = extract_epoch(checkpoint_path) if checkpoint_name.startswith('checkpoint_epoch_') else epoch
             if expected_epoch != epoch:
                 print(f"  WARNING: Checkpoint {checkpoint_name} has epoch {epoch} but filename suggests {expected_epoch}")
             title = f'Epoch {epoch}\nW={loss:.2f}'
-        
-        # For genus 2, use period=4*pi for coloring to match domain
-        plot_embedding_3d(ax, xyz, title, period=4 * np.pi if genus == 2 else 2 * np.pi)
-        
-        # Set viewing angle
-        ax.view_init(elev=20, azim=45)
+        plot_embedding_3d(ax, xyz, title, period=4 * np.pi if genus_ckpt == 2 else 2 * np.pi)
+        ax.view_init(elev=30, azim=-60)
     
     plt.tight_layout()
     
@@ -331,51 +335,42 @@ def visualise_single_model(
         num_test_points: Number of points to sample
         output_path: Where to save the visualization
     """
-    # Load configuration
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
-    device = torch.device('cpu')
-    # Infer domain from topology.genus
-    genus = config['topology']['genus']
-    domain = get_domain_for_genus(genus)
-    
-    print(f"Visualizing model from {checkpoint_path}")
-    
+    # Load checkpoint and config
     if not os.path.exists(checkpoint_path):
         print(f"Checkpoint not found: {checkpoint_path}")
         return
-    
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    config = checkpoint.get('config', None)
+    if config is None:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+    device = torch.device('cpu')
+    genus = config['topology']['genus']
+    domain = get_domain_for_genus(genus)
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+    print(f"Visualizing model from {checkpoint_path}")
+    print(f"Embedding model created for genus {genus} ({genus_names.get(genus, 'unknown')})")
+    print(f"  Domain: {domain}")
     # Load model
     model, epoch, loss = load_checkpoint_model(checkpoint_path, config, device)
-    
     # Generate test data
     uv_test = sample_parameters(num_test_points, domain, device)
-    
     # Compute embedding
     with torch.no_grad():
         xyz = model(uv_test)
-    
     # Create figure with multiple views
     fig = plt.figure(figsize=(18, 6))
-    
     angles = [(20, 45), (20, 135), (20, 225)]
     view_names = ['Front', 'Side', 'Back']
-    
     for idx, (elev, azim) in enumerate(angles):
         ax = fig.add_subplot(1, 3, idx + 1, projection='3d')
-        # For genus 2, use period=4*pi for coloring to match domain
         plot_embedding_3d(ax, xyz, f'{view_names[idx]} View', alpha=0.7, period=4 * np.pi if genus == 2 else 2 * np.pi)
         ax.view_init(elev=elev, azim=azim)
-    
     fig.suptitle(f'Best Model - Epoch {epoch}, Willmore Energy = {loss:.4f}', fontsize=14, y=0.98)
     plt.tight_layout()
-    
-    # Save figure
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"Saved visualization to {output_path}")
-    
     plt.close()
 
 

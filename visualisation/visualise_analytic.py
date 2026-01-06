@@ -82,6 +82,9 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1):
     ax.set_xlim(mid_x - max_range, mid_x + max_range)
     ax.set_ylim(mid_y - max_range, mid_y + max_range)
     ax.set_zlim(mid_z - max_range, mid_z + max_range)
+    
+    # Set consistent viewing angle
+    ax.view_init(elev=30, azim=-60)
 
 
 def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=1j, neck_radius=0.3):
@@ -105,35 +108,49 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=
     if genus == 0:
         u_max, v_max = 2 * np.pi, np.pi
         v_label = 'π'
+        u = np.linspace(0, u_max, num_points)
+        v = np.linspace(0, v_max, num_points)
+        U, V = np.meshgrid(u, v)
+        # Apply rainbow coloring
+        v_norm = (V % v_max) / v_max
+        hue = v_norm
+        h = hue * 6.0
+        x = 1.0 - np.abs(h % 2.0 - 1.0)
+        R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
+        G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
+        B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
+        colors = np.stack([R, G, B], axis=-1)
+        ax.imshow(colors, extent=[0, u_max, 0, v_max], origin='lower', aspect='auto')
+        ax.set_xlabel('u')
+        ax.set_ylabel('v')
+        ax.set_title(f'Fundamental Domain (Genus {genus})', fontsize=10)
+        ax.set_xticks([0, np.pi, 2*np.pi])
+        ax.set_xticklabels(['0', 'π', '2π'])
+        ax.set_yticks([0, v_max/2, v_max])
+        ax.set_yticklabels(['0', f'{v_label}/2', v_label])
     else:
-        u_max, v_max = 2 * np.pi, 2 * np.pi
-        v_label = '2π'
-    
-    u = np.linspace(0, u_max, num_points)
-    v = np.linspace(0, v_max, num_points)
-    U, V = np.meshgrid(u, v)
-    
-    # Apply rainbow coloring
-    v_norm = (V % v_max) / v_max
-    hue = v_norm
-    h = hue * 6.0
-    x = 1.0 - np.abs(h % 2.0 - 1.0)
-    
-    R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
-    G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
-    B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
-    
-    colors = np.stack([R, G, B], axis=-1)
-    
-    ax.imshow(colors, extent=[0, u_max, 0, v_max], origin='lower', aspect='auto')
-    ax.set_xlabel('u')
-    ax.set_ylabel('v')
-    ax.set_title(f'Fundamental Domain (Genus {genus})', fontsize=10)
-    
-    ax.set_xticks([0, np.pi, 2*np.pi])
-    ax.set_xticklabels(['0', 'π', '2π'])
-    ax.set_yticks([0, v_max/2, v_max])
-    ax.set_yticklabels(['0', f'{v_label}/2', v_label])
+        # For genus 1, plot the square fundamental domain for tau = i
+        u = np.linspace(0, 2*np.pi, num_points)
+        v = np.linspace(0, 2*np.pi, num_points)
+        U, V = np.meshgrid(u, v)
+        # Apply rainbow coloring along v
+        v_norm = (V % (2*np.pi)) / (2*np.pi)
+        hue = v_norm
+        h = hue * 6.0
+        x = 1.0 - np.abs(h % 2.0 - 1.0)
+        R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
+        G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
+        B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
+        colors = np.stack([R, G, B], axis=-1)
+        # Plot the colored square domain
+        ax.imshow(colors, extent=[0, 2*np.pi, 0, 2*np.pi], origin='lower', aspect='auto')
+        ax.set_xlabel('u')
+        ax.set_ylabel('v')
+        ax.set_title(f'Fundamental Domain (Genus 1, τ = i)', fontsize=10)
+        ax.set_xticks([0, np.pi, 2*np.pi])
+        ax.set_xticklabels(['0', 'π', '2π'])
+        ax.set_yticks([0, np.pi, 2*np.pi])
+        ax.set_yticklabels(['0', 'π', '2π'])
 
 
 def plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3, num_points=100):
@@ -240,27 +257,38 @@ def visualise_analytic_genus0(output_dir: str, num_points: int = 10000, config_p
     # Different ellipsoid configurations with quantitative labels
     ellipsoid_configs = [
         {'a': 1.0, 'b': 1.0, 'c': 1.0, 'label': 'a=1, b=1, c=1'},
-        {'a': 1.5, 'b': 1.0, 'c': 1.0, 'label': 'a=1.5, b=1, c=1'},
-        {'a': 1.0, 'b': 1.5, 'c': 1.0, 'label': 'a=1, b=1.5, c=1'},
-        {'a': 1.5, 'b': 1.0, 'c': 0.7, 'label': 'a=1.5, b=1, c=0.7'},
-        {'a': 2.0, 'b': 0.8, 'c': 0.8, 'label': 'a=2, b=0.8, c=0.8'},
+        {'a': 2.0, 'b': 1.0, 'c': 1.0, 'label': 'a=2, b=1, c=1'},
+        {'a': 2.0, 'b': 2.0, 'c': 1.0, 'label': 'a=2, b=2, c=1'},
+        {'a': 1.5, 'b': 1.0, 'c': 0.5, 'label': 'a=1.5, b=1, c=0.5'},
+        {'a': 1.2, 'b': 0.6, 'c': 0.3, 'label': 'a=1.2, b=0.6, c=0.3'},
     ]
     
-    fig = plt.figure(figsize=(15, 10))
+    n_configs = len(ellipsoid_configs)
+    n_plots = n_configs + 1  # +1 for domain plot
+    n_rows = int(np.ceil(n_plots / 2))
+    fig = plt.figure(figsize=(12, 5 * n_rows))
     
     # Add fundamental domain coloring
-    ax_domain = fig.add_subplot(2, 3, 1)
+    ax_domain = fig.add_subplot(n_rows, 2, 1)
     plot_fundamental_domain_coloring(ax_domain, genus=0)
     
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     for idx, cfg in enumerate(ellipsoid_configs):
+        genus = 0
+        domain = "ellipsoid"
+        print(f"Visualizing analytic surface {idx+1} for genus {genus} ({genus_names.get(genus, 'unknown')})")
+        print(f"  Domain: {domain}")
+        # Create dummy config for parameter count
+        dummy_config = {'topology': {'genus': genus, 'ellipsoid': cfg}, 'model': {}}
+        from model import create_embedding_model
+        model = create_embedding_model(dummy_config, device, skip_init=True)
+        print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
         topology_params = {'ellipsoid': cfg}
-        uv = sample_parameters(num_points, domain="ellipsoid", device=device, dtype=dtype)
-        
+        uv = sample_parameters(num_points, domain=domain, device=device, dtype=dtype)
         with torch.no_grad():
-            xyz = get_reference_embedding(uv, genus=0, topology_params=topology_params)
-        
-        ax = fig.add_subplot(2, 3, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz, uv, cfg['label'], genus=0)
+            xyz = get_reference_embedding(uv, genus=genus, topology_params=topology_params)
+        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
+        plot_surface_3d(ax, xyz, uv, cfg['label'], genus=genus)
     
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'analytic_genus0.png')
@@ -273,30 +301,44 @@ def visualise_analytic_genus1(output_dir: str, num_points: int = 10000, config_p
     """Visualize analytic torus embeddings (genus 1) for different tau values."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float32
-    
+
     tau_values = [
-        ("1j", "τ = i"),
-        ("0.3+0.95j", "τ = 0.3+0.95i"),
-        ("0.5+0.87j", "τ = 0.5+0.87i"),
-        ("0.7+0.7j", "τ = 0.7+0.7i"),
-        ("-0.4+0.9j", "τ = -0.4+0.9i"),
+        ("1j", "τ = 1.0i"),
+        ("0.5j", "τ = 0.5i"),
+        ("1.0+0.5j", "τ = 1.0+0.5i"),
+        ("0.2+0.2j", "τ = 0.2+0.2i"),
+        ("1.0+0.2j", "τ = 1.0+0.2i"),
     ]
     
-    fig = plt.figure(figsize=(15, 10))
-    
-    ax_domain = fig.add_subplot(2, 3, 1)
-    plot_fundamental_domain_coloring(ax_domain, genus=1)
-    
+    n_tau = len(tau_values)
+    n_plots = n_tau + 1  # +1 for domain plot
+    n_rows = int(np.ceil(n_plots / 2))
+    fig = plt.figure(figsize=(12, 5 * n_rows))
+
+    ax_domain = fig.add_subplot(n_rows, 2, 1)
+    # Use the first tau value for the domain plot
+    tau = complex(tau_values[0][0].replace('i', 'j'))
+    plot_fundamental_domain_coloring(ax_domain, genus=1, tau1=tau)
+
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+    from sampling import transform_square_to_parallelogram, sample_rectangular_domain
     for idx, (tau_str, label) in enumerate(tau_values):
+        genus = 1
+        domain = "torus"
+        print(f"Visualizing analytic surface {idx+1} for genus {genus} ({genus_names.get(genus, 'unknown')})")
+        print(f"  Domain: {domain}")
+        # Create dummy config for parameter count
+        dummy_config = {'topology': {'genus': genus, 'torus': {'tau': tau_str}}, 'model': {}}
+        from model import create_embedding_model
+        model = create_embedding_model(dummy_config, device, skip_init=True)
+        print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
         tau = complex(tau_str.replace('i', 'j'))
-        uv = sample_parameters(num_points, domain="torus", device=device, dtype=dtype)
-        
+        uv = sample_rectangular_domain(num_points, (0, 2*np.pi), (0, 2*np.pi), device)
         with torch.no_grad():
-            xyz = get_reference_embedding(uv, domain="torus", tau=tau)
-        
-        ax = fig.add_subplot(2, 3, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz, uv, label, genus=1)
-    
+            xyz = get_reference_embedding(uv, domain=domain, tau=tau)
+        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
+        plot_surface_3d(ax, xyz, uv, label, genus=genus)
+
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'analytic_genus1.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
@@ -347,28 +389,39 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
          'label': 'bridge_radius=0.12 (narrow)'},
     ]
     
-    fig = plt.figure(figsize=(15, 10))
+    n_configs = len(dt_configs)
+    n_plots = n_configs + 1  # +1 for domain plot
+    n_rows = int(np.ceil(n_plots / 2))
+    fig = plt.figure(figsize=(12, 5 * n_rows))
     
     # Use first config for the fundamental domain plot
     first_cfg = dt_configs[0]
     tau1 = complex(first_cfg['tau1']['real'], first_cfg['tau1']['imag'])
     tau2 = complex(first_cfg['tau2']['real'], first_cfg['tau2']['imag'])
     
-    ax_domain = fig.add_subplot(2, 3, 1)
+    ax_domain = fig.add_subplot(n_rows, 2, 1)
     plot_fundamental_domain_coloring(ax_domain, genus=2, 
                                      tau1=tau1, tau2=tau2,
                                      neck_radius=0.3)  # Legacy param name for domain plot
     
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     for idx, cfg in enumerate(dt_configs):
+        genus = 2
+        domain = "double_torus"
         label = cfg.pop('label')
+        print(f"Visualizing analytic surface {idx+1} for genus {genus} ({genus_names.get(genus, 'unknown')})")
+        print(f"  Domain: {domain}")
+        # Create dummy config for parameter count
+        dummy_config = {'topology': {'genus': genus, 'double_torus': cfg}, 'model': {}}
+        from model import create_embedding_model
+        model = create_embedding_model(dummy_config, device, skip_init=True)
+        print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
         topology_params = {'double_torus': cfg}
-        uv = sample_parameters(num_points, domain="double_torus", device=device, dtype=dtype)
-        
+        uv = sample_parameters(num_points, domain=domain, device=device, dtype=dtype)
         with torch.no_grad():
-            xyz = get_reference_embedding(uv, genus=2, topology_params=topology_params)
-        
-        ax = fig.add_subplot(2, 3, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz, uv, label, genus=2)
+            xyz = get_reference_embedding(uv, genus=genus, topology_params=topology_params)
+        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
+        plot_surface_3d(ax, xyz, uv, label, genus=genus)
         cfg['label'] = label  # Restore for summary
     
     plt.tight_layout()

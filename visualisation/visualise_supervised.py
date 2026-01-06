@@ -67,44 +67,50 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100):
         # For genus 2, always use the analytic domain plot
         analytic_domain(ax, genus=2, num_points=num_points)
         return
-    
-    # Domain depends on genus
-    if genus == 0:
-        u_max, v_max = 2 * np.pi, np.pi
-        v_label = 'π'
-    else:
-        u_max, v_max = 2 * np.pi, 2 * np.pi
-        v_label = '2π'
-    
+    if genus == 1:
+        # Plot the square fundamental domain for tau = i
+        u = np.linspace(0, 2*np.pi, num_points)
+        v = np.linspace(0, 2*np.pi, num_points)
+        U, V = np.meshgrid(u, v)
+        v_norm = (V % (2 * np.pi)) / (2 * np.pi)
+        hue = v_norm
+        h = hue * 6.0
+        x = 1.0 - np.abs(h % 2.0 - 1.0)
+        R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
+        G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
+        B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
+        colors = np.stack([R, G, B], axis=-1)
+        ax.imshow(colors, extent=[0, 2*np.pi, 0, 2*np.pi], origin='lower', aspect='auto')
+        ax.set_xlabel('u')
+        ax.set_ylabel('v')
+        ax.set_title(f'Fundamental Domain (Genus 1, τ = i)', fontsize=10)
+        ax.set_xticks([0, np.pi, 2*np.pi])
+        ax.set_xticklabels(['0', 'π', '2π'])
+        ax.set_yticks([0, np.pi, 2*np.pi])
+        ax.set_yticklabels(['0', 'π', '2π'])
+        return
+    # Genus 0 fallback
+    u_max, v_max = 2 * np.pi, np.pi
+    v_label = 'π'
     u = np.linspace(0, u_max, num_points)
     v = np.linspace(0, v_max, num_points)
     U, V = np.meshgrid(u, v)
-    
-    # Apply rainbow coloring
     v_norm = (V % v_max) / v_max
     hue = v_norm
     h = hue * 6.0
     x = 1.0 - np.abs(h % 2.0 - 1.0)
-    
     R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
     G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
     B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
-    
     colors = np.stack([R, G, B], axis=-1)
-    
     ax.imshow(colors, extent=[0, u_max, 0, v_max], origin='lower', aspect='auto')
     ax.set_xlabel('u')
     ax.set_ylabel('v')
-    ax.set_title(f'Fundamental Domain (Genus {genus})', fontsize=10)
+    ax.set_title(f'Fundamental Domain (Genus 0)', fontsize=10)
     ax.set_xticks([0, np.pi, 2*np.pi])
     ax.set_xticklabels(['0', 'π', '2π'])
     ax.set_yticks([0, v_max/2, v_max])
     ax.set_yticklabels(['0', f'{v_label}/2', v_label])
-    if genus == 2:
-        # Import and call the analytic domain plot for double torus
-        from visualise_analytic import plot_fundamental_domain_coloring as analytic_domain
-        analytic_domain(ax, genus=2, num_points=num_points)
-        return
 
 
 def train_surface(model, optimizer, uv, xyz_target, num_epochs):
@@ -171,10 +177,10 @@ def visualise_supervised_genus0(output_dir: str, num_points: int, config_path: s
     # Quantitative labels based on hyperparams
     ellipsoid_configs = [
         {'a': 1.0, 'b': 1.0, 'c': 1.0, 'label': 'a=1, b=1, c=1'},
-        {'a': 1.5, 'b': 1.0, 'c': 1.0, 'label': 'a=1.5, b=1, c=1'},
-        {'a': 1.0, 'b': 1.5, 'c': 1.0, 'label': 'a=1, b=1.5, c=1'},
-        {'a': 1.5, 'b': 1.0, 'c': 0.7, 'label': 'a=1.5, b=1, c=0.7'},
-        {'a': 2.0, 'b': 0.8, 'c': 0.8, 'label': 'a=2, b=0.8, c=0.8'},
+        {'a': 2.0, 'b': 1.0, 'c': 1.0, 'label': 'a=2, b=1, c=1'},
+        {'a': 2.0, 'b': 2.0, 'c': 1.0, 'label': 'a=2, b=2, c=1'},
+        {'a': 1.5, 'b': 1.0, 'c': 0.5, 'label': 'a=1.5, b=1, c=0.5'},
+        {'a': 1.2, 'b': 0.6, 'c': 0.3, 'label': 'a=1.2, b=0.6, c=0.3'},
     ]
     
     model_paths = []
@@ -198,19 +204,29 @@ def visualise_supervised_genus0(output_dir: str, num_points: int, config_path: s
         model_paths.append((model_path, cfg['label'], uv))
     
     # Visualize with fundamental domain
-    fig = plt.figure(figsize=(15, 10))
+    n_models = len(model_paths)
+    n_plots = n_models + 1  # +1 for domain plot
+    n_rows = int(np.ceil(n_plots / 2))
+    fig = plt.figure(figsize=(12, 5 * n_rows))
     
     # Add fundamental domain coloring first
-    ax_domain = fig.add_subplot(2, 3, 1)
+    ax_domain = fig.add_subplot(n_rows, 2, 1)
     plot_fundamental_domain_coloring(ax_domain, genus=0)
     
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     for idx, (model_path, label, uv) in enumerate(model_paths):
         model, config, _ = load_model_from_checkpoint(model_path, device)
+        genus = config['topology']['genus']
+        domain = get_domain_for_genus(genus)
+        print(f"Visualizing model from {model_path}")
+        print(f"Embedding model created for genus {genus} ({genus_names.get(genus, 'unknown')})")
+        print(f"  Domain: {domain}")
+        print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
         with torch.no_grad():
             xyz_pred = model(uv).cpu()
-        ax = fig.add_subplot(2, 3, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz_pred, uv, label, genus=0)
-        ax.view_init(elev=20, azim=45)
+        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
+        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus)
+        ax.view_init(elev=30, azim=-60)
     
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'supervised_genus0.png')
@@ -225,14 +241,15 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
         base_config = yaml.safe_load(f)
     
     tau_values = [
-        ("1j", "τ = i"),
-        ("0.3+0.95j", "τ = 0.3+0.95i"),
-        ("0.5+0.87j", "τ = 0.5+0.87i"),
-        ("0.7+0.7j", "τ = 0.7+0.7i"),
-        ("-0.4+0.9j", "τ = -0.4+0.9i"),
+        ("1j", "τ = 1.0i"),
+        ("0.5j", "τ = 0.5i"),
+        ("1.0+0.5j", "τ = 1.0+0.5i"),
+        ("0.2+0.2j", "τ = 0.2+0.2i"),
+        ("1.0+0.2j", "τ = 1.0+0.2i"),
     ]
     
     model_paths = []
+    from sampling import transform_square_to_parallelogram, sample_rectangular_domain
     for tau_str, label in tau_values:
         config = copy.deepcopy(base_config)
         config['topology'] = config.get('topology', {})
@@ -242,10 +259,11 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
         config['model']['supervised_pretraining']['num_epochs'] = DEFAULT_NUM_EPOCHS
         config['model']['supervised_pretraining']['num_points_per_epoch'] = DEFAULT_NUM_POINTS_PER_EPOCH
         config['model']['supervised_pretraining']['batch_size'] = DEFAULT_BATCH_SIZE
+        tau = complex(tau_str.replace('i', 'j'))
+        uv = sample_rectangular_domain(num_points, (0, 2*np.pi), (0, 2*np.pi), device)
         model = create_embedding_model(config, device, skip_init=False)
-        uv = sample_parameters(num_points, domain="torus", device=device, dtype=torch.float32)
         with torch.no_grad():
-            xyz_target = get_reference_embedding(uv, domain="torus", tau=complex(tau_str.replace('i', 'j')))
+            xyz_target = get_reference_embedding(uv, domain="torus", tau=tau)
         optimizer = torch.optim.Adam(model.parameters(), lr=DEFAULT_LEARNING_RATE)
         model = train_surface(model, optimizer, uv, xyz_target, DEFAULT_NUM_EPOCHS)
         safe_label = label.replace(" ", "_").replace("=", "_").replace("+", "_").replace(".", "_").replace(",", "_")
@@ -254,20 +272,51 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
         model_paths.append((model_path, label, uv))
     
     # Visualize with fundamental domain
-    fig = plt.figure(figsize=(15, 10))
-    
-    # Add fundamental domain coloring first
-    ax_domain = fig.add_subplot(2, 3, 1)
-    plot_fundamental_domain_coloring(ax_domain, genus=1)
-    
+    n_tau = len(tau_values)
+    n_plots = n_tau + 1  # +1 for domain plot
+    n_rows = int(np.ceil(n_plots / 2))
+    fig = plt.figure(figsize=(12, 5 * n_rows))
+
+    tau_str, _ = tau_values[0]
+    tau = complex(tau_str.replace('i', 'j'))
+    ax_domain = fig.add_subplot(n_rows, 2, 1)
+    def domain_with_tau(ax, genus=1, num_points=100):
+        tau_real = np.real(tau)
+        tau_imag = np.imag(tau)
+        u = np.linspace(0, 2*np.pi, num_points)
+        v = np.linspace(0, 2*np.pi, num_points)
+        U, V = np.meshgrid(u, v)
+        X = U + V * tau_real / (2*np.pi)
+        Y = V * tau_imag / (2*np.pi)
+        v_norm = (V % (2 * np.pi)) / (2 * np.pi)
+        hue = v_norm
+        h = hue * 6.0
+        x = 1.0 - np.abs(h % 2.0 - 1.0)
+        R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
+        G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
+        B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
+        colors = np.stack([R, G, B], axis=-1)
+        ax.imshow(colors, extent=[X.min(), X.max(), Y.min(), Y.max()], origin='lower', aspect='auto')
+        ax.set_xlabel('u + v·Re(τ)/2π')
+        ax.set_ylabel('v·Im(τ)/2π')
+        ax.set_title(f'Fundamental Domain (Genus 1, τ={tau.real:.2f}+{tau.imag:.2f}i)', fontsize=10)
+    domain_with_tau(ax_domain, genus=1)
+
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     for idx, (model_path, label, uv) in enumerate(model_paths):
         model, config, _ = load_model_from_checkpoint(model_path, device)
+        genus = config['topology']['genus']
+        domain = get_domain_for_genus(genus)
+        print(f"Visualizing model from {model_path}")
+        print(f"Embedding model created for genus {genus} ({genus_names.get(genus, 'unknown')})")
+        print(f"  Domain: {domain}")
+        print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
         with torch.no_grad():
             xyz_pred = model(uv).cpu()
-        ax = fig.add_subplot(2, 3, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz_pred, uv, label, genus=1)
-        ax.view_init(elev=20, azim=45)
-    
+        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
+        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus)
+        ax.view_init(elev=30, azim=-60)
+
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'supervised_genus1.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
@@ -315,20 +364,30 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         torch.save({'model_state_dict': model.state_dict(), 'config': config, 'label': label}, model_path)
         model_paths.append((model_path, label, uv))
     # Visualize with fundamental domain
-    fig = plt.figure(figsize=(15, 10))
+    n_models = len(model_paths)
+    n_plots = n_models + 1  # +1 for domain plot
+    n_rows = int(np.ceil(n_plots / 2))
+    fig = plt.figure(figsize=(12, 5 * n_rows))
     # Add fundamental domain coloring first
-    ax_domain = fig.add_subplot(2, 3, 1)
+    ax_domain = fig.add_subplot(n_rows, 2, 1)
     first_cfg = dt_configs[0]
     tau1 = complex(first_cfg['tau1']['real'], first_cfg['tau1']['imag'])
     tau2 = complex(first_cfg['tau2']['real'], first_cfg['tau2']['imag'])
     analytic_domain(ax_domain, genus=2, tau1=tau1, tau2=tau2, neck_radius=0.3)
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     for idx, (model_path, label, uv) in enumerate(model_paths):
         model, config, _ = load_model_from_checkpoint(model_path, device)
+        genus = config['topology']['genus']
+        domain = get_domain_for_genus(genus)
+        print(f"Visualizing model from {model_path}")
+        print(f"Embedding model created for genus {genus} ({genus_names.get(genus, 'unknown')})")
+        print(f"  Domain: {domain}")
+        print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
         with torch.no_grad():
             xyz_pred = model(uv).cpu()
-        ax = fig.add_subplot(2, 3, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz_pred, uv, label, genus=2)
-        ax.view_init(elev=20, azim=45)
+        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
+        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus)
+        ax.view_init(elev=30, azim=-60)
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'supervised_genus2.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')

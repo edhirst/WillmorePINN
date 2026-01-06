@@ -20,7 +20,7 @@ from pathlib import Path
 
 from model import create_embedding_model
 from sampling import sample_parameters, get_domain_for_genus
-from utils import get_next_run_number
+from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors
 
 
 def load_checkpoint_model(checkpoint_path, config, device):
@@ -37,30 +37,6 @@ def plot_embedding_3d(ax, xyz, title, color='viridis', alpha=0.6, period=None):
     """Plot a 3D embedding."""
     xyz_np = xyz.detach().cpu().numpy()
     
-    # Color by v coordinate (assume input order matches uv sampling)
-    # If uv is available, use its second column for coloring; otherwise, use z as fallback
-    # For genus 2, use a full rainbow (HSV) mapping to match the fundamental domain
-    # We'll use a helper for HSV coloring
-    def hsv_to_rgb_colors(values, period=2 * np.pi):
-        v_norm = (values % period) / period
-        hue = v_norm
-        h = hue * 6.0
-        x = 1.0 - np.abs(h % 2.0 - 1.0)
-        colors = np.zeros((len(values), 3))
-        mask0 = (h >= 0) & (h < 1)
-        mask1 = (h >= 1) & (h < 2)
-        mask2 = (h >= 2) & (h < 3)
-        mask3 = (h >= 3) & (h < 4)
-        mask4 = (h >= 4) & (h < 5)
-        mask5 = (h >= 5) & (h < 6)
-        colors[mask0] = np.stack([np.ones(np.sum(mask0)), x[mask0], np.zeros(np.sum(mask0))], axis=1)
-        colors[mask1] = np.stack([x[mask1], np.ones(np.sum(mask1)), np.zeros(np.sum(mask1))], axis=1)
-        colors[mask2] = np.stack([np.zeros(np.sum(mask2)), np.ones(np.sum(mask2)), x[mask2]], axis=1)
-        colors[mask3] = np.stack([np.zeros(np.sum(mask3)), x[mask3], np.ones(np.sum(mask3))], axis=1)
-        colors[mask4] = np.stack([x[mask4], np.zeros(np.sum(mask4)), np.ones(np.sum(mask4))], axis=1)
-        colors[mask5] = np.stack([np.ones(np.sum(mask5)), np.zeros(np.sum(mask5)), x[mask5]], axis=1)
-        return colors
-
     # Try to infer the period for coloring (for genus 2, use 4*pi, else 2*pi)
     if period is None:
         period = 2 * np.pi
@@ -121,44 +97,28 @@ def get_highest_run_number(base_checkpoint_dir: str) -> int:
     return max(run_numbers) if run_numbers else None
 
 
-def plot_fundamental_domain_coloring(output_path, num_points=200):
+def plot_fundamental_domain_image(output_path, num_points=200, genus=None, config_path='hyperparameters.yaml'):
     """
-    Plot the fundamental domain [0,2π]×[0,2π] with rainbow coloring.
+    Plot and save the fundamental domain with rainbow coloring.
     
     Args:
         output_path: Path to save the plot
         num_points: Resolution of the grid
+        genus: Surface genus (0, 1, or 2). If None, read from config.
+        config_path: Path to config file to determine genus if not specified
     """
-    # Get tau from config or use default
-    tau = 1j
-    try:
-        import yaml
-        with open('hyperparameters.yaml', 'r') as f:
-            config = yaml.safe_load(f)
-        tau_str = config.get('topology', {}).get('torus', {}).get('tau', '1j')
-        tau = complex(tau_str.replace('i', 'j'))
-    except Exception:
-        pass
-    tau_real = np.real(tau)
-    tau_imag = np.imag(tau)
-    u = np.linspace(0, 2*np.pi, num_points)
-    v = np.linspace(0, 2*np.pi, num_points)
-    U, V = np.meshgrid(u, v)
-    X = U + V * tau_real / (2*np.pi)
-    Y = V * tau_imag / (2*np.pi)
-    v_norm = (V % (2 * np.pi)) / (2 * np.pi)
-    hue = v_norm
-    h = hue * 6.0
-    x = 1.0 - np.abs(h % 2.0 - 1.0)
-    R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
-    G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
-    B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
-    colors = np.stack([R, G, B], axis=-1)
+    # Get genus from config if not provided
+    if genus is None:
+        try:
+            import yaml
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            genus = config.get('topology', {}).get('genus', 1)
+        except Exception:
+            genus = 1
+    
     fig, ax = plt.subplots(figsize=(8, 8))
-    ax.imshow(colors, extent=[X.min(), X.max(), Y.min(), Y.max()], origin='lower', aspect='auto')
-    ax.set_xlabel('u + v·Re(τ)/2π', fontsize=12)
-    ax.set_ylabel('v·Im(τ)/2π', fontsize=12)
-    ax.set_title(f'Fundamental Domain Coloring (τ={tau_real:.2f}+{tau_imag:.2f}i)', fontsize=14)
+    plot_fundamental_domain_coloring(ax, genus=genus, num_points=num_points)
     plt.tight_layout()
     
     # Save figure
@@ -426,8 +386,9 @@ def main():
     print("=" * 60)
     print("Generating Fundamental Domain Coloring")
     print("=" * 60)
-    plot_fundamental_domain_coloring(
-        output_path=os.path.join(log_dir, 'fundamental_domain.png')
+    plot_fundamental_domain_image(
+        output_path=os.path.join(log_dir, 'fundamental_domain.png'),
+        config_path=args.config
     )
     
     if args.mode in ['evolution', 'both']:

@@ -29,89 +29,7 @@ from pathlib import Path
 from mpl_toolkits.mplot3d import Axes3D
 from model import create_embedding_model
 from sampling import sample_parameters, get_domain_for_genus, get_reference_embedding
-from utils import get_next_run_number
-from visualise_analytic import plot_fundamental_domain_coloring as analytic_domain
-
-
-def hsv_to_rgb_colors(values: np.ndarray, period: float = 2 * np.pi) -> np.ndarray:
-    """Convert normalized values to rainbow RGB colors (HSV-like)."""
-    v_norm = (values % period) / period
-    hue = v_norm
-    h = hue * 6.0
-    x = 1.0 - np.abs(h % 2.0 - 1.0)
-    
-    colors = np.zeros((len(values), 3))
-    mask0 = (h >= 0) & (h < 1)
-    mask1 = (h >= 1) & (h < 2)
-    mask2 = (h >= 2) & (h < 3)
-    mask3 = (h >= 3) & (h < 4)
-    mask4 = (h >= 4) & (h < 5)
-    mask5 = (h >= 5) & (h < 6)
-    
-    colors[mask0] = np.stack([np.ones(np.sum(mask0)), x[mask0], np.zeros(np.sum(mask0))], axis=1)
-    colors[mask1] = np.stack([x[mask1], np.ones(np.sum(mask1)), np.zeros(np.sum(mask1))], axis=1)
-    colors[mask2] = np.stack([np.zeros(np.sum(mask2)), np.ones(np.sum(mask2)), x[mask2]], axis=1)
-    colors[mask3] = np.stack([np.zeros(np.sum(mask3)), x[mask3], np.ones(np.sum(mask3))], axis=1)
-    colors[mask4] = np.stack([x[mask4], np.zeros(np.sum(mask4)), np.ones(np.sum(mask4))], axis=1)
-    colors[mask5] = np.stack([np.ones(np.sum(mask5)), np.zeros(np.sum(mask5)), x[mask5]], axis=1)
-    
-    return colors
-
-
-def plot_fundamental_domain_coloring(ax, genus=1, num_points=100):
-    """Plot the fundamental domain with the periodic coloring.
-    
-    For genus 2, draws the Fenchel-Nielsen fundamental domain (4 hexagons).
-    """
-    if genus == 2:
-        # For genus 2, always use the analytic domain plot
-        analytic_domain(ax, genus=2, num_points=num_points)
-        return
-    if genus == 1:
-        # Plot the square fundamental domain for tau = i
-        u = np.linspace(0, 2*np.pi, num_points)
-        v = np.linspace(0, 2*np.pi, num_points)
-        U, V = np.meshgrid(u, v)
-        v_norm = (V % (2 * np.pi)) / (2 * np.pi)
-        hue = v_norm
-        h = hue * 6.0
-        x = 1.0 - np.abs(h % 2.0 - 1.0)
-        R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
-        G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
-        B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
-        colors = np.stack([R, G, B], axis=-1)
-        ax.imshow(colors, extent=[0, 2*np.pi, 0, 2*np.pi], origin='lower', aspect='auto')
-        ax.set_xlabel('u')
-        ax.set_ylabel('v')
-        ax.set_title(f'Fundamental Domain (Genus 1, τ = i)', fontsize=10)
-        ax.set_xticks([0, np.pi, 2*np.pi])
-        ax.set_xticklabels(['0', 'π', '2π'])
-        ax.set_yticks([0, np.pi, 2*np.pi])
-        ax.set_yticklabels(['0', 'π', '2π'])
-        return
-    # Genus 0 fallback
-    u_max, v_max = 2 * np.pi, np.pi
-    v_label = 'π'
-    u = np.linspace(0, u_max, num_points)
-    v = np.linspace(0, v_max, num_points)
-    U, V = np.meshgrid(u, v)
-    v_norm = (V % v_max) / v_max
-    hue = v_norm
-    h = hue * 6.0
-    x = 1.0 - np.abs(h % 2.0 - 1.0)
-    R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
-    G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
-    B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
-    colors = np.stack([R, G, B], axis=-1)
-    ax.imshow(colors, extent=[0, u_max, 0, v_max], origin='lower', aspect='auto')
-    ax.set_xlabel('u')
-    ax.set_ylabel('v')
-    ax.set_title(f'Fundamental Domain (Genus 0)', fontsize=10)
-    ax.set_xticks([0, np.pi, 2*np.pi])
-    ax.set_xticklabels(['0', 'π', '2π'])
-    ax.set_yticks([0, v_max/2, v_max])
-    ax.set_yticklabels(['0', f'{v_label}/2', v_label])
-
+from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors, plot_surface_3d
 
 def train_surface(model, optimizer, uv, xyz_target, num_epochs):
     """Train model(uv) to xyz_target for num_epochs."""
@@ -136,37 +54,6 @@ def load_model_from_checkpoint(checkpoint_path: str, device: torch.device):
     model.eval()
     
     return model, config, label
-
-
-
-def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.7):
-    """Plot a 3D surface with coloring."""
-    xyz_np = xyz.detach().cpu().numpy() if torch.is_tensor(xyz) else xyz
-    uv_np = uv.cpu().numpy() if torch.is_tensor(uv) else uv
-    v = uv_np[:, 1]
-    if genus == 0:
-        period = np.pi
-    elif genus == 2:
-        period = 5 * np.pi
-    else:
-        period = 2 * np.pi
-    colors = hsv_to_rgb_colors(v, period)
-    ax.scatter(xyz_np[:, 0], xyz_np[:, 1], xyz_np[:, 2], c=colors, alpha=alpha, s=2)
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_title(title, fontsize=10)
-    max_range = np.array([
-        xyz_np[:, 0].max() - xyz_np[:, 0].min(),
-        xyz_np[:, 1].max() - xyz_np[:, 1].min(),
-        xyz_np[:, 2].max() - xyz_np[:, 2].min()
-    ]).max() / 2.0
-    mid_x = (xyz_np[:, 0].max() + xyz_np[:, 0].min()) * 0.5
-    mid_y = (xyz_np[:, 1].max() + xyz_np[:, 1].min()) * 0.5
-    mid_z = (xyz_np[:, 2].max() + xyz_np[:, 2].min()) * 0.5
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-    ax.set_zlim(mid_z - max_range, mid_z + max_range)
 
 
 def visualise_supervised_genus0(output_dir: str, num_points: int, config_path: str, device: torch.device):
@@ -277,30 +164,10 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
     n_rows = int(np.ceil(n_plots / 2))
     fig = plt.figure(figsize=(12, 5 * n_rows))
 
-    tau_str, _ = tau_values[0]
-    tau = complex(tau_str.replace('i', 'j'))
     ax_domain = fig.add_subplot(n_rows, 2, 1)
-    def domain_with_tau(ax, genus=1, num_points=100):
-        tau_real = np.real(tau)
-        tau_imag = np.imag(tau)
-        u = np.linspace(0, 2*np.pi, num_points)
-        v = np.linspace(0, 2*np.pi, num_points)
-        U, V = np.meshgrid(u, v)
-        X = U + V * tau_real / (2*np.pi)
-        Y = V * tau_imag / (2*np.pi)
-        v_norm = (V % (2 * np.pi)) / (2 * np.pi)
-        hue = v_norm
-        h = hue * 6.0
-        x = 1.0 - np.abs(h % 2.0 - 1.0)
-        R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
-        G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
-        B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
-        colors = np.stack([R, G, B], axis=-1)
-        ax.imshow(colors, extent=[X.min(), X.max(), Y.min(), Y.max()], origin='lower', aspect='auto')
-        ax.set_xlabel('u + v·Re(τ)/2π')
-        ax.set_ylabel('v·Im(τ)/2π')
-        ax.set_title(f'Fundamental Domain (Genus 1, τ={tau.real:.2f}+{tau.imag:.2f}i)', fontsize=10)
-    domain_with_tau(ax_domain, genus=1)
+    # Use tau=i for the domain plot to match visualise_analytic.py
+    tau = 1j
+    plot_fundamental_domain_coloring(ax_domain, genus=1, tau1=tau)
 
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     for idx, (model_path, label, uv) in enumerate(model_paths):
@@ -373,7 +240,7 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
     first_cfg = dt_configs[0]
     tau1 = complex(first_cfg['tau1']['real'], first_cfg['tau1']['imag'])
     tau2 = complex(first_cfg['tau2']['real'], first_cfg['tau2']['imag'])
-    analytic_domain(ax_domain, genus=2, tau1=tau1, tau2=tau2, neck_radius=0.3)
+    plot_fundamental_domain_coloring(ax_domain, genus=2, tau1=tau1, tau2=tau2, neck_radius=0.3)
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     for idx, (model_path, label, uv) in enumerate(model_paths):
         model, config, _ = load_model_from_checkpoint(model_path, device)

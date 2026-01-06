@@ -108,8 +108,8 @@ training:
     T_max: 500  # Match num_epochs for full cosine cycle
     eta_min: 0.00001  # Low final LR for fine-tuning
   gradient_clip: 0.5  # Tighter gradient clipping to prevent large jumps
-  save_frequency: 25  # Save checkpoint every n epochs
-  log_frequency: 25  # Log metrics more frequently to monitor stability
+  save_frequency: 100  # Save checkpoint every n epochs
+  log_frequency: 10  # Log metrics more frequently to monitor stability
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus

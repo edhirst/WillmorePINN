@@ -88,16 +88,39 @@ class EmbeddingWillmoreLoss(nn.Module):
         # Compute second fundamental form
         L, M, N, normal = model.compute_second_fundamental_form(uv, phi_u, phi_v)
         
-        # Compute mean curvature
+        # Compute mean curvature (this is already the geometric mean curvature)
         H = model.compute_mean_curvature(E, F, G, L, M, N, self.epsilon)
         
-        # Compute area element: dA = sqrt(EG - F²)
+        # Compute area element: dA = sqrt(EG - F²) du dv
+        # This is the surface area measure in parameter coordinates
         area_element = torch.sqrt(torch.abs(E * G - F * F) + self.epsilon)
         
-        # Willmore energy: ∫∫ H² √(EG-F²) du dv over domain
-        # Monte Carlo: integral ≈ (domain_area/N) * sum = domain_area * mean
-        integrand = H * H * area_element
-        willmore_energy = self.domain_area * torch.mean(integrand)
+        # IMPORTANT: For genus 0 (ellipsoid/sphere), we use area-weighted sampling
+        # where points are distributed uniformly on the SURFACE (not parameter space).
+        # This means the probability density is already proportional to the area element!
+        # 
+        # For area-weighted sampling: p(u,v) ∝ √(EG-F²)
+        # Monte Carlo estimator: ∫ f dA ≈ (1/N) Σ f(u_i,v_i) / p(u_i,v_i)
+        #                              ≈ (Surface_Area/N) Σ H²(u_i,v_i)
+        # 
+        # For uniform sampling in parameter space: p(u,v) = 1/domain_area
+        # Monte Carlo estimator: ∫ f dA ≈ (domain_area/N) Σ f(u_i,v_i) * √(EG-F²)
+        #
+        # The code MUST match the sampling strategy!
+        
+        if self.domain in ["ellipsoid", "sphere"]:
+            # Area-weighted sampling: points are uniform on surface
+            # W = ∫∫ H² dA ≈ (1/N) Σ H²_i  (if samples are weighted by area)
+            # But we need to multiply by surface area since we're taking mean
+            # For sphere of radius r: surface area = 4πr²
+            # We compute it as integral of area element to handle ellipsoids
+            total_surface_area = torch.mean(area_element) * self.domain_area
+            willmore_energy = torch.mean(H * H) * total_surface_area
+        else:
+            # Uniform sampling in parameter space (torus, double torus)
+            # W = ∫∫ H² √(EG-F²) du dv ≈ (domain_area/N) Σ H²_i * √(EG-F²)_i
+            integrand = H * H * area_element
+            willmore_energy = torch.mean(integrand) * self.domain_area
         
         return willmore_energy
 
@@ -370,24 +393,46 @@ class CombinedEmbeddingLoss(nn.Module):
         self.initial_willmore_weight = willmore_weight
         self.initial_regularity_weight = regularity_weight
     
-    def update_weights(self, epoch: int, total_epochs: int):
+    def update_weights(self, epoch: int, total_epochs: int, regularity_value: Optional[float] = None, 
+                      adaptive_config: Optional[dict] = None):
         """
-        Progressively adjust loss weights during training.
+        Progressively adjust loss weights during training with adaptive safeguards.
         Early training: High regularity weight, low Willmore weight
         Late training: Lower regularity weight, moderate Willmore weight
+        
+        ADAPTIVE SAFEGUARD: If regularity loss increases (surface becoming degenerate),
+        automatically boost regularity weight to prevent collapse.
         
         Args:
             epoch: Current epoch number (1-indexed)
             total_epochs: Total number of training epochs
+            regularity_value: Current regularity loss value (for adaptive adjustment)
+            adaptive_config: Configuration for adaptive training safeguards
         """
         progress = min(1.0, (epoch - 1) / max(1, total_epochs))
         
-        # Willmore: gradually increase but keep moderate (0.05 → 0.5, not 1.0)
-        # This prevents aggressive optimization that creates roughness
-        self.willmore_weight = self.initial_willmore_weight + (0.5 - self.initial_willmore_weight) * progress
+        # Base schedule: Willmore gradually increases, regularity gradually decreases
+        base_willmore = self.initial_willmore_weight + (0.5 - self.initial_willmore_weight) * progress
+        base_regularity = self.initial_regularity_weight * (1.0 - 0.5 * progress)
         
-        # Constraints: gradually decrease (but not too much)
-        self.regularity_weight = self.initial_regularity_weight * (1.0 - 0.5 * progress)
+        # Adaptive adjustment based on regularity health
+        if adaptive_config and adaptive_config.get('enabled', False) and regularity_value is not None:
+            threshold = adaptive_config.get('regularity_threshold', 0.5)
+            boost_factor = adaptive_config.get('regularity_boost_factor', 2.0)
+            
+            # If regularity loss is high, boost its weight to stabilize
+            if regularity_value > threshold:
+                regularity_multiplier = boost_factor
+                print(f"\n⚠️  Regularity loss {regularity_value:.4f} exceeds threshold {threshold:.4f}")
+                print(f"    Boosting regularity weight by {boost_factor}x to prevent collapse")
+            else:
+                regularity_multiplier = 1.0
+            
+            self.regularity_weight = base_regularity * regularity_multiplier
+        else:
+            self.regularity_weight = base_regularity
+        
+        self.willmore_weight = base_willmore
     
     def forward(self, model: nn.Module, uv: torch.Tensor) -> dict:
         """

@@ -109,18 +109,23 @@ def save_checkpoint(
     loss: float,
     config: dict,
     checkpoint_dir: str,
-    is_best: bool = False
+    is_best: bool = False,
+    scheduler: Optional[optim.lr_scheduler._LRScheduler] = None
 ) -> None:
     """Save model checkpoint."""
     os.makedirs(checkpoint_dir, exist_ok=True)
     
     checkpoint = {
         'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
+        'model': model.state_dict(),
+        'optimizer': optimizer.state_dict(),
         'loss': loss,
         'config': config
     }
+    
+    # Save scheduler state if provided (needed for checkpoint rollback)
+    if scheduler is not None:
+        checkpoint['scheduler'] = scheduler.state_dict()
     
     # Save regular checkpoint
     checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}.pt')
@@ -292,6 +297,16 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     else:
         raise ValueError(f"Unknown optimizer: {optimizer_type}")
     
+    # Print training configuration
+    genus = config.get('topology', {}).get('genus', 1)
+    adaptive_config = config['training'].get('adaptive_training', {})
+    if adaptive_config.get('enabled', False):
+        print(f"\nAdaptive training enabled for genus {genus}:")
+        print(f"  - Regularity monitoring with threshold {adaptive_config.get('regularity_threshold', 0.5)}")
+        if adaptive_config.get('checkpoint_rollback', False):
+            print(f"  - Automatic checkpoint rollback on severe degradation (>{adaptive_config.get('severe_degradation_threshold', 2.0)}x)")
+        print(f"  - Conservative learning: LR={config['training']['learning_rate']}, clip={config['training']['gradient_clip']}")
+    
     # Create scheduler
     scheduler_config = config["training"].get("scheduler", "cosine")
     if scheduler_config == "cosine":
@@ -425,10 +440,19 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         epoch_losses['volume_loss'] = 0.0
         epoch_losses['current_volume'] = 0.0
     
+    # Track rollbacks to prevent infinite loops
+    rollback_count = 0
+    max_rollbacks = config['training'].get('adaptive_training', {}).get('max_rollbacks', 3)
+    
     # Training loop
     for epoch in range(start_epoch, num_epochs + 1):
-        # Update loss weights progressively (annealing)
-        loss_fn.update_weights(epoch, num_epochs)
+        # Adaptive weight adjustment based on regularity health
+        adaptive_config = config['training'].get('adaptive_training', {})
+        if epoch > 1 and len(history['regularity']) > 0:
+            current_regularity = history['regularity'][-1]
+            loss_fn.update_weights(epoch, num_epochs, current_regularity, adaptive_config)
+        else:
+            loss_fn.update_weights(epoch, num_epochs)
         
         # Train one epoch
         use_rotation_aug = config["sampling"].get("use_rotation_augmentation", True)
@@ -439,6 +463,52 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             use_rotation_augmentation=use_rotation_aug,
             genus=genus
         )
+        
+        # Check for severe regularity degradation and rollback if needed
+        if adaptive_config.get('checkpoint_rollback', False) and epoch > 5 and len(history['regularity']) >= 5:
+            threshold = adaptive_config.get('severe_degradation_threshold', 2.0)
+            recent_window = min(5, len(history['regularity']))
+            baseline_regularity = min(history['regularity'][-recent_window:])
+            current_regularity = epoch_losses['regularity']
+            
+            if current_regularity > baseline_regularity * threshold:
+                if rollback_count < max_rollbacks:
+                    rollback_count += 1
+                    print(f"\n🚨 SEVERE REGULARITY DEGRADATION DETECTED (Rollback {rollback_count}/{max_rollbacks})")
+                    print(f"   Current: {current_regularity:.6f}, Baseline: {baseline_regularity:.6f}")
+                    print(f"   Rolling back to checkpoint from epoch {epoch - 1}")
+                    
+                    # Load previous checkpoint
+                    rollback_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch-1}.pt")
+                    if os.path.exists(rollback_path):
+                        checkpoint_data = torch.load(rollback_path, map_location=device)
+                        model.load_state_dict(checkpoint_data['model'])
+                        optimizer.load_state_dict(checkpoint_data['optimizer'])
+                        if scheduler is not None and 'scheduler' in checkpoint_data:
+                            scheduler.load_state_dict(checkpoint_data['scheduler'])
+                        
+                        # Reduce learning rate aggressively
+                        for param_group in optimizer.param_groups:
+                            param_group['lr'] *= 0.5
+                        print(f"   Reduced learning rate to {optimizer.param_groups[0]['lr']:.2e}")
+                        
+                        # Boost regularity weight
+                        loss_fn.regularity_weight *= 2.0
+                        print(f"   Boosted regularity weight to {loss_fn.regularity_weight:.2f}")
+                        
+                        # Skip recording this failed epoch and retry
+                        continue
+                    else:
+                        print(f"   Warning: Rollback checkpoint not found, continuing anyway")
+                else:
+                    print(f"\n⚠️  Max rollbacks ({max_rollbacks}) reached. Permanently reducing learning rate.")
+                    print(f"   Current regularity: {current_regularity:.6f}, Baseline: {baseline_regularity:.6f}")
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] *= 0.1
+                    loss_fn.regularity_weight *= 3.0
+                    print(f"   New learning rate: {optimizer.param_groups[0]['lr']:.2e}")
+                    print(f"   New regularity weight: {loss_fn.regularity_weight:.2f}")
+                    rollback_count = 0  # Reset counter after permanent adjustment
         
         # Update learning rate
         if scheduler is not None:
@@ -489,7 +559,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             save_checkpoint(
                 model, optimizer, epoch,
                 epoch_losses['willmore'], config,
-                checkpoint_dir, is_best
+                checkpoint_dir, is_best, scheduler
             )
     
     # Save final model (only if we actually trained)
@@ -497,14 +567,14 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         save_checkpoint(
             model, optimizer, num_epochs,
             epoch_losses['willmore'], config,
-            checkpoint_dir, is_best=False
+            checkpoint_dir, is_best=False, scheduler=scheduler
         )
     else:
         # For num_epochs=0, save the pretrained model
         save_checkpoint(
             model, optimizer, 0,
             epoch_losses['willmore'], config,
-            checkpoint_dir, is_best=False
+            checkpoint_dir, is_best=False, scheduler=scheduler
         )
     
     # Save training history

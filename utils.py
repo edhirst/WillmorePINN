@@ -548,6 +548,7 @@ def plot_loss_curves(history: dict, output_path: str):
         axes[1, 2].set_xlabel('Epoch', fontsize=12)
         axes[1, 2].set_ylabel('Volume', fontsize=12)
         axes[1, 2].set_title('Enclosed Volume', fontsize=14, fontweight='bold')
+        axes[1, 2].set_ylim(bottom=0, top=max(1.0, max(history['current_volume']) * 1.1))
         axes[1, 2].grid(True, alpha=0.3)
     
     plt.tight_layout()

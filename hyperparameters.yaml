@@ -99,17 +99,27 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 1000  # Long training run to converge to Clifford torus
+  num_epochs: 1000  # Long training run to reach optimal surfaces
   batch_size: 1024  # Larger batches for more stable gradients
-  learning_rate: 0.00001  # Much lower LR for smooth, stable optimization
+  learning_rate: 0.000005  # Conservative LR for smooth, stable optimization across all topologies
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
   scheduler: "cosine"  # Learning rate scheduler: step, cosine, exponential, plateau, none
   scheduler_params:
     T_max: 500  # Match num_epochs for full cosine cycle
-    eta_min: 0.00001  # Low final LR for fine-tuning
-  gradient_clip: 0.5  # Tighter gradient clipping to prevent large jumps
-  save_frequency: 100  # Save checkpoint every n epochs
-  log_frequency: 10  # Log metrics more frequently to monitor stability
+    eta_min: 0.000001  # Very low final LR for fine-tuning
+  gradient_clip: 0.3  # Conservative gradient clipping to prevent instabilities
+  save_frequency: 5  # Save checkpoints frequently for rollback capability
+  log_frequency: 10  # Log metrics frequently to monitor stability
+  
+  # Adaptive safeguards to prevent regularity collapse (applies to all genus types)
+  adaptive_training:
+    enabled: true  # Enable adaptive weight adjustment based on regularity health
+    regularity_threshold: 0.5  # If regularity increases beyond this, boost its weight
+    regularity_boost_factor: 2.0  # Multiply regularity weight by this when threshold exceeded
+    checkpoint_rollback: true  # Roll back to previous checkpoint if regularity degrades severely
+    severe_degradation_threshold: 2.0  # Rollback if regularity increases by this factor
+    max_rollbacks: 3  # Maximum number of rollbacks before reducing LR permanently
+    early_stopping_patience: 50  # Stop if no improvement in Willmore for this many epochs
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus
@@ -124,8 +134,8 @@ sampling:
 
 # Loss Function Parameters
 loss:
-  willmore_weight: 1.0  # Start very low, increase gradually (prevents roughness)
-  regularity_weight: 10.0  # Metric regularity preservation (decreases to 5.0)
+  willmore_weight: 0.1  # Start low, increase gradually (prevents roughness and instabilities)
+  regularity_weight: 10.0  # Strong metric regularity preservation (adaptive system maintains stability)
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   target_volume: null  # Target enclosed volume (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision

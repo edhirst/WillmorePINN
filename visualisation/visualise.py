@@ -28,7 +28,7 @@ def load_checkpoint_model(checkpoint_path, config, device):
     # Skip reference initialization when loading from checkpoint
     model = create_embedding_model(config, device, skip_init=True)
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(checkpoint['model'])
     model.eval()
     return model, checkpoint.get('epoch', 0), checkpoint.get('loss', 0)
 

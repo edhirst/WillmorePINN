@@ -134,7 +134,7 @@ def visualise_training_evolution(
     checkpoint_dir='checkpoints',
     num_test_points=5000,
     output_path='logs/embedding_evolution.png',
-    number_of_models=None
+    number_of_models=20
 ):
     """
     Visualize how the embedding evolves during training.
@@ -144,7 +144,7 @@ def visualise_training_evolution(
         checkpoint_dir: Directory containing checkpoints (can be base dir or specific run dir)
         num_test_points: Number of points to sample for visualization
         output_path: Where to save the visualization
-        number_of_models: Number of models to plot. If None or >= total models, plots all.
+        number_of_models: Number of models to plot (default: 20). If >= total models, plots all.
                          If a positive integer < total models, selects that many with even spacing,
                          always including first and last. Must be >= 2 if specified.
     """
@@ -355,8 +355,8 @@ def main():
                        help='Visualisation mode')
     parser.add_argument('--points', type=int, default=5000,
                        help='Number of test points')
-    parser.add_argument('--num-models', type=int, default=None,
-                       help='Number of models to plot (default: all). Must be >= 2 if specified.')
+    parser.add_argument('--num-models', type=int, default=20,
+                       help='Number of models to plot (default: 20). Must be >= 2 if specified.')
     
     args = parser.parse_args()
     
@@ -382,12 +382,36 @@ def main():
     log_dir = os.path.join(project_root, 'logs', f'run_{run_number}')
     os.makedirs(log_dir, exist_ok=True)
     
+    # Load genus from checkpoint (try best model first, then latest, then first checkpoint)
+    genus_from_checkpoint = None
+    for checkpoint_name in ['best_model.pt', 'latest_model.pt']:
+        checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
+        if os.path.exists(checkpoint_path):
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location='cpu')
+                genus_from_checkpoint = checkpoint.get('config', {}).get('topology', {}).get('genus')
+                if genus_from_checkpoint is not None:
+                    break
+            except Exception:
+                pass
+    
+    # If not found in best/latest, check first checkpoint
+    if genus_from_checkpoint is None:
+        checkpoint_files = sorted(glob.glob(os.path.join(checkpoint_dir, 'checkpoint_epoch_*.pt')))
+        if checkpoint_files:
+            try:
+                checkpoint = torch.load(checkpoint_files[0], map_location='cpu')
+                genus_from_checkpoint = checkpoint.get('config', {}).get('topology', {}).get('genus')
+            except Exception:
+                pass
+    
     # Generate fundamental domain coloring plot
     print("=" * 60)
     print("Generating Fundamental Domain Coloring")
     print("=" * 60)
     plot_fundamental_domain_image(
         output_path=os.path.join(log_dir, 'fundamental_domain.png'),
+        genus=genus_from_checkpoint,
         config_path=args.config
     )
     

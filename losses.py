@@ -109,16 +109,35 @@ class EmbeddingWillmoreLoss(nn.Module):
         # The code MUST match the sampling strategy!
         
         if self.domain in ["ellipsoid", "sphere"]:
-            # Area-weighted sampling: points are uniform on surface
-            # W = ∫∫ H² dA ≈ (1/N) Σ H²_i  (if samples are weighted by area)
-            # But we need to multiply by surface area since we're taking mean
-            # For sphere of radius r: surface area = 4πr²
-            # We compute it as integral of area element to handle ellipsoids
-            total_surface_area = torch.mean(area_element) * self.domain_area
-            willmore_energy = torch.mean(H * H) * total_surface_area
+            # AREA-WEIGHTED SAMPLING (genus 0):
+            # Samples: u ~ Uniform[0,2π], cos(v) ~ Uniform[-1,1]
+            # Joint density: p(u,v) = (1/(2π)) × (sin(v)/2) = sin(v)/(4π)
+            #
+            # Monte Carlo importance sampling estimator:
+            # W = ∫₀^{2π} ∫₀^π H²(u,v) √(EG-F²)(u,v) du dv
+            #   = 𝔼_p[f/p] where f = H² √(EG-F²), p = sin(v)/(4π)
+            #   ≈ (1/N) Σ [f_i / p_i]
+            #   = (1/N) Σ [H²_i × √(EG-F²)_i / (sin(v_i)/(4π))]
+            #   = (4π/N) Σ [H²_i × √(EG-F²)_i / sin(v_i)]
+            #
+            # Extract v from uv samples (second column)
+            v = uv[:, 1]  # v ∈ [0, π]
+            sin_v = torch.sin(v) + self.epsilon  # Add epsilon to avoid division by zero
+            
+            # Compute importance sampling weights: 4π / sin(v)
+            importance_weights = (4 * np.pi) / sin_v
+            
+            # Weighted integrand
+            integrand = H * H * area_element * importance_weights
+            willmore_energy = torch.mean(integrand)
         else:
-            # Uniform sampling in parameter space (torus, double torus)
-            # W = ∫∫ H² √(EG-F²) du dv ≈ (domain_area/N) Σ H²_i * √(EG-F²)_i
+            # UNIFORM SAMPLING in parameter space (genus 1: torus, genus 2: double torus)
+            # Samples: u ~ Uniform, v ~ Uniform over respective domains
+            # Sampling density: p(u,v) = 1/domain_area (constant)
+            #
+            # Monte Carlo estimator with uniform sampling:
+            # W = ∫∫ H² √(EG-F²) du dv ≈ (domain_area/N) Σ [H²_i × √(EG-F²)_i]
+            #   = domain_area × mean(H² × √(EG-F²))
             integrand = H * H * area_element
             willmore_energy = torch.mean(integrand) * self.domain_area
         

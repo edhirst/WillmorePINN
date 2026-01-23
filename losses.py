@@ -192,42 +192,46 @@ class RegularityLoss(nn.Module):
         """
         uv = uv.requires_grad_(True)
         
-        # Compute first fundamental form
+        # Compute first fundamental form (needed by multiple components)
         E, F, G, phi_u, phi_v = model.compute_first_fundamental_form(uv)
         
+        # Only compute loss components with non-zero weights
+        total_loss = torch.tensor(0.0, device=uv.device)
+        weight_sum = 0.0
+        
         # Penalize extremely small area elements (prevents local collapse)
-        det = E * G - F * F
-        area_element = torch.sqrt(torch.abs(det) + self.epsilon)
-        area_element_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - area_element) ** 2)
+        if self.area_element_weight > 0:
+            det = E * G - F * F
+            area_element = torch.sqrt(torch.abs(det) + self.epsilon)
+            area_element_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - area_element) ** 2)
+            total_loss += self.area_element_weight * area_element_loss
+            weight_sum += self.area_element_weight
         
         # Check orientation is preserved (normal should point consistently)
         # Cross product magnitude should stay bounded away from zero
-        cross_magnitude = torch.norm(torch.cross(phi_u, phi_v, dim=1), dim=1)
-        orientation_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - cross_magnitude) ** 2)
+        if self.orientation_weight > 0:
+            cross_magnitude = torch.norm(torch.cross(phi_u, phi_v, dim=1), dim=1)
+            orientation_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - cross_magnitude) ** 2)
+            total_loss += self.orientation_weight * orientation_loss
+            weight_sum += self.orientation_weight
         
         # Penalize extreme metric distortion (prevents degeneration)
         # E and G should be positive and not too different (isotropy encouragement)
-        metric_positivity = torch.mean(torch.nn.functional.relu(0.001 - E) ** 2) + \
-                           torch.mean(torch.nn.functional.relu(0.001 - G) ** 2)
+        if self.metric_positivity_weight > 0:
+            metric_positivity = torch.mean(torch.nn.functional.relu(0.001 - E) ** 2) + \
+                               torch.mean(torch.nn.functional.relu(0.001 - G) ** 2)
+            total_loss += self.metric_positivity_weight * metric_positivity
+            weight_sum += self.metric_positivity_weight
         
         # Smoothness: penalize large derivatives (E = |φ_u|², G = |φ_v|²)
-        smoothness_loss = torch.mean(E + G)
+        if self.smoothness_weight > 0:
+            smoothness_loss = torch.mean(E + G)
+            total_loss += self.smoothness_weight * smoothness_loss
+            weight_sum += self.smoothness_weight
         
-        # Normalize weights so they sum to 1.0
-        weight_sum = (
-            self.area_element_weight +
-            self.orientation_weight +
-            self.metric_positivity_weight +
-            self.smoothness_weight
-        )
-        
-        # Weighted combination with normalized weights
-        total_loss = (
-            (self.area_element_weight / weight_sum) * area_element_loss +
-            (self.orientation_weight / weight_sum) * orientation_loss +
-            (self.metric_positivity_weight / weight_sum) * metric_positivity +
-            (self.smoothness_weight / weight_sum) * smoothness_loss
-        )
+        # Normalize by weight sum if any components are active
+        if weight_sum > 0:
+            total_loss = total_loss / weight_sum
         
         return total_loss
 
@@ -464,9 +468,29 @@ class CombinedEmbeddingLoss(nn.Module):
         Returns:
             Dictionary with total loss and individual components
         """
-        # Compute individual losses
-        willmore = self.willmore_loss(model, uv)
-        regularity = self.regularity_loss(model, uv)
+        # Only compute loss components with non-zero weights
+        total_loss = torch.tensor(0.0, device=uv.device)
+        weight_sum = 0.0
+        willmore_value = 0.0
+        regularity_value = 0.0
+        
+        # Compute Willmore loss if weight > 0
+        if self.willmore_weight > 0:
+            willmore = self.willmore_loss(model, uv)
+            willmore_value = willmore.item()
+            total_loss += self.willmore_weight * willmore
+            weight_sum += self.willmore_weight
+        
+        # Compute regularity loss if weight > 0
+        if self.regularity_weight > 0:
+            regularity = self.regularity_loss(model, uv)
+            regularity_value = regularity.item()
+            total_loss += self.regularity_weight * regularity
+            weight_sum += self.regularity_weight
+        
+        # Normalize by weight sum if any components are active
+        if weight_sum > 0:
+            total_loss = total_loss / weight_sum
         
         # Compute volume constraint if enabled (for genus 0)
         volume_loss = torch.tensor(0.0, device=uv.device)
@@ -474,24 +498,13 @@ class CombinedEmbeddingLoss(nn.Module):
         if self.use_volume_constraint and self.volume_constraint is not None:
             volume_loss, current_volume = self.volume_constraint(model, uv)
             current_volume = current_volume.item()
-        
-        # Normalize weights so they sum to 1.0
-        weight_sum = self.willmore_weight + self.regularity_weight
-        
-        # Weighted combination with normalized weights
-        total_loss = (
-            (self.willmore_weight / weight_sum) * willmore +
-            (self.regularity_weight / weight_sum) * regularity
-        )
-        
-        # Add volume constraint (not normalized, applied separately)
-        if self.use_volume_constraint:
+            # Add volume constraint (not normalized, applied separately)
             total_loss = total_loss + volume_loss
         
         result = {
             'total': total_loss,
-            'willmore': willmore.item(),
-            'regularity': regularity.item()
+            'willmore': willmore_value,
+            'regularity': regularity_value
         }
         
         if self.use_volume_constraint:

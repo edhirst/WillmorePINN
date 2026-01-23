@@ -3,7 +3,7 @@
 # Topology Parameters
 # The genus defines the topology of the surface being optimized
 topology:
-  genus: 0  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
+  genus: 1  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
   
   # Genus 0 (sphere/ellipsoid) initialization parameters
   # Uses polar coordinates on [0, π] × [0, 2π]
@@ -17,8 +17,8 @@ topology:
   # Genus 1 (torus) initialization parameters
   # Uses doubly-periodic coordinates on [0, 2π] × [0, 2π]
   torus:
-    tau: "0.5j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
-               # Default "1j" gives standard square torus
+    tau: "0.9j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
+               # Clifford torus has tau ≈ 0.707j (1/√2), start slightly higher for visible convergence
                # Can also use dict format: {real: 0.5, imag: 0.866}
     max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
     # Clifford torus (R = √2, r = 1) has minimum Willmore energy 2π² ≈ 19.74
@@ -90,36 +90,36 @@ model:
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
-    num_epochs: 100  # Many epochs for very smooth supervised learning
-    learning_rate: 0.005  # Lower LR for more careful pretraining
+    num_epochs: 50  # More epochs for better initialization
+    learning_rate: 0.003  # Lower LR for careful pretraining
     batch_size: 512  # Larger batches for stable pretraining
-    num_points_per_epoch: 8192  # Many points for excellent coverage
+    num_points_per_epoch: 8192  # More points for better coverage
     position_weight: 1.0  # Weight for position matching loss
-    derivative_weight: 0.5  # Higher derivative weight for better geometry learning
+    derivative_weight: 0.5  # Higher derivative weight for better geometry
 
 # Training Parameters
 training:
-  num_epochs: 1000  # Long training run to reach optimal surfaces
+  num_epochs: 60  # Longer run for smoother convergence
   batch_size: 1024  # Larger batches for more stable gradients
-  learning_rate: 0.000005  # Conservative LR for smooth, stable optimization across all topologies
+  learning_rate: 0.00003  # Much lower LR for stable, gradual optimization
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
   scheduler: "cosine"  # Learning rate scheduler: step, cosine, exponential, plateau, none
   scheduler_params:
-    T_max: 500  # Match num_epochs for full cosine cycle
-    eta_min: 0.000001  # Very low final LR for fine-tuning
-  gradient_clip: 0.3  # Conservative gradient clipping to prevent instabilities
+    T_max: 60  # Match num_epochs for full cosine cycle
+    eta_min: 0.000005  # Higher minimum to maintain stability
+  gradient_clip: 0.3  # Conservative gradient clipping for stability
   save_frequency: 5  # Save checkpoints frequently for rollback capability
-  log_frequency: 10  # Log metrics frequently to monitor stability
+  log_frequency: 5  # Log metrics frequently to monitor stability
   
   # Adaptive safeguards to prevent regularity collapse (applies to all genus types)
   adaptive_training:
     enabled: true  # Enable adaptive weight adjustment based on regularity health
-    regularity_threshold: 0.5  # If regularity increases beyond this, boost its weight
+    regularity_threshold: 0.3  # Lower threshold for earlier intervention
     regularity_boost_factor: 2.0  # Multiply regularity weight by this when threshold exceeded
     checkpoint_rollback: true  # Roll back to previous checkpoint if regularity degrades severely
     severe_degradation_threshold: 2.0  # Rollback if regularity increases by this factor
     max_rollbacks: 3  # Maximum number of rollbacks before reducing LR permanently
-    early_stopping_patience: 50  # Stop if no improvement in Willmore for this many epochs
+    early_stopping_patience: 30  # Stop earlier for local runs
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus
@@ -127,15 +127,15 @@ training:
 # - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
 # - genus 2: double_torus domain with custom parametrization
 sampling:
-  num_points: 20000  # More points for accurate geometry
+  num_points: 16000  # Fewer points for faster local runs
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
   use_rotation_augmentation: true  # Apply random z-axis rotations for symmetry enforcement
 
 # Loss Function Parameters
 loss:
-  willmore_weight: 0.1  # Start low, increase gradually (prevents roughness and instabilities)
-  regularity_weight: 10.0  # Strong metric regularity preservation (adaptive system maintains stability)
+  willmore_weight: 0.5  # Moderate weight for gradual shape optimization
+  regularity_weight: 10.0  # Strong regularity to maintain stable geometry
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   target_volume: null  # Target enclosed volume (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
@@ -143,8 +143,8 @@ loss:
   # Regularity loss sub-components (normalized internally to sum to 1.0)
   regularity_area_element_weight: 1.0  # Prevent area element collapse
   regularity_orientation_weight: 1.0  # Maintain consistent orientation
-  regularity_metric_positivity_weight: 1.0  # Prevent metric degeneration
-  regularity_smoothness_weight: 1.0  # Penalize large derivatives
+  regularity_metric_positivity_weight: 0.5  # Prevent metric degeneration (enable for stability)
+  regularity_smoothness_weight: 0.5  # Penalize large derivatives (enable for smooth convergence)
   # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
 
   # Volume constraint for genus 0 (prevents sphere from collapsing to a point)

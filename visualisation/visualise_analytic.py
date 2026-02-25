@@ -41,12 +41,14 @@ def visualise_analytic_genus0(output_dir: str, num_points: int = 10000, config_p
     plot_fundamental_domain_coloring(ax_domain, genus=0)
     
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+
+    # First pass: collect xyz for all surfaces
+    _surfaces = []
     for idx, cfg in enumerate(ellipsoid_configs):
         genus = 0
         domain = "ellipsoid"
         print(f"Visualizing analytic surface {idx+1} for genus {genus} ({genus_names.get(genus, 'unknown')})")
         print(f"  Domain: {domain}")
-        # Create dummy config for parameter count
         dummy_config = {'topology': {'genus': genus, 'ellipsoid': cfg}, 'model': {}}
         from model import create_embedding_model
         model = create_embedding_model(dummy_config, device, skip_init=True)
@@ -55,8 +57,19 @@ def visualise_analytic_genus0(output_dir: str, num_points: int = 10000, config_p
         uv = sample_parameters(num_points, domain=domain, device=device, dtype=dtype)
         with torch.no_grad():
             xyz = get_reference_embedding(uv, genus=genus, topology_params=topology_params)
+        _surfaces.append((cfg, uv, xyz))
+
+    # Shared scale across all subplots
+    _all_xyz = np.concatenate([s[2].cpu().numpy() for s in _surfaces])
+    _global_range = np.array([
+        _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
+        _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
+        _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
+    ]).max() / 2.0
+
+    for idx, (cfg, uv, xyz) in enumerate(_surfaces):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz, uv, cfg['label'], genus=genus)
+        plot_surface_3d(ax, xyz, uv, cfg['label'], genus=0, global_range=_global_range)
     
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'analytic_genus0.png')
@@ -90,12 +103,14 @@ def visualise_analytic_genus1(output_dir: str, num_points: int = 10000, config_p
 
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     from sampling import transform_square_to_parallelogram, sample_rectangular_domain
+
+    # First pass: collect xyz for all surfaces
+    _surfaces = []
     for idx, (tau_str, label) in enumerate(tau_values):
         genus = 1
         domain = "torus"
         print(f"Visualizing analytic surface {idx+1} for genus {genus} ({genus_names.get(genus, 'unknown')})")
         print(f"  Domain: {domain}")
-        # Create dummy config for parameter count
         dummy_config = {'topology': {'genus': genus, 'torus': {'tau': tau_str}}, 'model': {}}
         from model import create_embedding_model
         model = create_embedding_model(dummy_config, device, skip_init=True)
@@ -104,8 +119,19 @@ def visualise_analytic_genus1(output_dir: str, num_points: int = 10000, config_p
         uv = sample_rectangular_domain(num_points, (0, 2*np.pi), (0, 2*np.pi), device)
         with torch.no_grad():
             xyz = get_reference_embedding(uv, domain=domain, tau=tau)
+        _surfaces.append((label, uv, xyz))
+
+    # Shared scale across all subplots
+    _all_xyz = np.concatenate([s[2].cpu().numpy() for s in _surfaces])
+    _global_range = np.array([
+        _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
+        _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
+        _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
+    ]).max() / 2.0
+
+    for idx, (label, uv, xyz) in enumerate(_surfaces):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz, uv, label, genus=genus)
+        plot_surface_3d(ax, xyz, uv, label, genus=1, global_range=_global_range)
 
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'analytic_genus1.png')
@@ -173,13 +199,15 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
                                      neck_radius=0.3)  # Legacy param name for domain plot
     
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+
+    # First pass: collect xyz for all surfaces
+    _surfaces = []
     for idx, cfg in enumerate(dt_configs):
         genus = 2
         domain = "double_torus"
         label = cfg.pop('label')
         print(f"Visualizing analytic surface {idx+1} for genus {genus} ({genus_names.get(genus, 'unknown')})")
         print(f"  Domain: {domain}")
-        # Create dummy config for parameter count
         dummy_config = {'topology': {'genus': genus, 'double_torus': cfg}, 'model': {}}
         from model import create_embedding_model
         model = create_embedding_model(dummy_config, device, skip_init=True)
@@ -188,9 +216,20 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
         uv = sample_parameters(num_points, domain=domain, device=device, dtype=dtype)
         with torch.no_grad():
             xyz = get_reference_embedding(uv, genus=genus, topology_params=topology_params)
-        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz, uv, label, genus=genus)
         cfg['label'] = label  # Restore for summary
+        _surfaces.append((label, uv, xyz))
+
+    # Shared scale across all subplots
+    _all_xyz = np.concatenate([s[2].cpu().numpy() for s in _surfaces])
+    _global_range = np.array([
+        _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
+        _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
+        _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
+    ]).max() / 2.0
+
+    for idx, (label, uv, xyz) in enumerate(_surfaces):
+        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
+        plot_surface_3d(ax, xyz, uv, label, genus=2, global_range=_global_range)
     
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'analytic_genus2.png')

@@ -33,7 +33,7 @@ def load_checkpoint_model(checkpoint_path, config, device):
     return model, checkpoint.get('epoch', 0), checkpoint.get('loss', 0)
 
 
-def plot_embedding_3d(ax, xyz, title, color='viridis', alpha=0.6, period=None):
+def plot_embedding_3d(ax, xyz, title, color='viridis', alpha=0.6, period=None, global_range=None):
     """Plot a 3D embedding."""
     xyz_np = xyz.detach().cpu().numpy()
     
@@ -55,21 +55,22 @@ def plot_embedding_3d(ax, xyz, title, color='viridis', alpha=0.6, period=None):
     ax.set_zlabel('Z')
     ax.set_title(title)
     
-    # Equal aspect ratio
-    max_range = np.array([
-        xyz_np[:, 0].max() - xyz_np[:, 0].min(),
-        xyz_np[:, 1].max() - xyz_np[:, 1].min(),
-        xyz_np[:, 2].max() - xyz_np[:, 2].min()
-    ]).max() / 2.0
-    
     mid_x = (xyz_np[:, 0].max() + xyz_np[:, 0].min()) * 0.5
     mid_y = (xyz_np[:, 1].max() + xyz_np[:, 1].min()) * 0.5
     mid_z = (xyz_np[:, 2].max() + xyz_np[:, 2].min()) * 0.5
-    
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-    ax.set_zlim(mid_z - max_range, mid_z + max_range)
-    
+
+    if global_range is None:
+        global_range = np.array([
+            xyz_np[:, 0].max() - xyz_np[:, 0].min(),
+            xyz_np[:, 1].max() - xyz_np[:, 1].min(),
+            xyz_np[:, 2].max() - xyz_np[:, 2].min()
+        ]).max() / 2.0
+
+    ax.set_xlim(mid_x - global_range, mid_x + global_range)
+    ax.set_ylim(mid_y - global_range, mid_y + global_range)
+    ax.set_zlim(mid_z - global_range, mid_z + global_range)
+    ax.set_box_aspect([1, 1, 1])
+
     return scatter
 
 
@@ -244,7 +245,10 @@ def visualise_training_evolution(
     fig.suptitle(f"Willmore Minimization - Genus {plot_genus} ({genus_names.get(plot_genus, 'unknown')})", fontsize=14)
     
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
-    for idx, checkpoint_path in enumerate(selected_checkpoints):
+
+    # First pass: load all models and collect xyz + title
+    _plot_data = []
+    for checkpoint_path in selected_checkpoints:
         checkpoint_name = Path(checkpoint_path).name
         print(f"  Loading {checkpoint_name}...")
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
@@ -257,7 +261,6 @@ def visualise_training_evolution(
         model, epoch, loss = load_checkpoint_model(checkpoint_path, config_ckpt, device)
         with torch.no_grad():
             xyz = model(uv_test)
-        ax = fig.add_subplot(n_rows, n_cols, idx + 1, projection='3d')
         if 'best' in checkpoint_path:
             title = f'Best Model\nEpoch {epoch}, W={loss:.2f}'
         elif 'latest' in checkpoint_path:
@@ -267,7 +270,19 @@ def visualise_training_evolution(
             if expected_epoch != epoch:
                 print(f"  WARNING: Checkpoint {checkpoint_name} has epoch {epoch} but filename suggests {expected_epoch}")
             title = f'Epoch {epoch}\nW={loss:.2f}'
-        plot_embedding_3d(ax, xyz, title, period=4 * np.pi if genus_ckpt == 2 else 2 * np.pi)
+        _plot_data.append((xyz, title, genus_ckpt))
+
+    # Shared scale across all subplots
+    _all_xyz = np.concatenate([d[0].detach().cpu().numpy() for d in _plot_data])
+    _global_range = np.array([
+        _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
+        _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
+        _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
+    ]).max() / 2.0
+
+    for idx, (xyz, title, genus_ckpt) in enumerate(_plot_data):
+        ax = fig.add_subplot(n_rows, n_cols, idx + 1, projection='3d')
+        plot_embedding_3d(ax, xyz, title, period=4 * np.pi if genus_ckpt == 2 else 2 * np.pi, global_range=_global_range)
         ax.view_init(elev=30, azim=-60)
     
     plt.tight_layout()
@@ -318,13 +333,21 @@ def visualise_single_model(
     # Compute embedding
     with torch.no_grad():
         xyz = model(uv_test)
+    # Shared scale across all three views
+    _xyz_np = xyz.detach().cpu().numpy()
+    _global_range = np.array([
+        _xyz_np[:, 0].max() - _xyz_np[:, 0].min(),
+        _xyz_np[:, 1].max() - _xyz_np[:, 1].min(),
+        _xyz_np[:, 2].max() - _xyz_np[:, 2].min()
+    ]).max() / 2.0
+
     # Create figure with multiple views
     fig = plt.figure(figsize=(18, 6))
     angles = [(20, 45), (20, 135), (20, 225)]
     view_names = ['Front', 'Side', 'Back']
     for idx, (elev, azim) in enumerate(angles):
         ax = fig.add_subplot(1, 3, idx + 1, projection='3d')
-        plot_embedding_3d(ax, xyz, f'{view_names[idx]} View', alpha=0.7, period=4 * np.pi if genus == 2 else 2 * np.pi)
+        plot_embedding_3d(ax, xyz, f'{view_names[idx]} View', alpha=0.7, period=4 * np.pi if genus == 2 else 2 * np.pi, global_range=_global_range)
         ax.view_init(elev=elev, azim=azim)
     fig.suptitle(f'Best Model - Epoch {epoch}, Willmore Energy = {loss:.4f}', fontsize=14, y=0.98)
     plt.tight_layout()

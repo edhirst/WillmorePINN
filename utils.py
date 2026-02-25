@@ -44,8 +44,21 @@ def hsv_to_rgb_colors(values: np.ndarray, period: float = 2 * np.pi) -> np.ndarr
     return colors
 
 
-def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6):
-    """Plot a 3D surface with improved coloring."""
+def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6, global_range=None):
+    """Plot a 3D surface with improved coloring.
+
+    Args:
+        ax: Matplotlib 3D axes.
+        xyz: Surface points, shape (N, 3).
+        uv: Parameter coordinates, shape (N, 2).
+        title: Subplot title.
+        genus: Surface genus (for colour period).
+        alpha: Point transparency.
+        global_range: Shared half-extent for all three axes. Each axis is set to
+            [mid - global_range, mid + global_range], where mid is the midpoint
+            of that axis for this subplot. Passing the same value to every subplot
+            in a figure enforces a uniform spatial scale.
+    """
     xyz_np = xyz.detach().cpu().numpy() if torch.is_tensor(xyz) else xyz
     uv_np = uv.cpu().numpy() if torch.is_tensor(uv) else uv
     v = uv_np[:, 1]
@@ -70,20 +83,21 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6):
     ax.set_zlabel('Z')
     ax.set_title(title, fontsize=10)
     
-    # Set equal aspect ratio
-    max_range = np.array([
-        xyz_np[:, 0].max() - xyz_np[:, 0].min(),
-        xyz_np[:, 1].max() - xyz_np[:, 1].min(),
-        xyz_np[:, 2].max() - xyz_np[:, 2].min()
-    ]).max() / 2.0
-    
     mid_x = (xyz_np[:, 0].max() + xyz_np[:, 0].min()) * 0.5
     mid_y = (xyz_np[:, 1].max() + xyz_np[:, 1].min()) * 0.5
     mid_z = (xyz_np[:, 2].max() + xyz_np[:, 2].min()) * 0.5
-    
-    ax.set_xlim(mid_x - max_range, mid_x + max_range)
-    ax.set_ylim(mid_y - max_range, mid_y + max_range)
-    ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
+    if global_range is None:
+        global_range = np.array([
+            xyz_np[:, 0].max() - xyz_np[:, 0].min(),
+            xyz_np[:, 1].max() - xyz_np[:, 1].min(),
+            xyz_np[:, 2].max() - xyz_np[:, 2].min()
+        ]).max() / 2.0
+
+    ax.set_xlim(mid_x - global_range, mid_x + global_range)
+    ax.set_ylim(mid_y - global_range, mid_y + global_range)
+    ax.set_zlim(mid_z - global_range, mid_z + global_range)
+    ax.set_box_aspect([1, 1, 1])
 
 
 def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=1j, neck_radius=0.3):

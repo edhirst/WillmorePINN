@@ -101,7 +101,10 @@ def visualise_supervised_genus0(output_dir: str, num_points: int, config_path: s
     plot_fundamental_domain_coloring(ax_domain, genus=0)
     
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
-    for idx, (model_path, label, uv) in enumerate(model_paths):
+
+    # First pass: collect xyz and metadata
+    _plot_data = []
+    for model_path, label, uv in model_paths:
         model, config, _ = load_model_from_checkpoint(model_path, device)
         genus = config['topology']['genus']
         domain = get_domain_for_genus(genus)
@@ -111,10 +114,21 @@ def visualise_supervised_genus0(output_dir: str, num_points: int, config_path: s
         print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
         with torch.no_grad():
             xyz_pred = model(uv).cpu()
+        _plot_data.append((xyz_pred, uv, label, genus))
+
+    # Shared scale across all subplots
+    _all_xyz = np.concatenate([d[0].numpy() for d in _plot_data])
+    _global_range = np.array([
+        _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
+        _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
+        _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
+    ]).max() / 2.0
+
+    for idx, (xyz_pred, uv, label, genus) in enumerate(_plot_data):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus)
+        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus, global_range=_global_range)
         ax.view_init(elev=30, azim=-60)
-    
+
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'supervised_genus0.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
@@ -170,7 +184,10 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
     plot_fundamental_domain_coloring(ax_domain, genus=1, tau1=tau)
 
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
-    for idx, (model_path, label, uv) in enumerate(model_paths):
+
+    # First pass: collect xyz and metadata
+    _plot_data = []
+    for model_path, label, uv in model_paths:
         model, config, _ = load_model_from_checkpoint(model_path, device)
         genus = config['topology']['genus']
         domain = get_domain_for_genus(genus)
@@ -180,8 +197,19 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
         print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
         with torch.no_grad():
             xyz_pred = model(uv).cpu()
+        _plot_data.append((xyz_pred, uv, label, genus))
+
+    # Shared scale across all subplots
+    _all_xyz = np.concatenate([d[0].numpy() for d in _plot_data])
+    _global_range = np.array([
+        _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
+        _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
+        _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
+    ]).max() / 2.0
+
+    for idx, (xyz_pred, uv, label, genus) in enumerate(_plot_data):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus)
+        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus, global_range=_global_range)
         ax.view_init(elev=30, azim=-60)
 
     plt.tight_layout()
@@ -242,7 +270,10 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
     tau2 = complex(first_cfg['tau2']['real'], first_cfg['tau2']['imag'])
     plot_fundamental_domain_coloring(ax_domain, genus=2, tau1=tau1, tau2=tau2, neck_radius=0.3)
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
-    for idx, (model_path, label, uv) in enumerate(model_paths):
+
+    # First pass: collect xyz and metadata
+    _plot_data = []
+    for model_path, label, uv in model_paths:
         model, config, _ = load_model_from_checkpoint(model_path, device)
         genus = config['topology']['genus']
         domain = get_domain_for_genus(genus)
@@ -252,8 +283,19 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
         with torch.no_grad():
             xyz_pred = model(uv).cpu()
+        _plot_data.append((xyz_pred, uv, label, genus))
+
+    # Shared scale across all subplots
+    _all_xyz = np.concatenate([d[0].numpy() for d in _plot_data])
+    _global_range = np.array([
+        _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
+        _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
+        _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
+    ]).max() / 2.0
+
+    for idx, (xyz_pred, uv, label, genus) in enumerate(_plot_data):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus)
+        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus, global_range=_global_range)
         ax.view_init(elev=30, azim=-60)
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'supervised_genus2.png')

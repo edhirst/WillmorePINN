@@ -10,7 +10,7 @@ topology:
   ellipsoid:
     a: 2.0  # Semi-axis along x
     b: 1.0  # Semi-axis along y  
-    c: 1.0  # Semi-axis along z
+    c: 0.5  # Semi-axis along z
     # For a sphere, set a = b = c
     # Willmore energy of a sphere is 4π ≈ 12.566 (the minimum for genus 0)
   
@@ -93,7 +93,7 @@ model:
     num_epochs: 30  # More epochs for better initialization
     learning_rate: 0.003  # Lower LR for careful pretraining
     batch_size: 512  # Larger batches for stable pretraining
-    num_points_per_epoch: 8192  # More points for better coverage
+    num_points_per_epoch: 4096  # More points for better coverage
     position_weight: 1.0  # Weight for position matching loss
     derivative_weight: 0.5  # Higher derivative weight for better geometry
 
@@ -117,7 +117,7 @@ training:
     regularity_threshold: 0.3  # Lower threshold for earlier intervention
     regularity_boost_factor: 2.0  # Multiply regularity weight by this when threshold exceeded
     checkpoint_rollback: true  # Roll back to previous checkpoint if regularity degrades severely
-    severe_degradation_threshold: 2.0  # Rollback if regularity increases by this factor
+    severe_degradation_threshold: 4.0  # Rollback if regularity increases by this factor
     max_rollbacks: 3  # Maximum number of rollbacks before reducing LR permanently
     early_stopping_patience: 30  # Stop earlier for local runs
 
@@ -127,10 +127,10 @@ training:
 # - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
 # - genus 2: double_torus domain with custom parametrization
 sampling:
-  num_points: 16000  # Fewer points for faster local runs
+  num_points: 20000  
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
-  use_rotation_augmentation: true  # Apply random z-axis rotations for symmetry enforcement
+  use_rotation_augmentation: false  # Apply random z-axis rotations for symmetry enforcement
 
 # Loss Function Parameters
 loss:

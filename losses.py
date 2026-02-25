@@ -6,7 +6,7 @@ for training a neural network to learn an embedding φ: (u,v) → (x,y,z)
 that minimizes the Willmore energy.
 
 Supports different topologies:
-- Genus 0 (sphere/ellipsoid): Includes volume constraint to prevent collapse
+- Genus 0 (sphere/ellipsoid): Standard Willmore minimization
 - Genus 1 (torus): Standard Willmore minimization
 - Genus 2 (double torus): Extended domain parametrization
 """
@@ -211,109 +211,12 @@ class RegularityLoss(nn.Module):
         return total_loss
 
 
-class VolumeMinimumConstraint(nn.Module):
-    """
-    ReLU-style constraint to maintain minimum enclosed volume.
-    
-    Critical for genus 0 surfaces (sphere/ellipsoid) to prevent collapse to a point.
-    Only penalizes when volume falls below the minimum threshold.
-    
-    Loss = weight * relu(min_volume - current_volume)²
-    """
-    
-    def __init__(
-        self,
-        min_volume: float = 1.0,
-        weight: float = 10.0,
-        epsilon: float = 1e-8,
-        domain: str = "ellipsoid",
-        genus: Optional[int] = None
-    ):
-        """
-        Args:
-            min_volume: Minimum allowed enclosed volume
-            weight: Weight for the constraint loss
-            epsilon: Small constant for numerical stability
-            domain: Surface domain type
-            genus: Surface genus (overrides domain if provided)
-        """
-        super().__init__()
-        self.min_volume = min_volume
-        self.weight = weight
-        self.epsilon = epsilon
-        
-        # Determine domain from genus if provided
-        if genus is not None:
-            if genus == 0:
-                domain = "ellipsoid"
-            elif genus == 1:
-                domain = "torus"
-            elif genus == 2:
-                domain = "double_torus"
-        
-        self.domain = domain.lower()
-        self.genus = genus
-        
-        # Compute domain area for Monte Carlo integration
-        if self.domain in ["ellipsoid", "sphere"]:
-            self.domain_area = 2 * np.pi * np.pi  # [0, 2π] × [0, π]
-        elif self.domain == "torus":
-            self.domain_area = (2 * np.pi) ** 2  # [0, 2π] × [0, 2π]
-        elif self.domain == "double_torus":
-            self.domain_area = 2 * np.pi * 4 * np.pi  # [0, 2π] × [0, 4π]
-        else:
-            self.domain_area = (2 * np.pi) ** 2
-    
-    def forward(self, model: nn.Module, uv: torch.Tensor) -> torch.Tensor:
-        """
-        Compute volume minimum constraint loss.
-        
-        Uses the divergence theorem to compute enclosed volume:
-        Volume = (1/3) ∫∫ (x·n) dA
-        
-        where n is the outward unit normal.
-        
-        Args:
-            model: EmbeddingNetwork model
-            uv: Parameter coordinates (batch_size, 2)
-        
-        Returns:
-            Volume constraint loss (scalar)
-        """
-        uv = uv.requires_grad_(True)
-        
-        # Get embedding and derivatives
-        xyz = model.forward(uv)
-        E, F, G, phi_u, phi_v = model.compute_first_fundamental_form(uv)
-        
-        # Compute unit normal
-        normal_unnorm = torch.cross(phi_u, phi_v, dim=1)
-        normal_norm = torch.norm(normal_unnorm, dim=1, keepdim=True) + self.epsilon
-        normal = normal_unnorm / normal_norm
-        
-        # Compute area element
-        area_element = torch.sqrt(torch.clamp(E * G - F * F, min=self.epsilon))
-        
-        # Volume integrand using divergence theorem: (1/3) * (x·n) * dA
-        position_normal_dot = torch.sum(xyz * normal, dim=1)
-        volume_integrand = (1.0 / 3.0) * position_normal_dot * area_element
-        
-        # Monte Carlo integration
-        enclosed_volume = torch.abs(self.domain_area * torch.mean(volume_integrand))
-        
-        # ReLU-style penalty: only penalize when below minimum
-        volume_deficit = torch.nn.functional.relu(self.min_volume - enclosed_volume)
-        loss = self.weight * volume_deficit ** 2
-        
-        return loss, enclosed_volume
-
-
 class CombinedEmbeddingLoss(nn.Module):
     """
     Combined loss function for embedding-based Willmore minimization.
     
     Supports different topologies with appropriate constraints:
-    - Genus 0: Willmore + regularity + volume minimum constraint
+    - Genus 0: Willmore + regularity
     - Genus 1: Willmore + regularity
     - Genus 2: Willmore + regularity
     """
@@ -323,7 +226,6 @@ class CombinedEmbeddingLoss(nn.Module):
         willmore_weight: float = 1.0,
         regularity_weight: float = 0.1,
         target_area: Optional[float] = None,
-        target_volume: Optional[float] = None,
         epsilon: float = 1e-8,
         regularity_area_element_weight: float = 1.0,
         regularity_orientation_weight: float = 1.0,
@@ -331,17 +233,13 @@ class CombinedEmbeddingLoss(nn.Module):
         regularity_smoothness_weight: float = 1.0,
         regularity_max_metric_value: float = 10.0,
         genus: Optional[int] = None,
-        domain: str = "torus",
-        volume_constraint_enabled: bool = False,
-        volume_constraint_min: float = 1.0,
-        volume_constraint_weight: float = 10.0
+        domain: str = "torus"
     ):
         """
         Args:
             willmore_weight: Weight for Willmore energy term
             regularity_weight: Weight for metric regularity preservation
             target_area: Target surface area (None for adaptive)
-            target_volume: Target enclosed volume (None for adaptive)
             epsilon: Small constant for numerical stability
             regularity_area_element_weight: Weight for area element term within regularity loss
             regularity_orientation_weight: Weight for orientation term within regularity loss
@@ -350,9 +248,6 @@ class CombinedEmbeddingLoss(nn.Module):
             regularity_max_metric_value: Upper threshold for E and G in the smoothness term
             genus: Surface genus (0, 1, or 2)
             domain: Surface domain type
-            volume_constraint_enabled: Whether to enable volume minimum constraint
-            volume_constraint_min: Minimum allowed volume (for genus 0)
-            volume_constraint_weight: Weight for volume constraint
         """
         super().__init__()
         
@@ -360,13 +255,6 @@ class CombinedEmbeddingLoss(nn.Module):
         self.regularity_weight = regularity_weight
         self.genus = genus
         self.domain = domain
-        
-        # Determine if volume constraint should be enabled
-        # By default, enable for genus 0 unless explicitly disabled
-        if genus == 0 and volume_constraint_enabled:
-            self.use_volume_constraint = True
-        else:
-            self.use_volume_constraint = volume_constraint_enabled
         
         self.willmore_loss = EmbeddingWillmoreLoss(epsilon=epsilon, domain=domain, genus=genus)
         self.regularity_loss = RegularityLoss(
@@ -378,21 +266,10 @@ class CombinedEmbeddingLoss(nn.Module):
             max_metric_value=regularity_max_metric_value
         )
         
-        # Volume constraint for genus 0
-        if self.use_volume_constraint:
-            self.volume_constraint = VolumeMinimumConstraint(
-                min_volume=volume_constraint_min,
-                weight=volume_constraint_weight,
-                epsilon=epsilon,
-                domain=domain,
-                genus=genus
-            )
-        else:
-            self.volume_constraint = None
-        
         # Store initial weights for reference
         self.initial_willmore_weight = willmore_weight
         self.initial_regularity_weight = regularity_weight
+        self.initial_weight_sum = willmore_weight + regularity_weight
     
     def update_weights(self, epoch: int, total_epochs: int, regularity_value: Optional[float] = None, 
                       adaptive_config: Optional[dict] = None):
@@ -448,7 +325,6 @@ class CombinedEmbeddingLoss(nn.Module):
         """
         # Only compute loss components with non-zero weights
         total_loss = torch.tensor(0.0, device=uv.device)
-        weight_sum = 0.0
         willmore_value = 0.0
         regularity_value = 0.0
         
@@ -457,38 +333,22 @@ class CombinedEmbeddingLoss(nn.Module):
             willmore = self.willmore_loss(model, uv)
             willmore_value = willmore.item()
             total_loss += self.willmore_weight * willmore
-            weight_sum += self.willmore_weight
         
         # Compute regularity loss if weight > 0
         if self.regularity_weight > 0:
             regularity = self.regularity_loss(model, uv)
             regularity_value = regularity.item()
             total_loss += self.regularity_weight * regularity
-            weight_sum += self.regularity_weight
-        
-        # Normalize by weight sum if any components are active
-        if weight_sum > 0:
-            total_loss = total_loss / weight_sum
-        
-        # Compute volume constraint if enabled (for genus 0)
-        volume_loss = torch.tensor(0.0, device=uv.device)
-        current_volume = 0.0
-        if self.use_volume_constraint and self.volume_constraint is not None:
-            volume_loss, current_volume = self.volume_constraint(model, uv)
-            current_volume = current_volume.item()
-            total_loss = total_loss + volume_loss
 
-        result = {
+        # Normalise by fixed initial weight sum so scale is stable as weights anneal
+        if self.initial_weight_sum > 0:
+            total_loss = total_loss / self.initial_weight_sum
+
+        return {
             'total': total_loss,
             'willmore': willmore_value,
             'regularity': regularity_value
         }
-
-        if self.use_volume_constraint:
-            result['volume_loss'] = volume_loss.item()
-            result['current_volume'] = current_volume
-
-        return result
 
 
 def create_embedding_loss(config: dict) -> nn.Module:
@@ -517,17 +377,10 @@ def create_embedding_loss(config: dict) -> nn.Module:
     from sampling import get_domain_for_genus
     domain = get_domain_for_genus(genus)
     
-    # Get volume constraint settings
-    volume_config = loss_config.get("volume_constraint", {})
-    volume_constraint_enabled = volume_config.get("enabled", genus == 0)  # Default enabled for genus 0
-    volume_constraint_min = volume_config.get("min_volume", 1.0)
-    volume_constraint_weight = volume_config.get("weight", 10.0)
-    
     return CombinedEmbeddingLoss(
         willmore_weight=loss_config.get("willmore_weight", 1.0),
         regularity_weight=loss_config.get("regularity_weight", 0.1),
         target_area=loss_config.get("target_area", None),
-        target_volume=loss_config.get("target_volume", None),
         epsilon=loss_config.get("epsilon", 1e-8),
         regularity_area_element_weight=loss_config.get("regularity_area_element_weight", 1.0),
         regularity_orientation_weight=loss_config.get("regularity_orientation_weight", 1.0),
@@ -535,92 +388,13 @@ def create_embedding_loss(config: dict) -> nn.Module:
         regularity_smoothness_weight=loss_config.get("regularity_smoothness_weight", 1.0),
         regularity_max_metric_value=loss_config.get("regularity_max_metric_value", 10.0),
         genus=genus,
-        domain=domain,
-        volume_constraint_enabled=volume_constraint_enabled,
-        volume_constraint_min=volume_constraint_min,
-        volume_constraint_weight=volume_constraint_weight
+        domain=domain
     )
 
 
 # ============================================================================
 # Additional Loss Functions (Currently Disabled)
 # ============================================================================
-
-
-class VolumeConstraintLoss(nn.Module):
-    """
-    Constraint to maintain enclosed volume of the surface.
-    Critical for preventing collapse to a point or line.
-    """
-    
-    def __init__(
-        self, 
-        target_volume: Optional[float] = None,
-        epsilon: float = 1e-8
-    ):
-        """
-        Args:
-            target_volume: Target enclosed volume (None for adaptive bounds)
-            epsilon: Small constant for numerical stability
-        """
-        super().__init__()
-        self.target_volume = target_volume
-        self.epsilon = epsilon
-    
-    def forward(self, model: nn.Module, uv: torch.Tensor) -> torch.Tensor:
-        """
-        Compute volume constraint loss.
-        
-        For a torus, we approximate the enclosed volume using the divergence theorem.
-        Volume = (1/3) ∫∫ (x * n_x + y * n_y + z * n_z) dA
-        
-        Args:
-            model: EmbeddingNetwork model
-            uv: Parameter coordinates (batch_size, 2)
-        
-        Returns:
-            Volume constraint loss (scalar)
-        """
-        uv = uv.requires_grad_(True)
-        
-        # Get embedding and derivatives
-        xyz = model.forward(uv)
-        E, F, G, phi_u, phi_v = model.compute_first_fundamental_form(uv)
-        
-        # Compute unit normal
-        normal_unnorm = torch.cross(phi_u, phi_v, dim=1)
-        normal_norm = torch.norm(normal_unnorm, dim=1, keepdim=True) + self.epsilon
-        normal = normal_unnorm / normal_norm
-        
-        # Compute area element
-        area_element = torch.sqrt(torch.abs(E * G - F * F) + self.epsilon)
-        
-        # Volume integrand: (1/3) * (x*n_x + y*n_y + z*n_z) * dA
-        position_normal_dot = torch.sum(xyz * normal, dim=1)
-        volume_integrand = (1.0 / 3.0) * position_normal_dot * area_element
-        
-        # Monte Carlo integration over [0,2π]×[0,2π]
-        domain_area = (2 * 3.14159265359) ** 2
-        enclosed_volume = torch.abs(domain_area * torch.mean(volume_integrand))
-        
-        if self.target_volume is not None:
-            # Penalize deviation from target volume
-            loss = ((enclosed_volume - self.target_volume) / self.target_volume) ** 2
-        else:
-            # For torus (R, r): volume ≈ 2π²Rr²
-            # Starting (R=3, r=0.5): volume ≈ 7.40
-            # Clifford (R=√2, r=1): volume ≈ 27.87
-            # Prevent collapse with strong lower bound
-            min_volume = 5.0  # Must stay above this
-            max_volume = 100.0  # Reasonable upper bound
-            
-            # Very strong penalty for volume collapse
-            collapse_penalty = torch.nn.functional.relu(min_volume - enclosed_volume) ** 2
-            explosion_penalty = torch.nn.functional.relu(enclosed_volume - max_volume) ** 2
-            
-            loss = 100.0 * collapse_penalty + explosion_penalty  # Extremely strong collapse prevention
-        
-        return loss
 
 
 class AreaConstraintLoss(nn.Module):

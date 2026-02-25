@@ -127,7 +127,6 @@ class EmbeddingNetwork(nn.Module):
         hidden_dims: List[int] = [128, 256, 512, 256, 128],
         activation: str = "tanh",
         dropout: float = 0.0,
-        use_batch_norm: bool = True,
         use_periodic_embedding: bool = True,
         num_frequencies: int = 4,
         initialization: str = "xavier_uniform",
@@ -149,7 +148,6 @@ class EmbeddingNetwork(nn.Module):
             hidden_dims: List of hidden layer dimensions
             activation: Activation function name
             dropout: Dropout probability
-            use_batch_norm: Whether to use batch normalization
             use_periodic_embedding: Whether to use Fourier features for periodicity
             num_frequencies: Number of frequency components (if using periodic embedding)
             initialization: Weight initialization method
@@ -197,10 +195,6 @@ class EmbeddingNetwork(nn.Module):
         for hidden_dim in hidden_dims:
             # Linear layer
             layers.append(nn.Linear(prev_dim, hidden_dim))
-            
-            # Batch normalization
-            if use_batch_norm:
-                layers.append(nn.BatchNorm1d(hidden_dim))
             
             # Activation
             layers.append(self._get_activation(activation))
@@ -619,7 +613,7 @@ class EmbeddingNetwork(nn.Module):
         denominator = 2 * det
         H = numerator / denominator
         
-        # Don't clamp - let topology and volume constraints prevent pathological cases
+        # Don't clamp - let topology and regularity constraints prevent pathological cases
         # Clamping hides the real problems instead of preventing them
         return H
     
@@ -664,7 +658,6 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         hidden_dims=model_config.get("hidden_dims", [128, 256, 512, 256, 128]),
         activation=model_config.get("activation", "tanh"),
         dropout=model_config.get("dropout", 0.0),
-        use_batch_norm=model_config.get("use_batch_norm", True),
         use_periodic_embedding=model_config.get("use_periodic_embedding", True),
         num_frequencies=model_config.get("num_frequencies", 4),
         initialization=model_config.get("initialization", "xavier_uniform"),

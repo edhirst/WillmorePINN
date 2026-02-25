@@ -20,7 +20,7 @@ from pathlib import Path
 
 from model import create_embedding_model
 from sampling import sample_parameters, get_domain_for_genus
-from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors
+from utils import get_next_run_number, plot_fundamental_domain_coloring, plot_surface_3d
 
 
 def load_checkpoint_model(checkpoint_path, config, device):
@@ -31,47 +31,6 @@ def load_checkpoint_model(checkpoint_path, config, device):
     model.load_state_dict(checkpoint['model'])
     model.eval()
     return model, checkpoint.get('epoch', 0), checkpoint.get('loss', 0)
-
-
-def plot_embedding_3d(ax, xyz, title, color='viridis', alpha=0.6, period=None, global_range=None):
-    """Plot a 3D embedding."""
-    xyz_np = xyz.detach().cpu().numpy()
-    
-    # Try to infer the period for coloring (for genus 2, use 4*pi, else 2*pi)
-    if period is None:
-        period = 2 * np.pi
-    # If xyz has shape (N, 3), we don't have uv directly. If available, pass uv as an argument in future for best results.
-    # For now, fallback to z-coordinate, but use HSV mapping for more colors
-    values = xyz_np[:, 2]
-    colors = hsv_to_rgb_colors(values, period)
-
-    scatter = ax.scatter(
-        xyz_np[:, 0], xyz_np[:, 1], xyz_np[:, 2],
-        c=colors, alpha=alpha, s=1
-    )
-    
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_title(title)
-    
-    mid_x = (xyz_np[:, 0].max() + xyz_np[:, 0].min()) * 0.5
-    mid_y = (xyz_np[:, 1].max() + xyz_np[:, 1].min()) * 0.5
-    mid_z = (xyz_np[:, 2].max() + xyz_np[:, 2].min()) * 0.5
-
-    if global_range is None:
-        global_range = np.array([
-            xyz_np[:, 0].max() - xyz_np[:, 0].min(),
-            xyz_np[:, 1].max() - xyz_np[:, 1].min(),
-            xyz_np[:, 2].max() - xyz_np[:, 2].min()
-        ]).max() / 2.0
-
-    ax.set_xlim(mid_x - global_range, mid_x + global_range)
-    ax.set_ylim(mid_y - global_range, mid_y + global_range)
-    ax.set_zlim(mid_z - global_range, mid_z + global_range)
-    ax.set_box_aspect([1, 1, 1])
-
-    return scatter
 
 
 def get_highest_run_number(base_checkpoint_dir: str) -> int:
@@ -240,10 +199,7 @@ def visualise_training_evolution(
     n_rows = (n_plots + n_cols - 1) // n_cols
     
     fig = plt.figure(figsize=(6 * n_cols, 5 * n_rows))
-    # Force genus=1 for the plot title, since we always visualize genus 1 embedding evolution
-    plot_genus = 1
-    fig.suptitle(f"Willmore Minimization - Genus {plot_genus} ({genus_names.get(plot_genus, 'unknown')})", fontsize=14)
-    
+
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
 
     # First pass: load all models and collect xyz + title
@@ -282,7 +238,7 @@ def visualise_training_evolution(
 
     for idx, (xyz, title, genus_ckpt) in enumerate(_plot_data):
         ax = fig.add_subplot(n_rows, n_cols, idx + 1, projection='3d')
-        plot_embedding_3d(ax, xyz, title, period=4 * np.pi if genus_ckpt == 2 else 2 * np.pi, global_range=_global_range)
+        plot_surface_3d(ax, xyz, uv_test, title, genus=genus_ckpt, global_range=_global_range)
         ax.view_init(elev=30, azim=-60)
     
     plt.tight_layout()
@@ -347,7 +303,7 @@ def visualise_single_model(
     view_names = ['Front', 'Side', 'Back']
     for idx, (elev, azim) in enumerate(angles):
         ax = fig.add_subplot(1, 3, idx + 1, projection='3d')
-        plot_embedding_3d(ax, xyz, f'{view_names[idx]} View', alpha=0.7, period=4 * np.pi if genus == 2 else 2 * np.pi, global_range=_global_range)
+        plot_surface_3d(ax, xyz, uv_test, f'{view_names[idx]} View', genus=genus, alpha=0.7, global_range=_global_range)
         ax.view_init(elev=elev, azim=azim)
     fig.suptitle(f'Best Model - Epoch {epoch}, Willmore Energy = {loss:.4f}', fontsize=14, y=0.98)
     plt.tight_layout()

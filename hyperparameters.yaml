@@ -8,16 +8,16 @@ topology:
   # Genus 0 (sphere/ellipsoid) initialization parameters
   # Uses polar coordinates on [0, π] × [0, 2π]
   ellipsoid:
-    a: 2.0  # Semi-axis along x
+    a: 5.0  # Semi-axis along x
     b: 1.0  # Semi-axis along y  
-    c: 0.5  # Semi-axis along z
+    c: 0.2  # Semi-axis along z
     # For a sphere, set a = b = c
     # Willmore energy of a sphere is 4π ≈ 12.566 (the minimum for genus 0)
   
   # Genus 1 (torus) initialization parameters
   # Uses doubly-periodic coordinates on [0, 2π] × [0, 2π]
   torus:
-    tau: "0.9j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
+    tau: "0.1+0.1j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
                # Clifford torus has tau ≈ 0.707j (1/√2), start slightly higher for visible convergence
                # Can also use dict format: {real: 0.5, imag: 0.866}
     max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
@@ -78,7 +78,6 @@ model:
   hidden_dims: [128, 256, 512, 256, 128]  # Hidden layer dimensions
   activation: "tanh"  # Activation function: relu, tanh, elu, silu
   dropout: 0.0  # Dropout rate
-  use_batch_norm: false  # Use batch normalization
   use_periodic_embedding: true  # Use Fourier features to enforce periodicity
   num_frequencies: 2  # Fewer frequencies = smoother surfaces (reduces high-freq artifacts)
   initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
@@ -90,7 +89,7 @@ model:
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
-    num_epochs: 30  # More epochs for better initialization
+    num_epochs: 20  # More epochs for better initialization
     learning_rate: 0.003  # Lower LR for careful pretraining
     batch_size: 512  # Larger batches for stable pretraining
     num_points_per_epoch: 4096  # More points for better coverage
@@ -99,7 +98,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 60  # Longer run for smoother convergence
+  num_epochs: 30  # Longer run for smoother convergence
   batch_size: 1024  # Larger batches for more stable gradients
   learning_rate: 0.00003  # Much lower LR for stable, gradual optimization
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
@@ -137,7 +136,6 @@ loss:
   willmore_weight: 0.5  # Moderate weight for gradual shape optimization
   regularity_weight: 10.0  # Strong regularity to maintain stable geometry
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
-  target_volume: null  # Target enclosed volume (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
   
   # Regularity loss sub-components (normalized internally to sum to 1.0)
@@ -147,13 +145,6 @@ loss:
   regularity_smoothness_weight: 0.5  # Penalise derivatives that exceed the threshold (ReLU gate)
   regularity_max_metric_value: 10.0  # Upper threshold for E = |φ_u|² and G = |φ_v|²; excess beyond this is penalised
   # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
-
-  # Volume constraint for genus 0 (prevents sphere from collapsing to a point)
-  # Uses ReLU-style penalty: loss = relu(min_volume - current_volume)^2
-  volume_constraint:
-    enabled: false  # Enable for genus 0 surfaces
-    min_volume: 1.0  # Minimum allowed enclosed volume (prevents collapse)
-    weight: 10.0  # Weight for volume constraint loss
 
   # Disabled losses (moved to end of losses.py):
   # - area_weight: 0.0

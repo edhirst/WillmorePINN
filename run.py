@@ -177,11 +177,6 @@ def train_epoch(
         'regularity': 0.0
     }
     
-    # Add volume tracking for genus 0
-    if genus == 0:
-        epoch_losses['volume_loss'] = 0.0
-        epoch_losses['current_volume'] = 0.0
-    
     for batch_idx in range(num_batches):
         start_idx = batch_idx * batch_size
         end_idx = min(start_idx + batch_size, num_points)
@@ -410,9 +405,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     print(f"Batch size: {batch_size}, Number of points: {num_points}")
     print(f"Domain: {domain}, Parameter space: {domain_ranges.get(domain, 'custom')}")
     
-    if genus == 0 and loss_fn.use_volume_constraint:
-        vol_config = config.get("loss", {}).get("volume_constraint", {})
-        print(f"Volume constraint: min_volume = {vol_config.get('min_volume', 1.0)}")
     print()
     
     # Training history
@@ -425,20 +417,12 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         'genus': genus
     }
     
-    # Add volume tracking for genus 0
-    if genus == 0:
-        history['volume_loss'] = []
-        history['current_volume'] = []
-    
     # Initialize epoch_losses in case num_epochs is 0
     epoch_losses = {
         'total': 0.0,
         'willmore': ref_willmore if ref_willmore else 0.0,
         'regularity': 0.0
     }
-    if genus == 0:
-        epoch_losses['volume_loss'] = 0.0
-        epoch_losses['current_volume'] = 0.0
     
     # Track rollbacks to prevent infinite loops
     rollback_count = 0
@@ -523,11 +507,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         history['regularity'].append(epoch_losses['regularity'])
         history['learning_rate'].append(current_lr)
         
-        # Track volume for genus 0
-        if genus == 0:
-            history['volume_loss'].append(epoch_losses.get('volume_loss', 0.0))
-            history['current_volume'].append(epoch_losses.get('current_volume', 0.0))
-        
         # Check if best model using the actual Willmore energy
         current_willmore = epoch_losses['willmore']
         is_best = current_willmore < best_willmore
@@ -546,11 +525,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             if theoretical_min:
                 ratio_to_optimal = epoch_losses['willmore'] / theoretical_min
                 print(f"  Ratio to theoretical minimum: {ratio_to_optimal:.4f}x")
-            
-            if genus == 0 and 'current_volume' in epoch_losses:
-                print(f"  Current Volume: {epoch_losses['current_volume']:.4f}")
-                if epoch_losses.get('volume_loss', 0) > 0:
-                    print(f"  Volume Loss: {epoch_losses['volume_loss']:.6f}")
         
         # Save checkpoint - save at regular intervals AND when we find a new best
         # Use separate condition to save regular checkpoints vs best model
@@ -607,9 +581,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     print(f"  Total Loss: {epoch_losses['total']:.6f}")
     print(f"  Willmore: {epoch_losses['willmore']:.6f}")
     print(f"  Regularity: {epoch_losses['regularity']:.6f}")
-    
-    if genus == 0 and 'current_volume' in epoch_losses:
-        print(f"  Final Volume: {epoch_losses['current_volume']:.4f}")
 
 
 def main():

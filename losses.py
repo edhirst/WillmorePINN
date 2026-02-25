@@ -91,56 +91,24 @@ class EmbeddingWillmoreLoss(nn.Module):
         # Compute mean curvature (this is already the geometric mean curvature)
         H = model.compute_mean_curvature(E, F, G, L, M, N, self.epsilon)
         
-        # Compute area element: dA = sqrt(EG - F²) du dv
-        # This is the surface area measure in parameter coordinates
-        area_element = torch.sqrt(torch.abs(E * G - F * F) + self.epsilon)
-        
-        # IMPORTANT: For genus 0 (ellipsoid/sphere), we use area-weighted sampling
-        # where points are distributed uniformly on the SURFACE (not parameter space).
-        # This means the probability density is already proportional to the area element!
-        # 
-        # For area-weighted sampling: p(u,v) ∝ √(EG-F²)
-        # Monte Carlo estimator: ∫ f dA ≈ (1/N) Σ f(u_i,v_i) / p(u_i,v_i)
-        #                              ≈ (Surface_Area/N) Σ H²(u_i,v_i)
-        # 
-        # For uniform sampling in parameter space: p(u,v) = 1/domain_area
-        # Monte Carlo estimator: ∫ f dA ≈ (domain_area/N) Σ f(u_i,v_i) * √(EG-F²)
+        # Compute area element: dA = √(EG - F²) du dv
+        # clamp: EG-F² ≥ 0 for any Gram matrix; consistent with compute_mean_curvature
+        area_element = torch.sqrt(torch.clamp(E * G - F * F, min=self.epsilon))
+
+        # UNIFORM SAMPLING in parameter space for all topologies.
+        # Samples are drawn uniformly over the parameter domain; the area element
+        # √(EG-F²) is explicit in the integrand so no importance correction is needed.
         #
-        # The code MUST match the sampling strategy!
-        
-        if self.domain in ["ellipsoid", "sphere"]:
-            # AREA-WEIGHTED SAMPLING (genus 0):
-            # Samples: u ~ Uniform[0,2π], cos(v) ~ Uniform[-1,1]
-            # Joint density: p(u,v) = (1/(2π)) × (sin(v)/2) = sin(v)/(4π)
-            #
-            # Monte Carlo importance sampling estimator:
-            # W = ∫₀^{2π} ∫₀^π H²(u,v) √(EG-F²)(u,v) du dv
-            #   = 𝔼_p[f/p] where f = H² √(EG-F²), p = sin(v)/(4π)
-            #   ≈ (1/N) Σ [f_i / p_i]
-            #   = (1/N) Σ [H²_i × √(EG-F²)_i / (sin(v_i)/(4π))]
-            #   = (4π/N) Σ [H²_i × √(EG-F²)_i / sin(v_i)]
-            #
-            # Extract v from uv samples (second column)
-            v = uv[:, 1]  # v ∈ [0, π]
-            sin_v = torch.sin(v) + self.epsilon  # Add epsilon to avoid division by zero
-            
-            # Compute importance sampling weights: 4π / sin(v)
-            importance_weights = (4 * np.pi) / sin_v
-            
-            # Weighted integrand
-            integrand = H * H * area_element * importance_weights
-            willmore_energy = torch.mean(integrand)
-        else:
-            # UNIFORM SAMPLING in parameter space (genus 1: torus, genus 2: double torus)
-            # Samples: u ~ Uniform, v ~ Uniform over respective domains
-            # Sampling density: p(u,v) = 1/domain_area (constant)
-            #
-            # Monte Carlo estimator with uniform sampling:
-            # W = ∫∫ H² √(EG-F²) du dv ≈ (domain_area/N) Σ [H²_i × √(EG-F²)_i]
-            #   = domain_area × mean(H² × √(EG-F²))
-            integrand = H * H * area_element
-            willmore_energy = torch.mean(integrand) * self.domain_area
-        
+        # Monte Carlo estimator:
+        # W = ∫∫ H² √(EG-F²) du dv ≈ domain_area × mean(H² √(EG-F²))
+        #
+        # domain_area:
+        #   ellipsoid/sphere : 2π × π  = 2π²
+        #   torus            : 2π × 2π = 4π²
+        #   double_torus     : 2π × 4π = 8π²
+        integrand = H * H * area_element
+        willmore_energy = torch.mean(integrand) * self.domain_area
+
         return willmore_energy
 
 
@@ -158,7 +126,8 @@ class RegularityLoss(nn.Module):
         area_element_weight: float = 1.0,
         orientation_weight: float = 1.0,
         metric_positivity_weight: float = 1.0,
-        smoothness_weight: float = 1.0
+        smoothness_weight: float = 1.0,
+        max_metric_value: float = 10.0
     ):
         """
         Args:
@@ -168,10 +137,12 @@ class RegularityLoss(nn.Module):
             orientation_weight: Weight for orientation preservation term
             metric_positivity_weight: Weight for metric positivity term
             smoothness_weight: Weight for smoothness term
+            max_metric_value: Upper threshold for E and G; only excess beyond this is penalised
         """
         super().__init__()
         self.epsilon = epsilon
         self.min_area_element = min_area_element
+        self.max_metric_value = max_metric_value
         
         # Store initial weights
         self.area_element_weight = area_element_weight
@@ -201,8 +172,8 @@ class RegularityLoss(nn.Module):
         
         # Penalize extremely small area elements (prevents local collapse)
         if self.area_element_weight > 0:
-            det = E * G - F * F
-            area_element = torch.sqrt(torch.abs(det) + self.epsilon)
+            det = torch.clamp(E * G - F * F, min=self.epsilon)
+            area_element = torch.sqrt(det)
             area_element_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - area_element) ** 2)
             total_loss += self.area_element_weight * area_element_loss
             weight_sum += self.area_element_weight
@@ -223,9 +194,13 @@ class RegularityLoss(nn.Module):
             total_loss += self.metric_positivity_weight * metric_positivity
             weight_sum += self.metric_positivity_weight
         
-        # Smoothness: penalize large derivatives (E = |φ_u|², G = |φ_v|²)
+        # Smoothness: penalise only when E or G exceeds the permissible limit
+        # (ReLU gate — zero gradient within the acceptable band)
         if self.smoothness_weight > 0:
-            smoothness_loss = torch.mean(E + G)
+            smoothness_loss = torch.mean(
+                torch.nn.functional.relu(E - self.max_metric_value) ** 2
+                + torch.nn.functional.relu(G - self.max_metric_value) ** 2
+            )
             total_loss += self.smoothness_weight * smoothness_loss
             weight_sum += self.smoothness_weight
         
@@ -317,7 +292,7 @@ class VolumeMinimumConstraint(nn.Module):
         normal = normal_unnorm / normal_norm
         
         # Compute area element
-        area_element = torch.sqrt(torch.abs(E * G - F * F) + self.epsilon)
+        area_element = torch.sqrt(torch.clamp(E * G - F * F, min=self.epsilon))
         
         # Volume integrand using divergence theorem: (1/3) * (x·n) * dA
         position_normal_dot = torch.sum(xyz * normal, dim=1)
@@ -354,6 +329,7 @@ class CombinedEmbeddingLoss(nn.Module):
         regularity_orientation_weight: float = 1.0,
         regularity_metric_positivity_weight: float = 1.0,
         regularity_smoothness_weight: float = 1.0,
+        regularity_max_metric_value: float = 10.0,
         genus: Optional[int] = None,
         domain: str = "torus",
         volume_constraint_enabled: bool = False,
@@ -371,6 +347,7 @@ class CombinedEmbeddingLoss(nn.Module):
             regularity_orientation_weight: Weight for orientation term within regularity loss
             regularity_metric_positivity_weight: Weight for metric positivity term within regularity loss
             regularity_smoothness_weight: Weight for smoothness term within regularity loss
+            regularity_max_metric_value: Upper threshold for E and G in the smoothness term
             genus: Surface genus (0, 1, or 2)
             domain: Surface domain type
             volume_constraint_enabled: Whether to enable volume minimum constraint
@@ -397,7 +374,8 @@ class CombinedEmbeddingLoss(nn.Module):
             area_element_weight=regularity_area_element_weight,
             orientation_weight=regularity_orientation_weight,
             metric_positivity_weight=regularity_metric_positivity_weight,
-            smoothness_weight=regularity_smoothness_weight
+            smoothness_weight=regularity_smoothness_weight,
+            max_metric_value=regularity_max_metric_value
         )
         
         # Volume constraint for genus 0
@@ -498,19 +476,18 @@ class CombinedEmbeddingLoss(nn.Module):
         if self.use_volume_constraint and self.volume_constraint is not None:
             volume_loss, current_volume = self.volume_constraint(model, uv)
             current_volume = current_volume.item()
-            # Add volume constraint (not normalized, applied separately)
             total_loss = total_loss + volume_loss
-        
+
         result = {
             'total': total_loss,
             'willmore': willmore_value,
             'regularity': regularity_value
         }
-        
+
         if self.use_volume_constraint:
             result['volume_loss'] = volume_loss.item()
             result['current_volume'] = current_volume
-        
+
         return result
 
 
@@ -556,6 +533,7 @@ def create_embedding_loss(config: dict) -> nn.Module:
         regularity_orientation_weight=loss_config.get("regularity_orientation_weight", 1.0),
         regularity_metric_positivity_weight=loss_config.get("regularity_metric_positivity_weight", 1.0),
         regularity_smoothness_weight=loss_config.get("regularity_smoothness_weight", 1.0),
+        regularity_max_metric_value=loss_config.get("regularity_max_metric_value", 10.0),
         genus=genus,
         domain=domain,
         volume_constraint_enabled=volume_constraint_enabled,

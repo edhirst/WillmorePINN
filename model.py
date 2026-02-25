@@ -76,13 +76,15 @@ class PeriodicEmbedding(nn.Module):
                 
             elif self.domain in ["ellipsoid", "sphere"]:
                 # u is periodic with period 2π
-                features.append(torch.sin(freq * uv[:, 0:1]))
-                features.append(torch.cos(freq * uv[:, 0:1]))
-                # v is NOT periodic - it's a polar angle in [0, π]
-                # Use Legendre-like basis that respects pole topology:
-                # sin(v) = 0 at poles, sin(n*v) captures latitude bands
-                # We include both sin and cos but they should be understood
-                # as non-periodic basis functions on [0, π]
+                # v is a polar angle in [0, π]; sin(v) = 0 at both poles.
+                # Multiplying u-dependent features by sin(v) ensures the network
+                # output is u-independent at v=0 and v=π, enforcing sphere topology
+                # (both poles collapse to single points) without any auxiliary loss.
+                sin_v = torch.sin(uv[:, 1:2])  # sin(v), shape (batch, 1)
+                features.append(sin_v * torch.sin(freq * uv[:, 0:1]))
+                features.append(sin_v * torch.cos(freq * uv[:, 0:1]))
+                # v-only basis functions: not multiplied by sin_v so poles can
+                # take arbitrary (u-independent) values determined by the network
                 v_scaled = uv[:, 1:2]  # v ∈ [0, π]
                 features.append(torch.sin(freq * v_scaled))
                 features.append(torch.cos(freq * v_scaled))
@@ -612,8 +614,9 @@ class EmbeddingNetwork(nn.Module):
         Returns:
             Mean curvature H (batch_size,)
         """
+        det = torch.clamp(E * G - F * F, min=epsilon)
         numerator = E * N - 2 * F * M + G * L
-        denominator = 2 * (E * G - F * F) + epsilon
+        denominator = 2 * det
         H = numerator / denominator
         
         # Don't clamp - let topology and volume constraints prevent pathological cases

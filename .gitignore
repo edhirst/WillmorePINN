@@ -60,6 +60,9 @@ checkpoints/
 # Scratch/experimental scripts
 scratch/
 
+# Copilot workspace instructions
+.github/copilot-instructions.md
+
 # Temporary files
 *.tmp
 *.bak

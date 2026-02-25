@@ -76,25 +76,26 @@ def sample_sphere_parameters(
     dtype: torch.dtype = torch.float32
 ) -> torch.Tensor:
     """
-    Sample points in parameter space for a sphere/ellipsoid with area-weighting.
-    
+    Sample points uniformly in parameter space for a sphere/ellipsoid.
+
     For a sphere: u ∈ [0, 2π] (azimuthal), v ∈ [0, π] (polar)
-    Uses area-weighted sampling: cos(v) uniform in [-1, 1] ensures uniform
-    point distribution on the sphere surface (avoids pole clustering).
-    
+    Both coordinates are sampled uniformly in parameter space. The surface
+    area element √(EG-F²) is part of the integrand in the Monte Carlo
+    estimator and naturally accounts for the metric distortion, so no
+    importance correction is needed or wanted.
+
     Args:
         num_points: Number of points to sample
         device: Device to place tensor on
         dtype: Data type for tensor
-    
+
     Returns:
         Parameter coordinates of shape (num_points, 2)
         u ∈ [0, 2π], v ∈ [0, π]
     """
     u = torch.rand(num_points, device=device, dtype=dtype) * 2 * np.pi
-    cos_v = torch.rand(num_points, device=device, dtype=dtype) * 2 - 1
-    v = torch.acos(cos_v)
-    
+    v = torch.rand(num_points, device=device, dtype=dtype) * np.pi
+
     return torch.stack([u, v], dim=1)
 
 

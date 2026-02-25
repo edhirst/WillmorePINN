@@ -3,7 +3,7 @@
 # Topology Parameters
 # The genus defines the topology of the surface being optimized
 topology:
-  genus: 1  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
+  genus: 0  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
   
   # Genus 0 (sphere/ellipsoid) initialization parameters
   # Uses polar coordinates on [0, π] × [0, 2π]
@@ -78,7 +78,7 @@ model:
   hidden_dims: [128, 256, 512, 256, 128]  # Hidden layer dimensions
   activation: "tanh"  # Activation function: relu, tanh, elu, silu
   dropout: 0.0  # Dropout rate
-  use_batch_norm: true  # Use batch normalization
+  use_batch_norm: false  # Use batch normalization
   use_periodic_embedding: true  # Use Fourier features to enforce periodicity
   num_frequencies: 2  # Fewer frequencies = smoother surfaces (reduces high-freq artifacts)
   initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
@@ -90,7 +90,7 @@ model:
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
-    num_epochs: 50  # More epochs for better initialization
+    num_epochs: 30  # More epochs for better initialization
     learning_rate: 0.003  # Lower LR for careful pretraining
     batch_size: 512  # Larger batches for stable pretraining
     num_points_per_epoch: 8192  # More points for better coverage
@@ -144,13 +144,14 @@ loss:
   regularity_area_element_weight: 1.0  # Prevent area element collapse
   regularity_orientation_weight: 1.0  # Maintain consistent orientation
   regularity_metric_positivity_weight: 0.5  # Prevent metric degeneration (enable for stability)
-  regularity_smoothness_weight: 0.5  # Penalize large derivatives (enable for smooth convergence)
+  regularity_smoothness_weight: 0.5  # Penalise derivatives that exceed the threshold (ReLU gate)
+  regularity_max_metric_value: 10.0  # Upper threshold for E = |φ_u|² and G = |φ_v|²; excess beyond this is penalised
   # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
 
   # Volume constraint for genus 0 (prevents sphere from collapsing to a point)
   # Uses ReLU-style penalty: loss = relu(min_volume - current_volume)^2
   volume_constraint:
-    enabled: true  # Enable for genus 0 surfaces
+    enabled: false  # Enable for genus 0 surfaces
     min_volume: 1.0  # Minimum allowed enclosed volume (prevents collapse)
     weight: 10.0  # Weight for volume constraint loss
 

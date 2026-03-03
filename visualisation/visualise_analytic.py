@@ -162,24 +162,24 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
     # - bridge_radius controls the catenoid neck narrowness
     dt_configs = [
         # Config 1: Standard symmetric double torus
-        {'tau1': {'real': 0.0, 'imag': 1.0}, 'tau2': {'real': 0.0, 'imag': 1.0},
-         'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2,
+        {'tau1': '1j', 'tau2': '1j',
+         'bridge_radius': 0.25, 'neck_twist': 0.0,
          'label': 'τ₁=τ₂=i (symmetric)'},
         # Config 2: Asymmetric tube thicknesses (T1 thicker, T2 thinner)
-        {'tau1': {'real': 0.0, 'imag': 0.5}, 'tau2': {'real': 0.0, 'imag': 2.0},
-         'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2,
+        {'tau1': '0.5j', 'tau2': '2j',
+         'bridge_radius': 0.25, 'neck_twist': 0.0,
          'label': 'τ₁=0.5i (thick), τ₂=2i (thin)'},
         # Config 3: Opposite twists on each torus
-        {'tau1': {'real': 0.5, 'imag': 1.0}, 'tau2': {'real': -0.5, 'imag': 1.0},
-         'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2,
-         'label': 'τ₁=0.5+i, τ₂=-0.5+i (twisted)'},
+        {'tau1': '1.0+0.5j', 'tau2': '-1.0+0.5j',
+         'bridge_radius': 0.25, 'neck_twist': 0.0,
+         'label': 'τ₁=1+0.5i, τ₂=-1+0.5i (twisted)'},
         # Config 4: Strong twist on T1 only
-        {'tau1': {'real': 1.0, 'imag': 0.8}, 'tau2': {'real': 0.0, 'imag': 1.2},
-         'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2,
-         'label': 'τ₁=1+0.8i (strong twist)'},
+        {'tau1': '1+0.2j', 'tau2': '1j',
+         'bridge_radius': 0.25, 'neck_twist': 0.0,
+         'label': 'τ₁=1+0.2i (strong twist)'},
         # Config 5: Narrow neck catenoid
-        {'tau1': {'real': 0.0, 'imag': 0.7}, 'tau2': {'real': 0.0, 'imag': 0.7},
-         'bridge_radius': 0.12, 'neck_twist': 0.0, 'scale': 1.2,
+        {'tau1': '0.7j', 'tau2': '0.7j',
+         'bridge_radius': 0.12, 'neck_twist': 0.0,
          'label': 'bridge_radius=0.12 (narrow)'},
     ]
     
@@ -190,8 +190,8 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
     
     # Use first config for the fundamental domain plot
     first_cfg = dt_configs[0]
-    tau1 = complex(first_cfg['tau1']['real'], first_cfg['tau1']['imag'])
-    tau2 = complex(first_cfg['tau2']['real'], first_cfg['tau2']['imag'])
+    tau1 = complex(first_cfg['tau1'].replace('i', 'j'))
+    tau2 = complex(first_cfg['tau2'].replace('i', 'j'))
     
     ax_domain = fig.add_subplot(n_rows, 2, 1)
     plot_fundamental_domain_coloring(ax_domain, genus=2, 

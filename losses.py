@@ -29,18 +29,23 @@ class EmbeddingWillmoreLoss(nn.Module):
     Supports different domain types:
     - ellipsoid: [0, 2π] × [0, π] domain
     - torus: [0, 2π] × [0, 2π] domain
-    - double_torus: [0, 2π] × [0, 4π] domain
+    - double_torus: [0, 2π] × [0, 5π] domain
     """
     
-    def __init__(self, epsilon: float = 1e-8, domain: str = "torus", genus: Optional[int] = None):
+    def __init__(self, epsilon: float = 1e-8, domain: str = "torus", genus: Optional[int] = None,
+                 h2_clip: Optional[float] = None):
         """
         Args:
             epsilon: Small constant for numerical stability
             domain: Surface domain type
             genus: Surface genus (overrides domain if provided)
+            h2_clip: If set, per-point H² values are clamped to this ceiling before averaging.
+                This bounds the gradient contribution from high-curvature junction regions
+                without biasing the minimum (the Willmore minimiser has bounded H everywhere).
         """
         super().__init__()
         self.epsilon = epsilon
+        self.h2_clip = h2_clip
         
         # Determine domain from genus if provided
         if genus is not None:
@@ -62,8 +67,8 @@ class EmbeddingWillmoreLoss(nn.Module):
             # [0, 2π] × [0, 2π]
             self.domain_area = (2 * np.pi) ** 2
         elif self.domain == "double_torus":
-            # [0, 2π] × [0, 4π]
-            self.domain_area = 2 * np.pi * 4 * np.pi
+            # [0, 2π] × [0, 5π]
+            self.domain_area = 2 * np.pi * 5 * np.pi
         else:
             # Default to torus domain
             self.domain_area = (2 * np.pi) ** 2
@@ -105,8 +110,12 @@ class EmbeddingWillmoreLoss(nn.Module):
         # domain_area:
         #   ellipsoid/sphere : 2π × π  = 2π²
         #   torus            : 2π × 2π = 4π²
-        #   double_torus     : 2π × 4π = 8π²
+        #   double_torus     : 2π × 5π = 10π²
         integrand = H * H * area_element
+        if self.h2_clip is not None:
+            # Clamp per-point H² before weighting by area element.
+            # Bounds gradient contribution from high-curvature junction artefacts.
+            integrand = torch.clamp(H * H, max=self.h2_clip) * area_element
         willmore_energy = torch.mean(integrand) * self.domain_area
 
         return willmore_energy
@@ -232,8 +241,11 @@ class CombinedEmbeddingLoss(nn.Module):
         regularity_metric_positivity_weight: float = 1.0,
         regularity_smoothness_weight: float = 1.0,
         regularity_max_metric_value: float = 10.0,
+        regularity_min_area_element: float = 0.01,
         genus: Optional[int] = None,
-        domain: str = "torus"
+        domain: str = "torus",
+        max_willmore_weight: float = 0.5,
+        h2_clip: Optional[float] = None
     ):
         """
         Args:
@@ -246,8 +258,11 @@ class CombinedEmbeddingLoss(nn.Module):
             regularity_metric_positivity_weight: Weight for metric positivity term within regularity loss
             regularity_smoothness_weight: Weight for smoothness term within regularity loss
             regularity_max_metric_value: Upper threshold for E and G in the smoothness term
+            regularity_min_area_element: Minimum allowed area element √(EG−F²); collapse below this is penalised
             genus: Surface genus (0, 1, or 2)
             domain: Surface domain type
+            max_willmore_weight: Ceiling for willmore_weight annealing schedule
+            h2_clip: Per-point H² ceiling passed to EmbeddingWillmoreLoss (None = no clipping)
         """
         super().__init__()
         
@@ -256,9 +271,11 @@ class CombinedEmbeddingLoss(nn.Module):
         self.genus = genus
         self.domain = domain
         
-        self.willmore_loss = EmbeddingWillmoreLoss(epsilon=epsilon, domain=domain, genus=genus)
+        self.willmore_loss = EmbeddingWillmoreLoss(epsilon=epsilon, domain=domain, genus=genus,
+                                                   h2_clip=h2_clip)
         self.regularity_loss = RegularityLoss(
             epsilon=epsilon,
+            min_area_element=regularity_min_area_element,
             area_element_weight=regularity_area_element_weight,
             orientation_weight=regularity_orientation_weight,
             metric_positivity_weight=regularity_metric_positivity_weight,
@@ -270,6 +287,7 @@ class CombinedEmbeddingLoss(nn.Module):
         self.initial_willmore_weight = willmore_weight
         self.initial_regularity_weight = regularity_weight
         self.initial_weight_sum = willmore_weight + regularity_weight
+        self.max_willmore_weight = max_willmore_weight
     
     def update_weights(self, epoch: int, total_epochs: int, regularity_value: Optional[float] = None, 
                       adaptive_config: Optional[dict] = None):
@@ -289,8 +307,8 @@ class CombinedEmbeddingLoss(nn.Module):
         """
         progress = min(1.0, (epoch - 1) / max(1, total_epochs))
         
-        # Base schedule: Willmore gradually increases, regularity gradually decreases
-        base_willmore = self.initial_willmore_weight + (0.5 - self.initial_willmore_weight) * progress
+        # Base schedule: Willmore gradually increases to max_willmore_weight, regularity decreases
+        base_willmore = self.initial_willmore_weight + (self.max_willmore_weight - self.initial_willmore_weight) * progress
         base_regularity = self.initial_regularity_weight * (1.0 - 0.5 * progress)
         
         # Adaptive adjustment based on regularity health
@@ -387,8 +405,11 @@ def create_embedding_loss(config: dict) -> nn.Module:
         regularity_metric_positivity_weight=loss_config.get("regularity_metric_positivity_weight", 1.0),
         regularity_smoothness_weight=loss_config.get("regularity_smoothness_weight", 1.0),
         regularity_max_metric_value=loss_config.get("regularity_max_metric_value", 10.0),
+        regularity_min_area_element=loss_config.get("regularity_min_area_element", 0.01),
         genus=genus,
-        domain=domain
+        domain=domain,
+        max_willmore_weight=loss_config.get("max_willmore_weight", 0.5),
+        h2_clip=loss_config.get("h2_clip", None)
     )
 
 

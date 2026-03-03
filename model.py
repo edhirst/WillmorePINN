@@ -8,7 +8,7 @@ computed from the first and second fundamental forms of this embedding.
 Supported topologies:
 - Genus 0 (sphere/ellipsoid): Uses polar coordinates [0, π] × [0, 2π]
 - Genus 1 (torus): Uses doubly-periodic coordinates [0, 2π] × [0, 2π]
-- Genus 2 (double torus): Uses custom coordinates [0, 2π] × [0, 4π]
+- Genus 2 (double torus): Uses custom coordinates [0, 2π] × [0, 5π]
 """
 
 import torch
@@ -27,7 +27,7 @@ class PeriodicEmbedding(nn.Module):
     For ellipsoid (genus 0): Maps (u,v) → (sin(nu), cos(nu), sin(mv), cos(mv), ...)
                              u is periodic [0, 2π], v is not periodic [0, π]
     
-    For double torus (genus 2): Both directions periodic but v has period 4π
+    For double torus (genus 2): u periodic in [0, 2π], v non-periodic in [0, 5π]
     """
     
     def __init__(self, num_frequencies: int = 4, domain: str = "torus", genus: Optional[int] = None):
@@ -59,7 +59,7 @@ class PeriodicEmbedding(nn.Module):
             uv: Parameters (batch_size, 2) 
                 - For torus: [0, 2π] × [0, 2π]
                 - For ellipsoid: [0, 2π] × [0, π]
-                - For double_torus: [0, 2π] × [0, 4π]
+                - For double_torus: [0, 2π] × [0, 5π]
         
         Returns:
             Fourier features (batch_size, 2*num_frequencies*2)
@@ -90,11 +90,14 @@ class PeriodicEmbedding(nn.Module):
                 features.append(torch.cos(freq * v_scaled))
                 
             elif self.domain == "double_torus":
-                # u has period 2π, v has period 4π
+                # u has period 2π: standard Fourier basis
                 features.append(torch.sin(freq * uv[:, 0:1]))
                 features.append(torch.cos(freq * uv[:, 0:1]))
-                # Scale v so that period 4π maps to 2π for Fourier basis
-                v_scaled = uv[:, 1:2] * 0.5  # Now effectively period 2π
+                # v ∈ [0, 5π] is non-periodic.  Dividing by 2π maps the domain
+                # to [0, 2.5], so no two distinct domain points share identical
+                # feature vectors (5π/2π = 2.5 is not an integer, avoiding the
+                # sin/cos periodicity collapse that occurred with the old v*0.5).
+                v_scaled = uv[:, 1:2] / (2 * np.pi)
                 features.append(torch.sin(freq * v_scaled))
                 features.append(torch.cos(freq * v_scaled))
             
@@ -115,7 +118,7 @@ class EmbeddingNetwork(nn.Module):
     Supports different topologies:
     - Genus 0 (sphere/ellipsoid): φ(u,v) maps [0, 2π] × [0, π] to R³
     - Genus 1 (torus): φ(u,v) maps [0, 2π] × [0, 2π] to R³  
-    - Genus 2 (double torus): φ(u,v) maps [0, 2π] × [0, 4π] to R³
+    - Genus 2 (double torus): φ(u,v) maps [0, 2π] × [0, 5π] to R³
     
     The network enforces appropriate boundary conditions and learns to minimize Willmore energy.
     """

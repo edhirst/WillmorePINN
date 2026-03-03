@@ -153,13 +153,18 @@ def train_epoch(
     dtype: torch.dtype,
     gradient_clip: Optional[float] = None,
     use_rotation_augmentation: bool = True,
-    genus: Optional[int] = None
+    genus: Optional[int] = None,
+    bridge_oversample_factor: float = 1.0
 ) -> Dict[str, float]:
     """Train for one epoch."""
     model.train()
-    
+
     # Sample parameter space points according to the topology
-    uv = sample_parameters(num_points, domain, device, dtype, genus=genus)
+    uv = sample_parameters(
+        num_points, domain, device, dtype,
+        genus=genus,
+        bridge_oversample_factor=bridge_oversample_factor
+    )
     
     # Apply random z-axis rotation augmentation if enabled
     # Only applicable for torus and double_torus (not ellipsoid due to poles)
@@ -304,18 +309,33 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     
     # Create scheduler
     scheduler_config = config["training"].get("scheduler", "cosine")
+    scheduler_params = config["training"].get("scheduler_params", {})
     if scheduler_config == "cosine":
-        scheduler_params = config["training"].get("scheduler_params", {})
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=scheduler_params.get("T_max", config["training"]["num_epochs"]),
-            eta_min=scheduler_params.get("eta_min", 1e-5)
+            eta_min=scheduler_params.get("eta_min", 1e-7)
+        )
+    elif scheduler_config == "cosine_warm_restarts":
+        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=scheduler_params.get("T_0", 100),
+            T_mult=scheduler_params.get("T_mult", 2),
+            eta_min=scheduler_params.get("eta_min", 1e-7)
+        )
+    elif scheduler_config == "plateau":
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode=scheduler_params.get("mode", "min"),
+            factor=scheduler_params.get("factor", 0.5),
+            patience=scheduler_params.get("patience", 10),
+            min_lr=scheduler_params.get("min_lr", 1e-8)
         )
     elif scheduler_config == "none":
         scheduler = None
     else:
-        print(f"Warning: Scheduler '{scheduler_config}' not fully implemented, using cosine")
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config["training"]["num_epochs"])
+        print(f"Warning: Scheduler '{scheduler_config}' not recognised, using cosine")
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config["training"]["num_epochs"], eta_min=1e-7)
     
     # Training parameters
     num_epochs = config["training"]["num_epochs"]
@@ -399,7 +419,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     domain_ranges = {
         "ellipsoid": "[0, 2π] × [0, π]",
         "torus": "[0, 2π] × [0, 2π]",
-        "double_torus": "[0, 2π] × [0, 4π]"
+        "double_torus": "[0, 2π] × [0, 5π]"
     }
     print(f"\nStarting training for {num_epochs} epochs...")
     print(f"Batch size: {batch_size}, Number of points: {num_points}")
@@ -440,12 +460,14 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         
         # Train one epoch
         use_rotation_aug = config["sampling"].get("use_rotation_augmentation", True)
+        bridge_oversample_factor = config["sampling"].get("bridge_oversample_factor", 1.0)
         epoch_losses = train_epoch(
             model, loss_fn, optimizer,
             num_points, batch_size, domain,
             device, dtype, gradient_clip,
             use_rotation_augmentation=use_rotation_aug,
-            genus=genus
+            genus=genus,
+            bridge_oversample_factor=bridge_oversample_factor
         )
         
         # Check for severe regularity degradation and rollback if needed
@@ -496,7 +518,10 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         
         # Update learning rate
         if scheduler is not None:
-            scheduler.step()
+            if isinstance(scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(epoch_losses['total'])
+            else:
+                scheduler.step()
         
         current_lr = optimizer.param_groups[0]['lr']
         

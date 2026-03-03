@@ -3,14 +3,14 @@
 # Topology Parameters
 # The genus defines the topology of the surface being optimized
 topology:
-  genus: 0  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
+  genus: 2  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
   
   # Genus 0 (sphere/ellipsoid) initialization parameters
   # Uses polar coordinates on [0, π] × [0, 2π]
   ellipsoid:
-    a: 5.0  # Semi-axis along x
+    a: 2.0  # Semi-axis along x
     b: 1.0  # Semi-axis along y  
-    c: 0.2  # Semi-axis along z
+    c: 0.5  # Semi-axis along z
     # For a sphere, set a = b = c
     # Willmore energy of a sphere is 4π ≈ 12.566 (the minimum for genus 0)
   
@@ -48,26 +48,18 @@ topology:
   #   neck_twist: twist at the bridge (placeholder, not yet implemented)
   #
   double_torus:
-    # Torus 1 modular parameter (complex number as dict)
-    tau1:
-      real: 0.0   # Re(τ₁): shear parameter
-      imag: 1.0   # Im(τ₁): aspect ratio (must be > 0)
+    # Torus 1 modular parameter (same string format as genus 1 tau)
+    tau1: "0.8j"   # Im(τ₁) controls tube thickness; Re(τ₁)/Im(τ₁) is the helical twist rate
     
-    # Torus 2 modular parameter (complex number as dict)  
-    tau2:
-      real: 0.0   # Re(τ₂): shear parameter
-      imag: 1.0   # Im(τ₂): aspect ratio (must be > 0)
+    # Torus 2 modular parameter
+    tau2: "0.8j"   # Im(τ₂) controls tube thickness; Re(τ₂)/Im(τ₂) is the helical twist rate
     
     # Catenoid bridge parameters
     # bridge_radius: minimum radius at the catenoid neck
     # The catenoid length is computed automatically to match tube radii
     # r(s) = a * cosh(s/a), where a = bridge_radius
     bridge_radius: 0.25  # Neck radius (must be < tube radii)
-    neck_twist: 0.0      # Twist angle applied to torus 2
-    
-    # Embedding scale
-    scale: 1.5
-    
+    neck_twist: 0.0      # Rigid angular offset of T2’s tube at the bridge attachment
     # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 2π² × 2 = 4π² ≈ 39.48
 
 # Model Architecture
@@ -89,7 +81,7 @@ model:
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
-    num_epochs: 20  # More epochs for better initialization
+    num_epochs: 100  # More epochs for better initialization
     learning_rate: 0.003  # Lower LR for careful pretraining
     batch_size: 512  # Larger batches for stable pretraining
     num_points_per_epoch: 4096  # More points for better coverage
@@ -98,7 +90,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 30  # Longer run for smoother convergence
+  num_epochs: 100  # Longer run for smoother convergence
   batch_size: 1024  # Larger batches for more stable gradients
   learning_rate: 0.00003  # Much lower LR for stable, gradual optimization
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features

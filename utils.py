@@ -61,17 +61,20 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6, global_range=None):
     """
     xyz_np = xyz.detach().cpu().numpy() if torch.is_tensor(xyz) else xyz
     uv_np = uv.cpu().numpy() if torch.is_tensor(uv) else uv
-    v = uv_np[:, 1]
-    
-    # Determine period based on genus (for color mapping)
-    if genus == 0:
-        period = np.pi  # v goes from 0 to π for ellipsoid
-    elif genus == 2:
-        period = 5 * np.pi  # v goes from 0 to 5π for double torus
+
+    # Genus 2: colour by u ∈ [0, 2π] (the tube angle), full spectrum per point.
+    # Other genera: colour by v.
+    if genus == 2:
+        coord = uv_np[:, 0]  # u ∈ [0, 2π]
+        period = 2 * np.pi
     else:
-        period = 2 * np.pi  # v goes from 0 to 2π for torus
-    
-    colors = hsv_to_rgb_colors(v, period)
+        coord = uv_np[:, 1]  # v
+        if genus == 0:
+            period = np.pi       # v ∈ [0, π] for ellipsoid
+        else:
+            period = 2 * np.pi  # v ∈ [0, 2π] for torus
+
+    colors = hsv_to_rgb_colors(coord, period)
     
     ax.scatter(
         xyz_np[:, 0], xyz_np[:, 1], xyz_np[:, 2],
@@ -196,9 +199,8 @@ def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3, num_points
     u = np.linspace(0, 2*np.pi, num_points)
     v = np.linspace(0, 5*np.pi, num_points)
     U, V = np.meshgrid(u, v)
-    # Use the same HSV mapping as the 3D plot: v in [0, 5π], period=5π
-    v_norm = (V % (5 * np.pi)) / (5 * np.pi)
-    hue = v_norm
+    # Colour by u ∈ [0, 2π] (horizontal axis), matching plot_surface_3d for genus 2.
+    hue = U / (2 * np.pi)
     h = hue * 6.0
     x = 1.0 - np.abs(h % 2.0 - 1.0)
     R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))

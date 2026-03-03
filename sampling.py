@@ -122,6 +122,7 @@ def sample_ellipsoid_parameters(
 
 def sample_double_torus_parameters(
     num_points: int,
+    bridge_oversample_factor: float = 1.0,
     device: torch.device = torch.device("cpu"),
     dtype: torch.dtype = torch.float32
 ) -> torch.Tensor:
@@ -140,15 +141,42 @@ def sample_double_torus_parameters(
     
     Args:
         num_points: Number of points to sample
+        bridge_oversample_factor: Ratio of bridge samples relative to its uniform share.
+            The bridge occupies π out of 5π (1/5) of the v domain.  With factor f,
+            the bridge receives f/(f+4) of total points instead of 1/5.  This
+            concentrates gradient signal on the catenoid region without reweighting,
+            intentionally biasing the optimizer to improve bridge geometry.
+            Set to 1.0 for uniform sampling.
         device: Device to place tensor on
         dtype: Data type for tensor
     
     Returns:
         Parameter coordinates of shape (num_points, 2)
     """
-    u = torch.rand(num_points, device=device, dtype=dtype) * 2 * np.pi
-    v = torch.rand(num_points, device=device, dtype=dtype) * 5 * np.pi  # Extended to 5π
-    
+    if bridge_oversample_factor <= 1.0:
+        # Uniform sampling over [0, 2π] × [0, 5π]
+        u = torch.rand(num_points, device=device, dtype=dtype) * 2 * np.pi
+        v = torch.rand(num_points, device=device, dtype=dtype) * 5 * np.pi
+        return torch.stack([u, v], dim=1)
+
+    # Stratified oversampling: bridge (v ∈ [2π, 3π)) gets f/(f+4) of points.
+    # Non-bridge regions T1 ([0, 2π)) and T2 ([3π, 5π)) each have width 2π;
+    # remaining 4/(f+4) points are split evenly between them via a linear remap.
+    f = bridge_oversample_factor
+    n_bridge = int(round(num_points * f / (f + 4)))
+    n_other = num_points - n_bridge
+
+    u_bridge = torch.rand(n_bridge, device=device, dtype=dtype) * 2 * np.pi
+    v_bridge = torch.rand(n_bridge, device=device, dtype=dtype) * np.pi + 2 * np.pi  # [2π, 3π)
+
+    # Non-bridge: v ∈ [0, 2π) ∪ [3π, 5π).  Both intervals width 2π.
+    # Sample v_raw ∈ [0, 4π) then shift upper half by π to skip the bridge interval.
+    u_other = torch.rand(n_other, device=device, dtype=dtype) * 2 * np.pi
+    v_other_raw = torch.rand(n_other, device=device, dtype=dtype) * 4 * np.pi
+    v_other = torch.where(v_other_raw < 2 * np.pi, v_other_raw, v_other_raw + np.pi)
+
+    u = torch.cat([u_bridge, u_other])
+    v = torch.cat([v_bridge, v_other])
     return torch.stack([u, v], dim=1)
 
 
@@ -157,7 +185,8 @@ def sample_parameters(
     domain: str = "torus",
     device: torch.device = torch.device("cpu"),
     dtype: torch.dtype = torch.float32,
-    genus: Optional[int] = None
+    genus: Optional[int] = None,
+    bridge_oversample_factor: float = 1.0
 ) -> torch.Tensor:
     """
     Sample points in parameter space for the specified domain/topology.
@@ -168,6 +197,8 @@ def sample_parameters(
         device: Device to place tensor on
         dtype: Data type for tensor
         genus: If provided, overrides domain selection (0=ellipsoid, 1=torus, 2=double_torus)
+        bridge_oversample_factor: For double_torus only — oversample catenoid bridge region.
+            See sample_double_torus_parameters for details.
     
     Returns:
         Parameter coordinates of shape (num_points, 2)
@@ -198,7 +229,12 @@ def sample_parameters(
     elif domain_lower in ["sphere", "ellipsoid"]:
         return sample_ellipsoid_parameters(num_points, device, dtype)
     elif domain_lower == "double_torus":
-        return sample_double_torus_parameters(num_points, device, dtype)
+        return sample_double_torus_parameters(
+            num_points,
+            bridge_oversample_factor=bridge_oversample_factor,
+            device=device,
+            dtype=dtype
+        )
     else:
         raise ValueError(f"Unknown domain: {domain}")
 
@@ -301,16 +337,11 @@ def get_flat_torus_embedding(
     twist_rate = tau_real / tau_imag if tau_imag > 1e-10 else 0.0
     v_twisted = v_normalized + twist_rate * u
     
-    # Scale to reasonable size for visualization
-    scale = 1.5
-    R_scaled = scale * R
-    r_scaled = scale * r
-    
     # Twisted torus embedding (symmetric about z=0)
     # The twist causes the minor circle to rotate around as we traverse the major circle
-    x = (R_scaled + r_scaled * torch.cos(v_twisted)) * torch.cos(u)
-    y = (R_scaled + r_scaled * torch.cos(v_twisted)) * torch.sin(u)
-    z = r_scaled * torch.sin(v_twisted)
+    x = (R + r * torch.cos(v_twisted)) * torch.cos(u)
+    y = (R + r * torch.cos(v_twisted)) * torch.sin(u)
+    z = r * torch.sin(v_twisted)
     
     return torch.stack([x, y, z], dim=1)
 
@@ -609,14 +640,25 @@ def embed_catenoid(
     return torch.stack([x, y, z], dim=1)
 
 
+def _smooth_step_quintic(t: torch.Tensor) -> torch.Tensor:
+    """Quintic smooth step: C² at both endpoints (f' = f'' = 0 at t=0 and t=1).
+
+    Maps t=0 → 0 and t=1 → 1 with zero first and second derivatives at both ends.
+    This ensures the blended surface has bounded second derivatives at the blend boundary,
+    i.e. H is not artificially spiked by the blending kernel itself.
+    """
+    t = t.clamp(0.0, 1.0)
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+
 def get_double_torus_embedding(
     uv: torch.Tensor,
     tau1: complex = 1j,
     tau2: complex = 1j,
     bridge_radius: float = 0.3,
     neck_twist: float = 0.0,
-    scale: float = 1.5,
     neck_length: float = None,  # Legacy parameter, ignored
+    s_blend: float = 0.15,
     **kwargs
 ) -> torch.Tensor:
     """
@@ -657,12 +699,16 @@ def get_double_torus_embedding(
         tau2: Complex modulus for torus 2
         bridge_radius: Minimum radius at the catenoid neck (must be < torus tube radii)
         neck_twist: Additional twist angle applied to torus 2
-        scale: Overall scale factor
+        s_blend: Half-width (in v units) of the quintic smooth-step transition between
+            regions.  The blend weight goes from 0 to 1 over the window
+            [junction − s_blend, junction + s_blend].  Because the quintic has
+            f' = f'' = 0 at both endpoints, ∂²xyz/∂v² from the blending kernel is zero
+            at the window boundaries, suppressing curvature spikes that would otherwise
+            appear in H² and destabilise the loss.
     """
     u, v = uv[:, 0], uv[:, 1]
     device = u.device
     dtype = u.dtype
-    n = len(u)
     
     # Parse tau parameters
     if isinstance(tau1, (int, float)):
@@ -674,158 +720,99 @@ def get_double_torus_embedding(
     tau2_im = max(float(tau2.imag), 0.3)
     
     # Compute minor radii from tau (larger Im(τ) → thinner tube)
-    # Use exponential decay for more visible differences across the range
-    # r = r_min + (r_max - r_min) * exp(-k * (tau_im - tau_min))
     r_min, r_max = 0.2, 0.55
-    k = 1.5  # Decay rate
+    k = 1.5
     r1 = r_min + (r_max - r_min) * np.exp(-k * (tau1_im - 0.3))
     r2 = r_min + (r_max - r_min) * np.exp(-k * (tau2_im - 0.3))
     r1 = np.clip(r1, r_min, r_max)
     r2 = np.clip(r2, r_min, r_max)
     
-    # Major radii (must be > minor radius for proper torus)
     R1 = 1.0
     R2 = 1.0
     
-    # Bridge radius: minimum radius at the catenoid neck
-    # Must be positive and smaller than both torus tube radii
+    # Bridge radius: minimum catenoid waist radius
     a = float(bridge_radius)
-    a = np.clip(a, 0.1, min(r1, r2) * 0.95)  # Keep neck narrower than tubes
+    a = np.clip(a, 0.1, min(r1, r2) * 0.95)
     
-    # Compute catenoid length from the constraint that end radii match torus tubes
-    # Catenoid: r(x) = a * cosh(x/a), so at ends: r1 = a*cosh(L1/a), r2 = a*cosh(L2/a)
-    # Solve for L1, L2: L = a * acosh(r/a)
-    L1 = a * np.arccosh(r1 / a)  # Half-length on T1 side
-    L2 = a * np.arccosh(r2 / a)  # Half-length on T2 side
-    catenoid_length = L1 + L2  # Total length of catenoid bridge
+    # Catenoid half-lengths: a·arccosh(r/a) gives the x-extent on each side
+    L1 = a * np.arccosh(r1 / a)
+    L2 = a * np.arccosh(r2 / a)
     
-    # Angular gap for the attachment cut (in radians)
-    # The cut should be just wide enough for the tube diameter
-    gap_angle = 0.15  # Small gap where bridge attaches
-    
-    # === Torus positions ===
-    # Position tori so catenoid fits between them without overlap
-    # At the attachment: T1 at φ=0 has outer point at x = x1 + R1 + r1
-    # At the attachment: T2 at φ=π has outer point at x = x2 - R2 - r2
-    # We want separation = catenoid_length (plus small margin)
     margin = 0.1
-    total_sep = R1 + r1 + R2 + r2 + catenoid_length + margin
+    total_sep = R1 + r1 + R2 + r2 + L1 + L2 + margin
     x1 = -total_sep / 2
     x2 = +total_sep / 2
     
-    # Catenoid attachment points (centers of the attachment circles)
-    attach_x1 = x1 + R1  # Where catenoid meets T1
-    attach_x2 = x2 - R2  # Where catenoid meets T2
+    attach_x1 = x1 + R1  # x-center of T1 attachment circle (φ=0, lies in xz-plane)
+    attach_x2 = x2 - R2  # x-center of T2 attachment circle (φ=π, lies in xz-plane)
     
-    # Region boundaries  
-    v_T1_end = 2 * np.pi
-    v_cat_end = 3 * np.pi
-    v_T2_end = 5 * np.pi
+    v_T1_end = 2 * np.pi   # T1 / catenoid boundary in parameter space
+    v_cat_end = 3 * np.pi  # Catenoid / T2 boundary in parameter space
     
-    # Determine region
-    in_T1 = v < v_T1_end
-    in_cat = (v >= v_T1_end) & (v < v_cat_end)
-    in_T2 = v >= v_cat_end
+    # === Torus 1 formula (evaluated for ALL v) ===
+    # φ = v, so at v=2π φ=2π≡0: T1 evaluates exactly on the catenoid attachment
+    # circle (y=0 xz-plane), guaranteeing C0 continuity at the blend boundary.
+    phi_T1 = v
+    # Re(τ₁)/Im(τ₁) twist rate: tube cross-section rotates by one full turn per
+    # Re(τ₁)/Im(τ₁) traversals of the major circle, matching the genus-1 convention.
+    twist_rate1 = float(tau1.real) / max(abs(float(tau1.imag)), 1e-10)
+    theta_T1 = u + twist_rate1 * phi_T1
+    rho_T1  = R1 + r1 * torch.cos(theta_T1)
+    x_T1 = rho_T1 * torch.cos(phi_T1) + x1
+    y_T1 = rho_T1 * torch.sin(phi_T1)
+    z_T1 = r1 * torch.sin(theta_T1)
     
-    # Initialize output
-    x_out = torch.zeros(n, device=device, dtype=dtype)
-    y_out = torch.zeros(n, device=device, dtype=dtype)
-    z_out = torch.zeros(n, device=device, dtype=dtype)
+    # === Catenoid formula (evaluated for ALL v) ===
+    # t ∈ [0, 1]; cosh profile clamped to prevent overflow outside natural range.
+    # u_cat interpolates the tube-rotation from T1's holonomy (twist_rate1·2π, the
+    # rotation accumulated going once around T1's major circle) to neck_twist, so:
+    #   t=0: u_cat = u + twist_rate1·2π  ← matches theta_T1 at v=2π (φ=2π≡0)
+    #   t=1: u_cat = u + neck_twist       ← matches theta_T2 at v=3π (φ=π)
+    holonomy_T1 = twist_rate1 * 2.0 * np.pi
+    t_cat = (v - v_T1_end) / np.pi
+    u_cat = u + holonomy_T1 + t_cat * (neck_twist - holonomy_T1)
+    s_cat = torch.clamp(-L1 + t_cat * (L1 + L2), -10 * a, 10 * a)
+    rho_cat = a * torch.cosh(s_cat / a)
+    center_x_cat = attach_x1 + (attach_x2 - attach_x1) * t_cat
+    orient_cat   = np.pi * t_cat  # 0 at T1 end, π at T2 end
+    local_y_cat  = rho_cat * torch.cos(u_cat)
+    local_z_cat  = rho_cat * torch.sin(u_cat)
+    x_cat = center_x_cat + local_y_cat * torch.cos(orient_cat)
+    y_cat = local_y_cat * torch.sin(orient_cat)
+    z_cat = local_z_cat
     
-    # === Torus 1 ===
-    # v ∈ [0, 2π) maps to φ ∈ [gap, 2π - gap] (avoiding φ=0 where bridge attaches)
-    if in_T1.any():
-        v_T1 = v[in_T1]
-        u_T1 = u[in_T1]  # θ (around tube)
-        
-        # Map v to φ, skipping the gap near φ=0
-        # v=0 → φ=gap, v=2π → φ=2π-gap
-        phi = gap_angle + v_T1 * (2 * np.pi - 2 * gap_angle) / (2 * np.pi)
-        theta = u_T1
-        
-        # Apply shear from Re(τ)
-        tau1_re = float(tau1.real)
-        phi_sheared = phi + tau1_re * theta / (2 * np.pi)
-        
-        cos_phi = torch.cos(phi_sheared)
-        sin_phi = torch.sin(phi_sheared)
-        cos_theta = torch.cos(theta)
-        sin_theta = torch.sin(theta)
-        
-        rho = R1 + r1 * cos_theta
-        x_out[in_T1] = rho * cos_phi + x1
-        y_out[in_T1] = rho * sin_phi
-        z_out[in_T1] = r1 * sin_theta
+    # === Torus 2 formula (evaluated for ALL v) ===
+    # φ = π + v_local, so at v=3π φ=π: T2 evaluates exactly on the catenoid
+    # attachment circle, guaranteeing C0 continuity at the blend boundary.
+    # (phi_T2 - π) normalises the major angle to [0, 2π] for twist accumulation;
+    # neck_twist offsets the tube angle at the bridge to match u_cat at t=1.
+    v_local_T2 = v - v_cat_end
+    phi_T2 = np.pi + v_local_T2
+    twist_rate2 = float(tau2.real) / max(abs(float(tau2.imag)), 1e-10)
+    theta_T2 = u + twist_rate2 * (phi_T2 - np.pi) + neck_twist
+    rho_T2  = R2 + r2 * torch.cos(theta_T2)
+    x_T2 = rho_T2 * torch.cos(phi_T2) + x2
+    y_T2 = rho_T2 * torch.sin(phi_T2)
+    z_T2 = r2 * torch.sin(theta_T2)
     
-    # === Catenoid ===
-    # v ∈ [2π, 3π) maps to position along the catenoid
-    # True catenoid: r(s) = a * cosh(s/a) where s is arc length from center
-    if in_cat.any():
-        v_cat = v[in_cat]
-        u_cat = u[in_cat]
-        
-        # Map v from [2π, 3π) to s ∈ [-L1, L2] (arc length along catenoid axis)
-        # t=0 at T1 end, t=1 at T2 end
-        t = (v_cat - 2 * np.pi) / np.pi  # t ∈ [0, 1)
-        s = -L1 + t * (L1 + L2)  # s ∈ [-L1, L2]
-        
-        # Catenoid radius profile: a * cosh(s/a)
-        rho = a * torch.cosh(s / a)
-        
-        # X position: interpolate between attachment points
-        # But account for the catenoid curving inward
-        center_x = attach_x1 + (attach_x2 - attach_x1) * t
-        
-        # The catenoid tube extends in the y-z plane at each x
-        # At T1 end (t=0): tube points in +x direction (phi=0)
-        # At T2 end (t=1): tube points in -x direction (phi=π)
-        # Smoothly rotate the tube orientation along the catenoid
-        orientation_angle = np.pi * t  # 0 at T1, π at T2
-        
-        # Tube cross-section in local frame, then rotate
-        local_y = rho * torch.cos(u_cat)
-        local_z = rho * torch.sin(u_cat)
-        
-        # Rotate local_y by orientation_angle around z-axis
-        cos_orient = torch.cos(orientation_angle)
-        sin_orient = torch.sin(orientation_angle)
-        
-        x_out[in_cat] = center_x + local_y * cos_orient
-        y_out[in_cat] = local_y * sin_orient
-        z_out[in_cat] = local_z
+    # === Smooth sigmoid blending ===
+    # Each formula is evaluated everywhere; sigmoid weights localise contributions to
+    # their natural region. The C0 boundary match ensures no geometric seam; the
+    # sigmoid provides C∞ smoothing across the transition zone.
+    # Quintic smooth step: 0 → 1 over [junction − s_blend, junction + s_blend].
+    # f' = f'' = 0 at both window endpoints → C² blending, no curvature spike from kernel.
+    w_to_cat = _smooth_step_quintic((v - (v_T1_end - s_blend)) / (2.0 * s_blend))  # T1 → catenoid at v = 2π
+    w_to_T2  = _smooth_step_quintic((v - (v_cat_end - s_blend)) / (2.0 * s_blend))  # catenoid → T2 at v = 3π
     
-    # === Torus 2 ===
-    # v ∈ [3π, 5π) maps to φ ∈ [π + gap, 3π - gap] (i.e., most of the torus, avoiding φ=π)
-    if in_T2.any():
-        v_T2 = v[in_T2]
-        u_T2 = u[in_T2]  # θ (around tube)
-        
-        # Map v from [3π, 5π) to φ ∈ [π + gap, 3π - gap]
-        # This gives a 2π - 2*gap range, same as T1
-        v_local = v_T2 - 3 * np.pi  # v_local ∈ [0, 2π)
-        phi = (np.pi + gap_angle) + v_local * (2 * np.pi - 2 * gap_angle) / (2 * np.pi)
-        theta = u_T2
-        
-        # Apply shear and twist
-        tau2_re = float(tau2.real)
-        phi_sheared = phi + tau2_re * theta / (2 * np.pi) + neck_twist
-        
-        cos_phi = torch.cos(phi_sheared)
-        sin_phi = torch.sin(phi_sheared)
-        cos_theta = torch.cos(theta)
-        sin_theta = torch.sin(theta)
-        
-        rho = R2 + r2 * cos_theta
-        x_out[in_T2] = rho * cos_phi + x2
-        y_out[in_T2] = rho * sin_phi
-        z_out[in_T2] = r2 * sin_theta
+    w1 = (1.0 - w_to_cat).unsqueeze(1)              # T1 weight
+    w2 = (w_to_cat * (1.0 - w_to_T2)).unsqueeze(1)  # Catenoid weight
+    w3 = (w_to_cat * w_to_T2).unsqueeze(1)          # T2 weight
     
-    # Apply scale
-    x_out = x_out * scale
-    y_out = y_out * scale
-    z_out = z_out * scale
+    xyz_T1  = torch.stack([x_T1,  y_T1,  z_T1],  dim=1)
+    xyz_cat = torch.stack([x_cat, y_cat, z_cat], dim=1)
+    xyz_T2  = torch.stack([x_T2,  y_T2,  z_T2],  dim=1)
     
-    return torch.stack([x_out, y_out, z_out], dim=1)
+    return w1 * xyz_T1 + w2 * xyz_cat + w3 * xyz_T2
 
 
 def get_reference_embedding(
@@ -896,14 +883,15 @@ def get_reference_embedding(
         # Catenoid bridge parameters
         neck_length = float(dt_params.get('neck_length', 1.0))
         neck_twist = float(dt_params.get('neck_twist', 0.0))
-        
+        bridge_radius = float(dt_params.get('bridge_radius', 0.3))
+        s_blend = float(dt_params.get('s_blend', 0.15))
         return get_double_torus_embedding(
             uv,
             tau1=tau1,
             tau2=tau2,
-            neck_length=neck_length,
+            bridge_radius=bridge_radius,
             neck_twist=neck_twist,
-            scale=dt_params.get('scale', 1.5),
+            s_blend=s_blend,
         )
     
     else:

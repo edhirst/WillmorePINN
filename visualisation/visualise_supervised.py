@@ -220,87 +220,98 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
 
 
 def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: str, device: torch.device):
-    """Train and visualize supervised double torus embeddings (genus 2).
-    
-    Uses Fenchel-Nielsen coordinates:
-    - l₁, l₂, l₃ > 0: lengths of the 3 gluing geodesics
-    - τ₁, τ₂, τ₃ ∈ ℝ: twist parameters
-    
-    The fundamental domain is 4 right-angled hexagons (2 per pair of pants).
+    """Train and visualise genus-2 supervised embedding using Abelian-blend reference.
+
+    The reference surface is built by blending two standard tori using
+    the Abelian coordinate functions (u₁,v₁,u₂,v₂) solved via IDW Dirichlet BVP.
+    Blending uses quadratic handle-activity weights wₖ = (sin²(uₖ/2)+sin²(vₖ/2))² + floor,
+    giving a cleaner partition than a linear sum.  Because the Abelian coordinates
+    are equal at identified vertex pairs, the reference is automatically smooth and
+    identification-consistent across the octagon.
+
+    Shows the reference target alongside the network output after MSE training.
     """
-    # Use the same configs as analytic for demonstration
-    # Use the same configs as analytic script
-    dt_configs = [
-        {'tau1': {'real': 0.0, 'imag': 1.0}, 'tau2': {'real': 0.0, 'imag': 1.0}, 'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'τ₁=τ₂=i (symmetric)'},
-        {'tau1': {'real': 0.0, 'imag': 0.5}, 'tau2': {'real': 0.0, 'imag': 2.0}, 'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'τ₁=0.5i (thick), τ₂=2i (thin)'},
-        {'tau1': {'real': 0.5, 'imag': 1.0}, 'tau2': {'real': -0.5, 'imag': 1.0}, 'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'τ₁=0.5+i, τ₂=-0.5+i (twisted)'},
-        {'tau1': {'real': 1.0, 'imag': 0.8}, 'tau2': {'real': 0.0, 'imag': 1.2}, 'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'τ₁=1+0.8i (strong twist)'},
-        {'tau1': {'real': 0.0, 'imag': 0.7}, 'tau2': {'real': 0.0, 'imag': 0.7}, 'bridge_radius': 0.12, 'neck_twist': 0.0, 'scale': 1.2, 'label': 'bridge_radius=0.12 (narrow)'},
-    ]
-    model_paths = []
-    for cfg in dt_configs:
-        label = cfg['label']
-        topology_params = {'double_torus': {k: v for k, v in cfg.items() if k != 'label'}}
-        uv = sample_parameters(num_points, domain="double_torus", device=device, dtype=torch.float32)
-        with torch.no_grad():
-            xyz_target = get_reference_embedding(uv, genus=2, topology_params=topology_params)
-        config = yaml.safe_load(open(config_path, 'r'))
-        config['topology'] = config.get('topology', {})
-        config['topology']['genus'] = 2
-        config['topology']['double_torus'] = {k: v for k, v in cfg.items() if k != 'label'}
-        config['model']['supervised_pretraining']['num_epochs'] = DEFAULT_NUM_EPOCHS
-        config['model']['supervised_pretraining']['num_points_per_epoch'] = DEFAULT_NUM_POINTS_PER_EPOCH
-        config['model']['supervised_pretraining']['batch_size'] = DEFAULT_BATCH_SIZE
-        model = create_embedding_model(config, device, skip_init=False)
-        optimizer = torch.optim.Adam(model.parameters(), lr=DEFAULT_LEARNING_RATE)
-        model = train_surface(model, optimizer, uv, xyz_target, DEFAULT_NUM_EPOCHS)
-        safe_label = label.replace(" ", "_").replace("=", "_").replace("+", "_").replace(".", "_").replace(",", "_")
-        model_path = os.path.join(output_dir, f'model_genus2_{safe_label}.pt')
-        torch.save({'model_state_dict': model.state_dict(), 'config': config, 'label': label}, model_path)
-        model_paths.append((model_path, label, uv))
-    # Visualize with fundamental domain
-    n_models = len(model_paths)
-    n_plots = n_models + 1  # +1 for domain plot
-    n_rows = int(np.ceil(n_plots / 2))
-    fig = plt.figure(figsize=(12, 5 * n_rows))
-    # Add fundamental domain coloring first
-    ax_domain = fig.add_subplot(n_rows, 2, 1)
-    first_cfg = dt_configs[0]
-    tau1 = complex(first_cfg['tau1']['real'], first_cfg['tau1']['imag'])
-    tau2 = complex(first_cfg['tau2']['real'], first_cfg['tau2']['imag'])
-    plot_fundamental_domain_coloring(ax_domain, genus=2, tau1=tau1, tau2=tau2, neck_radius=0.3)
-    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+    from spectral import HyperbolicOctagonSpectral
 
-    # First pass: collect xyz and metadata
-    _plot_data = []
-    for model_path, label, uv in model_paths:
-        model, config, _ = load_model_from_checkpoint(model_path, device)
-        genus = config['topology']['genus']
-        domain = get_domain_for_genus(genus)
-        print(f"Visualizing model from {model_path}")
-        print(f"Embedding model created for genus {genus} ({genus_names.get(genus, 'unknown')})")
-        print(f"  Domain: {domain}")
-        print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
-        with torch.no_grad():
-            xyz_pred = model(uv).cpu()
-        _plot_data.append((xyz_pred, uv, label, genus))
+    with open(config_path, 'r') as f:
+        base_config = yaml.safe_load(f)
 
-    # Shared scale across all subplots
-    _all_xyz = np.concatenate([d[0].numpy() for d in _plot_data])
-    _global_range = np.array([
-        _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
-        _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
-        _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
+    print("Building HyperbolicOctagonSpectral basis with Abelian-blend reference...")
+    basis = HyperbolicOctagonSpectral(
+        num_eigenfunctions=8,
+        num_edge_divisions=10,
+        interior_grid_spacing=0.05,
+        verbose=True,
+    )
+    basis.to(device)
+
+    # Sample octagon points
+    xy = basis.sample_uniform(num_points, device=device, dtype=torch.float32)
+
+    # Get Abelian-blend reference targets
+    with torch.no_grad():
+        xyz_target = basis.reference_embedding(xy)
+    print(f"  Reference: x∈[{xyz_target[:,0].min():.2f},{xyz_target[:,0].max():.2f}]  "
+          f"y∈[{xyz_target[:,1].min():.2f},{xyz_target[:,1].max():.2f}]  "
+          f"z∈[{xyz_target[:,2].min():.2f},{xyz_target[:,2].max():.2f}]")
+
+    # Build and train model using proper batched supervised pretraining
+    config = copy.deepcopy(base_config)
+    config.setdefault('topology', {})['genus'] = 2
+    # Override pretraining config: enable proper batched training with re-sampling
+    pt = config.setdefault('model', {}).setdefault('supervised_pretraining', {})
+    pt['enabled']             = True
+    pt['num_epochs']          = 300
+    pt['num_points_per_epoch'] = 8192
+    pt['batch_size']          = 512
+    pt['learning_rate']       = DEFAULT_LEARNING_RATE
+    pt['derivative_weight']   = 0.0   # piecewise-linear reference → no derivative loss
+    # skip_init=False triggers _init_near_reference which resamples every epoch
+    # and uses position + derivative loss with warmup
+    model = create_embedding_model(config, device, skip_init=False, spectral_basis=basis)
+
+    model_path = os.path.join(output_dir, 'model_genus2_abelian.pt')
+    torch.save({'model_state_dict': model.state_dict(), 'config': config,
+                'label': 'Abelian blend reference'}, model_path)
+
+    model.eval()
+    with torch.no_grad():
+        xyz_pred = model(xy).cpu()
+    xyz_target_cpu = xyz_target.cpu()
+
+    mse = ((xyz_pred - xyz_target_cpu) ** 2).mean().item()
+    print(f"  Final MSE vs. reference: {mse:.6f}")
+
+    # Plot: domain | reference target | network output
+    fig = plt.figure(figsize=(18, 6))
+
+    ax_domain = fig.add_subplot(1, 3, 1)
+    plot_fundamental_domain_coloring(ax_domain, genus=2)
+
+    all_xyz = np.concatenate([xyz_target_cpu.numpy(), xyz_pred.numpy()])
+    global_range = np.array([
+        all_xyz[:, 0].max() - all_xyz[:, 0].min(),
+        all_xyz[:, 1].max() - all_xyz[:, 1].min(),
+        all_xyz[:, 2].max() - all_xyz[:, 2].min(),
     ]).max() / 2.0
 
-    for idx, (xyz_pred, uv, label, genus) in enumerate(_plot_data):
-        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus, global_range=_global_range)
-        ax.view_init(elev=30, azim=-60)
+    ax_target = fig.add_subplot(1, 3, 2, projection='3d')
+    plot_surface_3d(ax_target, xyz_target_cpu, xy,
+                   'Abelian-blend reference\n(genus-2 pretraining target)',
+                   genus=2, global_range=global_range)
+    ax_target.view_init(elev=30, azim=-60)
+
+    ax_pred = fig.add_subplot(1, 3, 3, projection='3d')
+    num_epochs_trained = pt['num_epochs']
+    plot_surface_3d(ax_pred, xyz_pred, xy,
+                   f'Network output after {num_epochs_trained} epochs\n(MSE={mse:.4f})',
+                   genus=2, global_range=global_range)
+    ax_pred.view_init(elev=30, azim=-60)
+
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'supervised_genus2.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    print(f"\nSaved genus 2 comparison to {output_path}")
+    print(f"\nSaved genus 2 supervised visualisation to {output_path}")
     plt.close()
 
 
@@ -311,7 +322,7 @@ def main():
     # Default config path relative to script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    default_config = os.path.join(project_root, 'hyperparameters.yaml')
+    default_config = os.path.join(project_root, 'configs', 'hyperparameters.yaml')
     
     parser = argparse.ArgumentParser(description="Train and visualize supervised surface embeddings")
     parser.add_argument('--config', type=str, default=default_config,

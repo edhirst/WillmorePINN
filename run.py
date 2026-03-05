@@ -153,21 +153,27 @@ def train_epoch(
     dtype: torch.dtype,
     gradient_clip: Optional[float] = None,
     use_rotation_augmentation: bool = True,
-    genus: Optional[int] = None
+    genus: Optional[int] = None,
+    spectral_basis=None,
+    edge_margin: float = 0.0,
 ) -> Dict[str, float]:
     """Train for one epoch."""
     model.train()
-    
-    # Sample parameter space points according to the topology
-    uv = sample_parameters(num_points, domain, device, dtype, genus=genus)
-    
-    # Apply random z-axis rotation augmentation if enabled
-    # Only applicable for torus and double_torus (not ellipsoid due to poles)
-    if use_rotation_augmentation and domain in ['torus', 'double_torus']:
-        # Random rotation angle in [0, 2π)
-        theta = torch.rand(1, device=device, dtype=dtype).item() * 2 * 3.14159265359
-        # Shift u coordinate by theta (rotates around z-axis)
-        uv[:, 0] = (uv[:, 0] + theta) % (2 * 3.14159265359)
+
+    # Sample parameter space points
+    if genus == 2 and spectral_basis is not None:
+        # Genus 2: sample uniformly in the Poincaré disk octagon, optionally
+        # excluding a margin strip near the identified edges.
+        uv = spectral_basis.sample_uniform(
+            num_points, device=device, dtype=dtype, edge_margin=edge_margin
+        )
+    else:
+        uv = sample_parameters(num_points, domain, device, dtype, genus=genus)
+
+        # Random z-axis rotation augmentation (only for torus)
+        if use_rotation_augmentation and domain == 'torus':
+            theta = torch.rand(1, device=device, dtype=dtype).item() * 2 * 3.14159265359
+            uv[:, 0] = (uv[:, 0] + theta) % (2 * 3.14159265359)
     
     # Split into batches
     num_batches = (num_points + batch_size - 1) // batch_size
@@ -215,7 +221,7 @@ def train_epoch(
     return epoch_losses
 
 
-def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] = None, config_dict: Optional[dict] = None):
+def train(config_path: str = "configs/hyperparameters.yaml", resume_from: Optional[str] = None, config_dict: Optional[dict] = None):
     """Main training loop."""
     # Load configuration
     if config_dict is not None:
@@ -250,14 +256,21 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
 
     # Get domain from genus
     domain = get_domain_for_genus(genus)
-    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "genus-2 (hyperbolic octagon)"}
 
     print(f"\n{'='*60}")
     print(f"Willmore Energy Minimization - Genus {genus} ({genus_names.get(genus, 'unknown')})")
     print(f"{'='*60}")
 
+    # Build spectral basis for genus 2 (one-time cost)
+    spectral_basis = None
+    if genus == 2:
+        from spectral import build_spectral_basis
+        spectral_basis = build_spectral_basis(config, verbose=True)
+        spectral_basis = spectral_basis.to(device)
+
     # Create model
-    model = create_embedding_model(config, device)
+    model = create_embedding_model(config, device, spectral_basis=spectral_basis)
 
     # Create loss function
     loss_fn = create_embedding_loss(config)
@@ -397,9 +410,9 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     
     # Print domain information
     domain_ranges = {
-        "ellipsoid": "[0, 2π] × [0, π]",
-        "torus": "[0, 2π] × [0, 2π]",
-        "double_torus": "[0, 2π] × [0, 4π]"
+        "ellipsoid":    "[0, 2π] × [0, π]",
+        "torus":        "[0, 2π] × [0, 2π]",
+        "double_torus": "Poincaré disk hyperbolic octagon",
     }
     print(f"\nStarting training for {num_epochs} epochs...")
     print(f"Batch size: {batch_size}, Number of points: {num_points}")
@@ -440,12 +453,15 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         
         # Train one epoch
         use_rotation_aug = config["sampling"].get("use_rotation_augmentation", True)
+        edge_margin = config["sampling"].get("edge_margin", 0.0)
         epoch_losses = train_epoch(
             model, loss_fn, optimizer,
             num_points, batch_size, domain,
             device, dtype, gradient_clip,
             use_rotation_augmentation=use_rotation_aug,
-            genus=genus
+            genus=genus,
+            spectral_basis=spectral_basis,
+            edge_margin=edge_margin,
         )
         
         # Check for severe regularity degradation and rollback if needed
@@ -591,7 +607,7 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default="hyperparameters.yaml",
+        default="configs/hyperparameters.yaml",
         help="Path to configuration file"
     )
     parser.add_argument(

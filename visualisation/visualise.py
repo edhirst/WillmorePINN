@@ -20,13 +20,22 @@ from pathlib import Path
 
 from model import create_embedding_model
 from sampling import sample_parameters, get_domain_for_genus
+from spectral import build_spectral_basis
 from utils import get_next_run_number, plot_fundamental_domain_coloring, plot_surface_3d
 
 
-def load_checkpoint_model(checkpoint_path, config, device):
-    """Load model from checkpoint."""
+def load_checkpoint_model(checkpoint_path, config, device, spectral_basis=None):
+    """Load model from checkpoint.
+
+    Args:
+        checkpoint_path: Path to the .pt checkpoint file.
+        config: Configuration dict (from the checkpoint or fallback).
+        device: Target device.
+        spectral_basis: Pre-built HyperbolicOctagonSpectral for genus-2 checkpoints.
+            Must be provided when genus == 2; ignored otherwise.
+    """
     # Skip reference initialization when loading from checkpoint
-    model = create_embedding_model(config, device, skip_init=True)
+    model = create_embedding_model(config, device, skip_init=True, spectral_basis=spectral_basis)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model'])
     model.eval()
@@ -57,7 +66,7 @@ def get_highest_run_number(base_checkpoint_dir: str) -> int:
     return max(run_numbers) if run_numbers else None
 
 
-def plot_fundamental_domain_image(output_path, num_points=200, genus=None, config_path='hyperparameters.yaml'):
+def plot_fundamental_domain_image(output_path, num_points=200, genus=None, config_path='configs/hyperparameters.yaml'):
     """
     Plot and save the fundamental domain with rainbow coloring.
     
@@ -90,7 +99,7 @@ def plot_fundamental_domain_image(output_path, num_points=200, genus=None, confi
 
 
 def visualise_training_evolution(
-    config_path='hyperparameters.yaml',
+    config_path='configs/hyperparameters.yaml',
     checkpoint_dir='checkpoints',
     num_test_points=5000,
     output_path='logs/embedding_evolution.png',
@@ -191,7 +200,15 @@ def visualise_training_evolution(
     config_ckpt = first_checkpoint.get('config', config)
     genus_ckpt = config_ckpt['topology']['genus']
     domain_ckpt = get_domain_for_genus(genus_ckpt)
-    uv_test = sample_parameters(num_test_points, domain_ckpt, device, genus=genus_ckpt)
+
+    # For genus 2, build spectral basis once from config (may reload from cache).
+    # All checkpoints in a run share the same basis parameters.
+    spectral_basis_ckpt = None
+    if genus_ckpt == 2:
+        spectral_basis_ckpt = build_spectral_basis(config_ckpt)
+        uv_test = spectral_basis_ckpt.sample_uniform(num_test_points)
+    else:
+        uv_test = sample_parameters(num_test_points, domain_ckpt, device, genus=genus_ckpt)
     
     # Create figure with subplots
     n_plots = len(selected_checkpoints)
@@ -211,10 +228,8 @@ def visualise_training_evolution(
         config_ckpt = checkpoint.get('config', config)
         genus_ckpt = config_ckpt['topology']['genus']
         domain_ckpt = get_domain_for_genus(genus_ckpt)
-        print(f"Embedding model created for genus {genus_ckpt} ({genus_names.get(genus_ckpt, 'unknown')})")
-        print(f"  Domain: {domain_ckpt}")
-        print(f"  Parameters: {sum(p.numel() for p in create_embedding_model(config_ckpt, device, skip_init=True).parameters())} trainable")
-        model, epoch, loss = load_checkpoint_model(checkpoint_path, config_ckpt, device)
+        model, epoch, loss = load_checkpoint_model(checkpoint_path, config_ckpt, device,
+                                                     spectral_basis=spectral_basis_ckpt)
         with torch.no_grad():
             xyz = model(uv_test)
         if 'best' in checkpoint_path:
@@ -253,7 +268,7 @@ def visualise_training_evolution(
 
 def visualise_single_model(
     checkpoint_path='checkpoints/best_model.pt',
-    config_path='hyperparameters.yaml',
+    config_path='configs/hyperparameters.yaml',
     num_test_points=10000,
     output_path='logs/best_embedding.png'
 ):
@@ -280,12 +295,17 @@ def visualise_single_model(
     domain = get_domain_for_genus(genus)
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
     print(f"Visualizing model from {checkpoint_path}")
-    print(f"Embedding model created for genus {genus} ({genus_names.get(genus, 'unknown')})")
-    print(f"  Domain: {domain}")
+    print(f"  Genus {genus} ({genus_names.get(genus, 'unknown')}), domain: {domain}")
+    # Build spectral basis for genus 2
+    spectral_basis = None
+    if genus == 2:
+        spectral_basis = build_spectral_basis(config)
+        uv_test = spectral_basis.sample_uniform(num_test_points)
+    else:
+        uv_test = sample_parameters(num_test_points, domain, device)
     # Load model
-    model, epoch, loss = load_checkpoint_model(checkpoint_path, config, device)
-    # Generate test data
-    uv_test = sample_parameters(num_test_points, domain, device)
+    model, epoch, loss = load_checkpoint_model(checkpoint_path, config, device,
+                                               spectral_basis=spectral_basis)
     # Compute embedding
     with torch.no_grad():
         xyz = model(uv_test)
@@ -320,7 +340,7 @@ def main():
     # Default paths relative to parent directory (project root)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    default_config = os.path.join(project_root, 'hyperparameters.yaml')
+    default_config = os.path.join(project_root, 'configs', 'hyperparameters.yaml')
     default_checkpoints = os.path.join(project_root, 'checkpoints')
     
     parser = argparse.ArgumentParser(description="Visualize learned embeddings")

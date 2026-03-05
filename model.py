@@ -2,19 +2,24 @@
 Neural Network Model for Learning Surface Embeddings
 
 This module defines the neural network architecture that learns an embedding
-φ: (u,v) → (x,y,z) from parameter space to R³. The Willmore energy is then
+φ: x → (x,y,z) from parameter space to R³. The Willmore energy is then
 computed from the first and second fundamental forms of this embedding.
 
 Supported topologies:
 - Genus 0 (sphere/ellipsoid): Uses polar coordinates [0, π] × [0, 2π]
-- Genus 1 (torus): Uses doubly-periodic coordinates [0, 2π] × [0, 2π]
-- Genus 2 (double torus): Uses custom coordinates [0, 2π] × [0, 4π]
+- Genus 1 (torus): Uses doubly-periodic coordinates with Fourier features
+- Genus 2 (genus-2 surface): Uses Laplace-Beltrami eigenfunctions on the
+    regular hyperbolic octagon fundamental domain (Poincaré disk); computed
+    once via HyperbolicOctagonSpectral in spectral.py.
 """
 
 import torch
 import torch.nn as nn
 import numpy as np
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from spectral import HyperbolicOctagonSpectral
 
 
 class PeriodicEmbedding(nn.Module):
@@ -27,7 +32,7 @@ class PeriodicEmbedding(nn.Module):
     For ellipsoid (genus 0): Maps (u,v) → (sin(nu), cos(nu), sin(mv), cos(mv), ...)
                              u is periodic [0, 2π], v is not periodic [0, π]
     
-    For double torus (genus 2): Both directions periodic but v has period 4π
+    For double torus (genus 2): Not used — replaced by SpectralFeatureEmbedding.
     """
     
     def __init__(self, num_frequencies: int = 4, domain: str = "torus", genus: Optional[int] = None):
@@ -46,8 +51,7 @@ class PeriodicEmbedding(nn.Module):
                 domain = "ellipsoid"
             elif genus == 1:
                 domain = "torus"
-            elif genus == 2:
-                domain = "double_torus"
+            # genus 2 no longer uses PeriodicEmbedding (uses SpectralFeatureEmbedding)
         
         self.domain = domain.lower()
         # Output dimension: 2 * num_frequencies * input_dim
@@ -108,16 +112,60 @@ class PeriodicEmbedding(nn.Module):
         return torch.cat(features, dim=1)
 
 
+class SpectralFeatureEmbedding(nn.Module):
+    """
+    Fixed spectral input layer for genus-2 surfaces.
+
+    Wraps HyperbolicOctagonSpectral.interpolate so it can be stored as a
+    module attribute and moved to different devices via .to().
+    The interpolation is differentiable w.r.t. the 2-D Poincaré disk
+    coordinates, allowing autograd to compute ∂F/∂x and ∂F/∂y for the
+    Willmore energy.
+
+    Parameters of this module are empty — the spectral basis is fixed.
+    """
+
+    def __init__(self, spectral_basis: 'HyperbolicOctagonSpectral'):
+        """
+        Args:
+            spectral_basis: Pre-computed HyperbolicOctagonSpectral instance.
+        """
+        super().__init__()
+        self._basis = spectral_basis
+        self.output_dim = spectral_basis.num_eigenfunctions
+
+    def forward(self, xy: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            xy: (batch, 2) Poincaré disk coordinates inside the octagon.
+
+        Returns:
+            features: (batch, num_eigenfunctions) spectral feature values Ψ(xy).
+        """
+        return self._basis.interpolate(xy)
+
+    def to(self, *args, **kwargs):
+        """Move underlying spectral basis tensors alongside the module."""
+        result = super().to(*args, **kwargs)
+        # Determine target device
+        try:
+            device = torch._C._nn._parse_to(*args, **kwargs)[0]
+            self._basis.to(device)
+        except Exception:
+            pass
+        return result
+
+
 class EmbeddingNetwork(nn.Module):
     """
     Neural network that learns an embedding from parameter space (u,v) to R³.
     
     Supports different topologies:
     - Genus 0 (sphere/ellipsoid): φ(u,v) maps [0, 2π] × [0, π] to R³
-    - Genus 1 (torus): φ(u,v) maps [0, 2π] × [0, 2π] to R³  
-    - Genus 2 (double torus): φ(u,v) maps [0, 2π] × [0, 4π] to R³
-    
-    The network enforces appropriate boundary conditions and learns to minimize Willmore energy.
+    - Genus 1 (torus): φ(u,v) maps [0, 2π] × [0, 2π] to R³ using Fourier features
+    - Genus 2: φ(x,y) maps Poincaré disk octagon to R³ using LB spectral features
+
+    The network learns to minimize Willmore energy.
     """
     
     def __init__(
@@ -137,7 +185,8 @@ class EmbeddingNetwork(nn.Module):
         skip_init: bool = False,  # Skip reference initialization (for loading checkpoints)
         supervised_pretraining_config: Optional[dict] = None,  # Config for supervised pretraining
         genus: Optional[int] = None,  # Surface genus (0, 1, or 2)
-        topology_params: Optional[Dict] = None  # Topology-specific parameters
+        topology_params: Optional[Dict] = None,  # Topology-specific parameters
+        spectral_basis=None  # HyperbolicOctagonSpectral instance for genus 2
     ):
         """
         Initialize the embedding network.
@@ -157,8 +206,11 @@ class EmbeddingNetwork(nn.Module):
             residual_scale: Scale factor for residuals
             skip_init: Skip initialization (for checkpoint loading)
             supervised_pretraining_config: Config for supervised pretraining
-            genus: Surface genus (0=ellipsoid, 1=torus, 2=double_torus)
+            genus: Surface genus (0=ellipsoid, 1=torus, 2=genus-2 surface)
             topology_params: Topology-specific parameters from config
+            spectral_basis: Pre-computed HyperbolicOctagonSpectral for genus 2.
+                If provided, replaces the Fourier feature layer with differentiable
+                LB eigenfunction interpolation. Fixed (not trained).
         """
         super().__init__()
         
@@ -170,6 +222,7 @@ class EmbeddingNetwork(nn.Module):
         self.residual_scale = residual_scale
         self.supervised_pretraining_config = supervised_pretraining_config or {}
         self.topology_params = topology_params or {}
+        self.spectral_basis = spectral_basis  # None for genus 0/1; HyperbolicOctagonSpectral for genus 2
         
         # Handle genus and domain
         self.genus = genus
@@ -180,13 +233,21 @@ class EmbeddingNetwork(nn.Module):
         else:
             self.domain = domain
         
-        # Periodic embedding layer - adapted for the domain type
-        if use_periodic_embedding:
-            self.periodic_layer = PeriodicEmbedding(num_frequencies, domain=self.domain, genus=genus)
-            effective_input_dim = self.periodic_layer.output_dim
-        else:
+        # Input feature layer
+        if genus == 2 and spectral_basis is not None:
+            # Genus 2: use fixed LB spectral features from hyperbolic octagon
+            self.spectral_layer = SpectralFeatureEmbedding(spectral_basis)
             self.periodic_layer = None
-            effective_input_dim = input_dim
+            effective_input_dim = spectral_basis.num_eigenfunctions
+        elif use_periodic_embedding:
+            # Genus 0 / 1: Fourier feature embedding
+            self.spectral_layer  = None
+            self.periodic_layer  = PeriodicEmbedding(num_frequencies, domain=self.domain, genus=genus)
+            effective_input_dim  = self.periodic_layer.output_dim
+        else:
+            self.spectral_layer  = None
+            self.periodic_layer  = None
+            effective_input_dim  = input_dim
         
         # Build the network layers
         layers = []
@@ -214,10 +275,12 @@ class EmbeddingNetwork(nn.Module):
         # Initialize weights
         self._initialize_weights(initialization)
         
-        # For full embedding mode, initialize to approximate reference
-        # Skip if loading from checkpoint or if pretraining is disabled
+        # For full embedding mode, initialise near a reference surface.
+        # double_torus is supported when a spectral_basis with Abelian coordinates is available.
         pretrain_enabled = self.supervised_pretraining_config.get('enabled', True)
-        supported_domains = ['torus', 'sphere', 'ellipsoid', 'double_torus']
+        supported_domains = ['torus', 'sphere', 'ellipsoid']
+        if self.spectral_basis is not None:
+            supported_domains.append('double_torus')
         if not skip_init and not use_residual and self.domain in supported_domains and pretrain_enabled:
             self._init_near_reference()
     
@@ -290,51 +353,62 @@ class EmbeddingNetwork(nn.Module):
                 
                 # Get reference embedding and derivatives
                 xyz_ref = self._get_reference_embedding(uv_batch)
-                
-                # Compute reference derivatives
-                phi_u_ref = []
-                phi_v_ref = []
-                for i in range(3):
-                    grad_outputs = torch.zeros_like(xyz_ref)
-                    grad_outputs[:, i] = 1.0
-                    grads_ref = torch.autograd.grad(
-                        outputs=xyz_ref,
-                        inputs=uv_batch,
-                        grad_outputs=grad_outputs,
-                        create_graph=False,
-                        retain_graph=True
-                    )[0]
-                    phi_u_ref.append(grads_ref[:, 0:1])
-                    phi_v_ref.append(grads_ref[:, 1:2])
-                phi_u_ref = torch.cat(phi_u_ref, dim=1).detach()
-                phi_v_ref = torch.cat(phi_v_ref, dim=1).detach()
-                
-                # Forward pass for predicted embedding
-                uv_batch_pred = uv_batch.detach().clone().requires_grad_(True)
-                xyz_pred = self.forward(uv_batch_pred)
-                
-                # Compute predicted derivatives
-                phi_u_pred = []
-                phi_v_pred = []
-                for i in range(3):
-                    grad_outputs = torch.zeros_like(xyz_pred)
-                    grad_outputs[:, i] = 1.0
-                    grads_pred = torch.autograd.grad(
-                        outputs=xyz_pred,
-                        inputs=uv_batch_pred,
-                        grad_outputs=grad_outputs,
-                        create_graph=True,
-                        retain_graph=True
-                    )[0]
-                    phi_u_pred.append(grads_pred[:, 0:1])
-                    phi_v_pred.append(grads_pred[:, 1:2])
-                phi_u_pred = torch.cat(phi_u_pred, dim=1)
-                phi_v_pred = torch.cat(phi_v_pred, dim=1)
-                
+
+                # Derivative computation is skipped when derivative_weight=0
+                # (e.g. for genus-2 where the piecewise-linear reference gives
+                # discontinuous derivative targets that interfere with training).
+                if derivative_weight_final > 0.0:
+                    # Compute reference derivatives
+                    phi_u_ref = []
+                    phi_v_ref = []
+                    for i in range(3):
+                        grad_outputs = torch.zeros_like(xyz_ref)
+                        grad_outputs[:, i] = 1.0
+                        grads_ref = torch.autograd.grad(
+                            outputs=xyz_ref,
+                            inputs=uv_batch,
+                            grad_outputs=grad_outputs,
+                            create_graph=False,
+                            retain_graph=True
+                        )[0]
+                        phi_u_ref.append(grads_ref[:, 0:1])
+                        phi_v_ref.append(grads_ref[:, 1:2])
+                    phi_u_ref = torch.cat(phi_u_ref, dim=1).detach()
+                    phi_v_ref = torch.cat(phi_v_ref, dim=1).detach()
+
+                    # Forward pass for predicted embedding
+                    uv_batch_pred = uv_batch.detach().clone().requires_grad_(True)
+                    xyz_pred = self.forward(uv_batch_pred)
+
+                    # Compute predicted derivatives
+                    phi_u_pred = []
+                    phi_v_pred = []
+                    for i in range(3):
+                        grad_outputs = torch.zeros_like(xyz_pred)
+                        grad_outputs[:, i] = 1.0
+                        grads_pred = torch.autograd.grad(
+                            outputs=xyz_pred,
+                            inputs=uv_batch_pred,
+                            grad_outputs=grad_outputs,
+                            create_graph=True,
+                            retain_graph=True
+                        )[0]
+                        phi_u_pred.append(grads_pred[:, 0:1])
+                        phi_v_pred.append(grads_pred[:, 1:2])
+                    phi_u_pred = torch.cat(phi_u_pred, dim=1)
+                    phi_v_pred = torch.cat(phi_v_pred, dim=1)
+
+                    deriv_loss = (torch.mean((phi_u_pred - phi_u_ref) ** 2)
+                                  + torch.mean((phi_v_pred - phi_v_ref) ** 2))
+                else:
+                    # Position-only: simple forward pass, no derivative autodiff
+                    uv_batch_pred = uv_batch.detach()
+                    xyz_pred  = self.forward(uv_batch_pred)
+                    deriv_loss = torch.tensor(0.0, device=device)
+
                 # Combined loss: position + derivatives
                 pos_loss = torch.mean((xyz_pred - xyz_ref.detach()) ** 2)
-                deriv_loss = torch.mean((phi_u_pred - phi_u_ref) ** 2) + torch.mean((phi_v_pred - phi_v_ref) ** 2)
-                
+
                 # Gradually increase derivative weight over training
                 deriv_weight = derivative_weight_final * min(1.0, epoch / 50.0)
                 loss = position_weight * pos_loss + deriv_weight * deriv_loss
@@ -408,10 +482,14 @@ class EmbeddingNetwork(nn.Module):
             )
             
         elif self.domain == "double_torus":
-            return get_reference_embedding(
-                uv, domain="double_torus", genus=self.genus,
-                topology_params=self.topology_params
-            )
+            if self.spectral_basis is not None:
+                return self.spectral_basis.reference_embedding(uv)
+            else:
+                raise NotImplementedError(
+                    "Genus-2 reference embedding requires a spectral_basis "
+                    "with Abelian coordinates. Disable supervised pretraining "
+                    "or provide a spectral_basis."
+                )
             
         else:
             # Default: unit sphere
@@ -435,20 +513,22 @@ class EmbeddingNetwork(nn.Module):
         Returns:
             Embedding coordinates (batch_size, 3) representing (x, y, z)
         """
-        if self.use_periodic_embedding:
-            features = self.periodic_layer(uv)
+        if self.spectral_layer is not None:
+            # Genus 2: differentiable LB eigenfunction interpolation
+            features       = self.spectral_layer(uv)
+            network_output = self.network(features)
+        elif self.use_periodic_embedding:
+            features       = self.periodic_layer(uv)
             network_output = self.network(features)
         else:
             network_output = self.network(uv)
-        
+
         if self.use_residual:
             # Residual mode: small corrections to reference
-            xyz_ref = self._get_reference_embedding(uv)
+            xyz_ref    = self._get_reference_embedding(uv)
             correction = self.residual_scale * torch.tanh(network_output)
             return xyz_ref + correction
         else:
-            # Full embedding mode: network outputs coordinates directly
-            # Periodicity enforced by Fourier features
             return network_output
     
     def compute_first_fundamental_form(
@@ -622,60 +702,69 @@ class EmbeddingNetwork(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
-def create_embedding_model(config: dict, device: torch.device, skip_init: bool = False) -> nn.Module:
+def create_embedding_model(
+    config: dict,
+    device: torch.device,
+    skip_init: bool = False,
+    spectral_basis=None,
+) -> nn.Module:
     """
     Factory function to create an embedding model from configuration.
-    
+
+    For genus 2, pass a pre-computed HyperbolicOctagonSpectral as spectral_basis.
+    The spectral basis replaces Fourier features and is created once in run.py.
+
     Args:
-        config: Configuration dictionary with model parameters
-        device: Device to place the model on
-        skip_init: If True, skip reference initialization (useful when loading checkpoints)
-    
+        config:         Full configuration dictionary.
+        device:         Device to place the model on.
+        skip_init:      Skip reference initialisation (when loading checkpoints).
+        spectral_basis: HyperbolicOctagonSpectral instance (required for genus 2).
+
     Returns:
-        Initialized embedding model
+        Initialised EmbeddingNetwork on the target device.
     """
-    model_config = config.get("model", {})
-    sampling_config = config.get("sampling", {})
-    topology_config = config.get("topology", {})
+    model_config                 = config.get("model", {})
+    sampling_config              = config.get("sampling", {})
+    topology_config              = config.get("topology", {})
     supervised_pretraining_config = model_config.get("supervised_pretraining", {})
-    
-    # Get genus from topology config (defaults to 1 for backward compatibility)
+
     genus = topology_config.get("genus", 1)
-    
-    # Validate genus
+
     if genus < 0:
         raise ValueError(f"Genus must be non-negative, got {genus}")
     if genus > 2:
-        raise NotImplementedError(f"Genus {genus} is not supported. Only genus 0, 1, 2 are implemented.")
-    
-    # Determine domain from genus
+        raise NotImplementedError(f"Genus {genus} not supported. Only 0, 1, 2 are implemented.")
+
     from sampling import get_domain_for_genus
     domain = get_domain_for_genus(genus)
-    
+
     model = EmbeddingNetwork(
-        input_dim=model_config.get("input_dim", 2),
-        output_dim=model_config.get("output_dim", 3),
-        hidden_dims=model_config.get("hidden_dims", [128, 256, 512, 256, 128]),
-        activation=model_config.get("activation", "tanh"),
-        dropout=model_config.get("dropout", 0.0),
-        use_periodic_embedding=model_config.get("use_periodic_embedding", True),
-        num_frequencies=model_config.get("num_frequencies", 4),
-        initialization=model_config.get("initialization", "xavier_uniform"),
-        domain=domain,
-        domain_params=sampling_config.get("domain_params", {}),
-        use_residual=model_config.get("use_residual", False),  # Default to full embedding
-        residual_scale=model_config.get("residual_scale", 0.1),
-        skip_init=skip_init,
-        supervised_pretraining_config=supervised_pretraining_config,
-        genus=genus,
-        topology_params=topology_config
+        input_dim                   = model_config.get("input_dim", 2),
+        output_dim                  = model_config.get("output_dim", 3),
+        hidden_dims                 = model_config.get("hidden_dims", [128, 256, 512, 256, 128]),
+        activation                  = model_config.get("activation", "tanh"),
+        dropout                     = model_config.get("dropout", 0.0),
+        use_periodic_embedding      = model_config.get("use_periodic_embedding", True),
+        num_frequencies             = model_config.get("num_frequencies", 4),
+        initialization              = model_config.get("initialization", "xavier_uniform"),
+        domain                      = domain,
+        domain_params               = sampling_config.get("domain_params", {}),
+        use_residual                = model_config.get("use_residual", False),
+        residual_scale              = model_config.get("residual_scale", 0.1),
+        skip_init                   = skip_init,
+        supervised_pretraining_config = supervised_pretraining_config,
+        genus                       = genus,
+        topology_params             = topology_config,
+        spectral_basis              = spectral_basis,
     )
-    
+
     model = model.to(device)
-    
-    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+
+    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "genus-2 (hyperbolic octagon)"}
     print(f"Embedding model created for genus {genus} ({genus_names.get(genus, 'unknown')})")
     print(f"  Domain: {domain}")
-    print(f"  Parameters: {model.count_parameters()} trainable")
-    
+    if genus == 2 and spectral_basis is not None:
+        print(f"  Spectral features: {spectral_basis.num_eigenfunctions} LB eigenfunctions")
+    print(f"  Trainable parameters: {model.count_parameters()}")
+
     return model

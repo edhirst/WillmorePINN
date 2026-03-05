@@ -23,52 +23,31 @@ topology:
     max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
     # Clifford torus (R = √2, r = 1) has minimum Willmore energy 2π² ≈ 19.74
   
-  # Genus 2 (double torus) initialization parameters
-  # Two independent tori connected by a catenoid (capillary bridge)
+  # Genus 2 (genus-2 surface) parameters
+  # Uses the regular hyperbolic octagon in the Poincaré disk as fundamental domain.
+  # Opposite edges are identified with the word a₁ b₁ a₁⁻¹ b₁⁻¹ a₂ b₂ a₂⁻¹ b₂⁻¹,
+  # producing a closed genus-2 surface Σ₂ with constant curvature K = −1 (uniformisation).
   #
-  # GEOMETRY:
-  # - Two tori with major radius axes parallel to z-axis (standard orientation)
-  # - Centers at y=0, z=0, separated along x-axis
-  # - Catenoid bridge parallel to x-axis, centered at y=0, z=0
+  # SPECTRAL BASIS (computed once at training startup):
+  #   The discrete Laplace-Beltrami operator is assembled on the identified mesh using
+  #   cotangent weights and a hyperbolic (Poincaré) mass matrix.  Its eigenfunctions
+  #   φ₁,...,φ_N form the fixed input feature vector Ψ(x,y) for the network.
   #
-  # SEPARATION:
-  # x_separation = r1 + R1 + R2 + r2 + neck_length
-  # (outer edges of tori are neck_length apart)
+  # NETWORK INPUT:
+  #   F_θ : ℝ^N → ℝ³,  input = Ψ(x,y) = (φ₁(x,y), ..., φ_N(x,y))
+  #   (replaces the Fourier features used for genus 0 and 1)
   #
-  # THREE FUNDAMENTAL DOMAINS:
-  # 1. Torus 1 parallelogram (with gluing disk excluded)
-  # 2. Catenoid rectangle
-  # 3. Torus 2 parallelogram (with gluing disk excluded)
+  # TRAINING:
+  #   Points (x,y) are sampled uniformly (Euclidean area) in the octagon each epoch.
+  #   Willmore energy is integrated over the octagon with domain_area = 2√2 r² ≈ 1.17.
+  #   Supervised pretraining is disabled (no analytical reference embedding).
   #
-  # Parameters:
-  #   τ₁, τ₂ ∈ ℂ: modular parameters for each torus
-  #     - Im(τ) > 0: controls tube thickness (larger = thinner)
-  #     - Re(τ): shear of the fundamental domain
-  #   neck_length: physical length of the catenoid bridge
-  #   neck_twist: twist at the bridge (placeholder, not yet implemented)
-  #
+  # Lawson's minimal surface ξ_{2,1} has conjectured minimum W ≈ 4π² ≈ 39.48.
   double_torus:
-    # Torus 1 modular parameter (complex number as dict)
-    tau1:
-      real: 0.0   # Re(τ₁): shear parameter
-      imag: 1.0   # Im(τ₁): aspect ratio (must be > 0)
-    
-    # Torus 2 modular parameter (complex number as dict)  
-    tau2:
-      real: 0.0   # Re(τ₂): shear parameter
-      imag: 1.0   # Im(τ₂): aspect ratio (must be > 0)
-    
-    # Catenoid bridge parameters
-    # bridge_radius: minimum radius at the catenoid neck
-    # The catenoid length is computed automatically to match tube radii
-    # r(s) = a * cosh(s/a), where a = bridge_radius
-    bridge_radius: 0.25  # Neck radius (must be < tube radii)
-    neck_twist: 0.0      # Twist angle applied to torus 2
-    
-    # Embedding scale
-    scale: 1.5
-    
-    # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 2π² × 2 = 4π² ≈ 39.48
+    num_eigenfunctions: 16      # Number of nontrivial LB eigenfunctions to use as features
+    num_edge_divisions: 10      # Segments per octagon edge (controls boundary mesh density)
+    interior_grid_spacing: 0.05 # Cartesian grid spacing for interior mesh points (smaller = finer)
+    cache_path: null            # Path to save/load pre-computed eigenfunctions (.npz); null = recompute
 
 # Model Architecture
 model:
@@ -78,15 +57,16 @@ model:
   hidden_dims: [128, 256, 512, 256, 128]  # Hidden layer dimensions
   activation: "tanh"  # Activation function: relu, tanh, elu, silu
   dropout: 0.0  # Dropout rate
-  use_periodic_embedding: true  # Use Fourier features to enforce periodicity
-  num_frequencies: 2  # Fewer frequencies = smoother surfaces (reduces high-freq artifacts)
+  use_periodic_embedding: true  # Fourier features for genus 0/1; ignored for genus 2 (spectral basis used instead)
+  num_frequencies: 2  # Frequencies per dimension for genus 0/1 Fourier features (ignored for genus 2)
   initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
   
   # Residual learning (learning corrections to reference embedding)
   use_residual: false  # Learn residuals from reference (true) or full embedding (false)
   residual_scale: 0.5  # Scale factor for residual corrections (only if use_residual=true)
   
-  # Supervised pretraining (initialize network to match reference embedding)
+  # Supervised pretraining (initialise network near a reference embedding — genus 0/1 only)
+  # Automatically disabled for genus 2 (no analytical reference embedding).
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
     num_epochs: 20  # More epochs for better initialization

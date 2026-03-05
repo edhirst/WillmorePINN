@@ -1,0 +1,99 @@
+# Hyperparameters for Willmore Energy Minimization — Genus 1 (torus)
+# Target: Clifford torus (R = r = 1/√2), W = 2π² ≈ 19.739
+
+topology:
+  genus: 1
+
+  ellipsoid:
+    a: 5.0
+    b: 1.0
+    c: 0.2
+
+  # Complex modulus τ of the torus; Im(τ) > 0.
+  # τ = i corresponds to a square torus; Clifford torus corresponds to |τ| = 1, arg(τ) = π/2.
+  # Starting near τ = i provides a good pretraining target close to the Clifford minimum.
+  torus:
+    tau: "0.1+1.0j"
+    max_height: null
+
+  double_torus:
+    num_eigenfunctions: 16
+    num_edge_divisions: 10
+    interior_grid_spacing: 0.05
+    cache_path: null
+
+model:
+  input_dim: 2
+  output_dim: 3
+  hidden_dims: [128, 256, 512, 256, 128]
+  activation: "tanh"
+  dropout: 0.0
+  use_periodic_embedding: true
+  num_frequencies: 2
+  initialization: "xavier_uniform"
+
+  use_residual: false
+  residual_scale: 0.5
+
+  supervised_pretraining:
+    enabled: true
+    num_epochs: 30
+    learning_rate: 0.002
+    batch_size: 512
+    num_points_per_epoch: 4096
+    position_weight: 1.0
+    derivative_weight: 0.5
+
+training:
+  num_epochs: 200
+  batch_size: 1024
+  learning_rate: 0.00003
+  weight_decay: 0.000001
+  scheduler: "cosine"
+  scheduler_params:
+    T_max: 200
+    eta_min: 0.000005
+  gradient_clip: 0.3
+  save_frequency: 10
+  log_frequency: 5
+
+  adaptive_training:
+    enabled: true
+    regularity_threshold: 0.3
+    regularity_boost_factor: 2.0
+    checkpoint_rollback: true
+    severe_degradation_threshold: 4.0
+    max_rollbacks: 3
+    early_stopping_patience: 50
+
+sampling:
+  num_points: 20000
+  noise_level: 0.0
+  resample_each_epoch: true
+  use_rotation_augmentation: false
+
+loss:
+  willmore_weight: 0.5
+  regularity_weight: 10.0
+  target_area: null
+  epsilon: 0.000001
+  regularity_area_element_weight: 1.0
+  regularity_orientation_weight: 1.0
+  regularity_metric_positivity_weight: 0.5
+  regularity_smoothness_weight: 0.5
+  regularity_max_metric_value: 10.0
+
+optimizer:
+  type: "adam"
+  betas: [0.9, 0.999]
+  momentum: 0.9
+
+output:
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  save_best_only: false
+  metric_to_monitor: "willmore_energy"
+
+device: "auto"
+seed: 42
+dtype: "float32"

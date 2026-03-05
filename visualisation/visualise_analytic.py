@@ -141,100 +141,81 @@ def visualise_analytic_genus1(output_dir: str, num_points: int = 10000, config_p
 
 
 def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_path: str = None):
-    """Visualize analytic double torus embeddings (genus 2).
-    
-    Two independent tori connected by a catenoid bridge.
-    
-    Parameters:
-    - τ₁, τ₂ ∈ ℂ: modular parameters of each torus
-    - neck_length > 0: length of catenoid bridge
-    - neck_twist ∈ ℝ: twist at bridge (placeholder)
-    
-    Three fundamental domains: T1 parallelogram, catenoid rectangle, T2 parallelogram.
+    """Visualize level-set genus-2 reference surfaces with varying parameters.
+
+    The surface is defined by the level set T₁·T₂ = ε where T₁, T₂ are two tori
+    of major radius R, tube radius r, centred at (±d/2, 0, 0).
+
+    Free parameters:
+        R (float): major radius of each torus
+        r (float): tube radius of each torus
+        d (float): centre-to-centre distance; must satisfy R−r < d/2 < R+r for genus 2
+        epsilon (float): level-set threshold; controls bridge cross-section area
     """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.float32
-    
-    # Different configurations showing parameter variations
-    # Use distinct parameters to show visible differences:
-    # - Im(τ) controls tube thickness (larger → thinner tube, r ~ exp(-k*Im(τ)))
-    # - Re(τ) controls helical twist (shear of fundamental domain)
-    # - bridge_radius controls the catenoid neck narrowness
-    dt_configs = [
-        # Config 1: Standard symmetric double torus
-        {'tau1': {'real': 0.0, 'imag': 1.0}, 'tau2': {'real': 0.0, 'imag': 1.0},
-         'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2,
-         'label': 'τ₁=τ₂=i (symmetric)'},
-        # Config 2: Asymmetric tube thicknesses (T1 thicker, T2 thinner)
-        {'tau1': {'real': 0.0, 'imag': 0.5}, 'tau2': {'real': 0.0, 'imag': 2.0},
-         'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2,
-         'label': 'τ₁=0.5i (thick), τ₂=2i (thin)'},
-        # Config 3: Opposite twists on each torus
-        {'tau1': {'real': 0.5, 'imag': 1.0}, 'tau2': {'real': -0.5, 'imag': 1.0},
-         'bridge_radius': 0.25, 'neck_twist': 0.0, 'scale': 1.2,
-         'label': 'τ₁=0.5+i, τ₂=-0.5+i (twisted)'},
-        # Config 4: Strong twist on T1 only
-        {'tau1': {'real': 1.0, 'imag': 0.8}, 'tau2': {'real': 0.0, 'imag': 1.2},
-         'bridge_radius': 0.2, 'neck_twist': 0.0, 'scale': 1.2,
-         'label': 'τ₁=1+0.8i (strong twist)'},
-        # Config 5: Narrow neck catenoid
-        {'tau1': {'real': 0.0, 'imag': 0.7}, 'tau2': {'real': 0.0, 'imag': 0.7},
-         'bridge_radius': 0.12, 'neck_twist': 0.0, 'scale': 1.2,
-         'label': 'bridge_radius=0.12 (narrow)'},
+    from spectral import build_genus2_surface_mesh
+
+    # Configurations varying R, r, d, epsilon.
+    # Constraint for genus 2: R - r < d/2 < R + r.
+    ref_configs = [
+        {'R': 1.0, 'r': 0.35, 'd': 1.60, 'epsilon': 0.005,  'label': 'R=1.0 r=0.35 d=1.6 ε=0.005 (default)'},
+        {'R': 1.0, 'r': 0.35, 'd': 1.80, 'epsilon': 0.005,  'label': 'R=1.0 r=0.35 d=1.8 (wider gap)'},
+        {'R': 1.0, 'r': 0.35, 'd': 1.40, 'epsilon': 0.005,  'label': 'R=1.0 r=0.35 d=1.4 (tighter)'},
+        {'R': 1.0, 'r': 0.45, 'd': 1.60, 'epsilon': 0.005,  'label': 'R=1.0 r=0.45 d=1.6 (fatter tube)'},
+        {'R': 1.0, 'r': 0.35, 'd': 1.60, 'epsilon': 0.020,  'label': 'R=1.0 r=0.35 d=1.6 ε=0.02 (thick bridge)'},
     ]
-    
-    n_configs = len(dt_configs)
+
+    n_configs = len(ref_configs)
     n_plots = n_configs + 1  # +1 for domain plot
     n_rows = int(np.ceil(n_plots / 2))
     fig = plt.figure(figsize=(12, 5 * n_rows))
-    
-    # Use first config for the fundamental domain plot
-    first_cfg = dt_configs[0]
-    tau1 = complex(first_cfg['tau1']['real'], first_cfg['tau1']['imag'])
-    tau2 = complex(first_cfg['tau2']['real'], first_cfg['tau2']['imag'])
-    
+
     ax_domain = fig.add_subplot(n_rows, 2, 1)
-    plot_fundamental_domain_coloring(ax_domain, genus=2, 
-                                     tau1=tau1, tau2=tau2,
-                                     neck_radius=0.3)  # Legacy param name for domain plot
-    
-    genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
+    plot_fundamental_domain_coloring(ax_domain, genus=2)
 
-    # First pass: collect xyz for all surfaces
+    # Build each surface and subsample for plotting
+    rng = np.random.default_rng(42)
     _surfaces = []
-    for idx, cfg in enumerate(dt_configs):
-        genus = 2
-        domain = "double_torus"
-        label = cfg.pop('label')
-        print(f"Visualizing analytic surface {idx+1} for genus {genus} ({genus_names.get(genus, 'unknown')})")
-        print(f"  Domain: {domain}")
-        dummy_config = {'topology': {'genus': genus, 'double_torus': cfg}, 'model': {}}
-        from model import create_embedding_model
-        model = create_embedding_model(dummy_config, device, skip_init=True)
-        print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
-        topology_params = {'double_torus': cfg}
-        uv = sample_parameters(num_points, domain=domain, device=device, dtype=dtype)
-        with torch.no_grad():
-            xyz = get_reference_embedding(uv, genus=genus, topology_params=topology_params)
-        cfg['label'] = label  # Restore for summary
-        _surfaces.append((label, uv, xyz))
+    for idx, cfg in enumerate(ref_configs):
+        print(f"Building level-set surface {idx+1}/{n_configs}: {cfg['label']}")
+        verts, faces = build_genus2_surface_mesh(
+            R=cfg['R'], r=cfg['r'], d=cfg['d'], epsilon=cfg['epsilon'],
+            grid_res=64, verbose=True,
+        )
+        # Subsample vertices for scatter plot
+        n_plot = min(num_points, len(verts))
+        idx_subsamp = rng.choice(len(verts), n_plot, replace=False)
+        xyz_np = verts[idx_subsamp]
+        _surfaces.append((cfg['label'], xyz_np))
 
-    # Shared scale across all subplots
-    _all_xyz = np.concatenate([s[2].cpu().numpy() for s in _surfaces])
+    # Shared scale
+    _all_xyz = np.concatenate([s[1] for s in _surfaces])
     _global_range = np.array([
         _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
         _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
-        _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
+        _all_xyz[:, 2].max() - _all_xyz[:, 2].min(),
     ]).max() / 2.0
+    cx = _all_xyz[:, 0].mean()
+    cy = _all_xyz[:, 1].mean()
+    cz = _all_xyz[:, 2].mean()
 
-    for idx, (label, uv, xyz) in enumerate(_surfaces):
+    for idx, (label, xyz_np) in enumerate(_surfaces):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz, uv, label, genus=2, global_range=_global_range)
-    
+        z = xyz_np[:, 2]
+        z_norm = (z - z.min()) / (z.max() - z.min() + 1e-8)
+        colors = plt.cm.plasma(z_norm)
+        ax.scatter(xyz_np[:, 0], xyz_np[:, 1], xyz_np[:, 2],
+                   c=colors, s=2, alpha=0.6)
+        ax.set_title(label, fontsize=8)
+        ax.set_xlim(cx - _global_range, cx + _global_range)
+        ax.set_ylim(cy - _global_range, cy + _global_range)
+        ax.set_zlim(cz - _global_range, cz + _global_range)
+        ax.set_xlabel('x'); ax.set_ylabel('y'); ax.set_zlabel('z')
+        ax.set_box_aspect([1, 1, 1])
+
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'analytic_genus2.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    print(f"Saved genus 2 (double torus) visualisation to {output_path}")
+    print(f"Saved genus 2 level-set visualisation to {output_path}")
     plt.close()
 
 
@@ -245,7 +226,7 @@ def main():
     # Default config path relative to script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    default_config = os.path.join(project_root, 'hyperparameters.yaml')
+    default_config = os.path.join(project_root, 'configs', 'hyperparameters.yaml')
     
     parser = argparse.ArgumentParser(description="Visualize analytical surface embeddings")
     parser.add_argument('--config', type=str, default=default_config,

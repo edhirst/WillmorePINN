@@ -61,17 +61,18 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6, global_range=None):
     """
     xyz_np = xyz.detach().cpu().numpy() if torch.is_tensor(xyz) else xyz
     uv_np = uv.cpu().numpy() if torch.is_tensor(uv) else uv
-    v = uv_np[:, 1]
-    
-    # Determine period based on genus (for color mapping)
-    if genus == 0:
-        period = np.pi  # v goes from 0 to π for ellipsoid
-    elif genus == 2:
-        period = 5 * np.pi  # v goes from 0 to 5π for double torus
+
+    if genus == 2:
+        # uv is Poincaré-disk (x, y); colour by radius to match domain plot
+        rad = np.sqrt(uv_np[:, 0]**2 + uv_np[:, 1]**2)
+        r_oct = _octagon_disk_radius_val()
+        norm_rad = np.clip(rad / r_oct, 0.0, 1.0)
+        colors = _GENUS2_CMAP(norm_rad)
     else:
-        period = 2 * np.pi  # v goes from 0 to 2π for torus
-    
-    colors = hsv_to_rgb_colors(v, period)
+        v = uv_np[:, 1]
+        # Determine period based on genus (for color mapping)
+        period = np.pi if genus == 0 else 2 * np.pi
+        colors = hsv_to_rgb_colors(v, period)
     
     ax.scatter(
         xyz_np[:, 0], xyz_np[:, 1], xyz_np[:, 2],
@@ -102,19 +103,19 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6, global_range=None):
 
 def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=1j, neck_radius=0.3):
     """Plot the fundamental domain with the periodic coloring.
-    
-    For genus 2, draws 2 parallelogram domains (one per torus) with the neck region indicated.
-    
+
+    For genus 2, draws the regular hyperbolic octagon in the Poincaré disk with
+    edge-identification labels and a rainbow coloring by angle from the origin.
+
     Args:
         ax: Matplotlib axes
         genus: Surface genus (0, 1, or 2)
         num_points: Grid resolution for genus 0/1
-        tau1, tau2: Complex modular parameters for genus 2 tori
-        neck_radius: Neck radius for genus 2
+        tau1, tau2: Unused for genus 2 (kept for backward-compatible signature)
+        neck_radius: Unused for genus 2
     """
     if genus == 2:
-        # Draw two parallelograms for connected sum T² # T²
-        _plot_connected_sum_domain(ax, tau1=tau1, tau2=tau2, neck_radius=neck_radius, num_points=num_points)
+        _plot_hyperbolic_octagon_domain(ax, num_points=num_points)
         return
     
     # Domain depends on genus
@@ -166,100 +167,81 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=
         ax.set_yticklabels(['0', 'π', '2π'])
 
 
-def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3, num_points=100):
+# Colormap used for genus-2 domain and 3-D scatter (radius from centre).
+_GENUS2_CMAP = plt.cm.plasma
+
+
+def _octagon_disk_radius_val() -> float:
+    """Return r_oct = tanh(arccosh(cot(π/8)) / 2) ≈ 0.6436."""
+    import math
+    return math.tanh(math.acosh(1.0 / math.tan(math.pi / 8)) / 2.0)
+
+
+def _plot_hyperbolic_octagon_domain(ax, num_points=300):
+    """Draw the fundamental domain as a regular octagon colored by radius from centre.
+
+    The octagon is drawn in a plain square region with no axis decorations.
+    Color encodes distance from the centre using the plasma colormap (shared
+    with the genus-2 3-D scatter plots).
+
+    Args:
+        ax: Matplotlib axes
+        num_points: Resolution of the pixel fill grid
     """
-    Draw the fundamental domain for connected sum T² # T².
-    
-    Three regions stacked vertically:
-        - v ∈ [0, 2π): Torus 1 (parallelogram with shear from Re(τ₁))
-        - v ∈ [2π, 3π): Catenoid bridge
-        - v ∈ [3π, 5π): Torus 2 (parallelogram with shear from Re(τ₂))
-    
-    Domain: u ∈ [0, 2π], v ∈ [0, 5π]
-    
-    Coloring is continuous across boundaries (matching colors where regions join).
-    """
-    from matplotlib.patches import Polygon, FancyArrowPatch
-    from matplotlib.collections import PatchCollection
-    import matplotlib.colors as mcolors
-    
-    # Parse complex parameters
-    if isinstance(tau1, (int, float)):
-        tau1 = complex(0, float(tau1))
-    if isinstance(tau2, (int, float)):
-        tau2 = complex(0, float(tau2))
-    
-    tau1_re, tau1_im = tau1.real, max(tau1.imag, 0.3)
-    tau2_re, tau2_im = tau2.real, max(tau2.imag, 0.3)
-    
-    # Create colored grid for the full domain
-    u = np.linspace(0, 2*np.pi, num_points)
-    v = np.linspace(0, 5*np.pi, num_points)
-    U, V = np.meshgrid(u, v)
-    # Use the same HSV mapping as the 3D plot: v in [0, 5π], period=5π
-    v_norm = (V % (5 * np.pi)) / (5 * np.pi)
-    hue = v_norm
-    h = hue * 6.0
-    x = 1.0 - np.abs(h % 2.0 - 1.0)
-    R = np.where((h >= 0) & (h < 1), 1.0, np.where((h >= 1) & (h < 2), x, np.where((h >= 4) & (h < 5), x, np.where((h >= 5) & (h < 6), 1.0, 0.0))))
-    G = np.where((h >= 0) & (h < 1), x, np.where((h >= 1) & (h < 3), 1.0, np.where((h >= 3) & (h < 4), x, 0.0)))
-    B = np.where((h >= 2) & (h < 3), x, np.where((h >= 3) & (h < 5), 1.0, np.where((h >= 5) & (h < 6), x, 0.0)))
-    colors = np.stack([R, G, B], axis=-1)
-    # Display the colored domain
-    ax.imshow(colors, extent=[0, 2*np.pi, 0, 5*np.pi], origin='lower', aspect='auto')
-    
-    # Draw boundaries between regions
-    # T1 -> Catenoid boundary at v = 2π
-    ax.axhline(y=2*np.pi, color='white', linewidth=2, linestyle='-')
-    ax.axhline(y=2*np.pi, color='black', linewidth=1, linestyle='--')
-    
-    # Catenoid -> T2 boundary at v = 3π
-    ax.axhline(y=3*np.pi, color='white', linewidth=2, linestyle='-')
-    ax.axhline(y=3*np.pi, color='black', linewidth=1, linestyle='--')
-    
-    # Add labels for each region
-    ax.text(np.pi, np.pi, f'Torus 1\nτ₁ = {tau1_re:.1f}+{tau1_im:.1f}i', 
-            ha='center', va='center', fontsize=9, fontweight='bold',
-            color='white', bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
-    ax.text(np.pi, 2.5*np.pi, 'Catenoid', 
-            ha='center', va='center', fontsize=9, fontweight='bold',
-            color='white', bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
-    ax.text(np.pi, 4*np.pi, f'Torus 2\nτ₂ = {tau2_re:.1f}+{tau2_im:.1f}i', 
-            ha='center', va='center', fontsize=9, fontweight='bold',
-            color='white', bbox=dict(boxstyle='round', facecolor='black', alpha=0.5))
-    
-    # Draw parallelogram outlines showing the shear from Re(τ)
-    shear1 = tau1_re * 0.3  # Scale shear for visibility
-    shear2 = tau2_re * 0.3
-    
-    # Parallelogram edges for torus 1 (showing shear)
-    if abs(shear1) > 0.01:
-        ax.plot([0, shear1], [0, 2*np.pi], 'w-', linewidth=1.5, alpha=0.7)
-        ax.plot([2*np.pi, 2*np.pi + shear1], [0, 2*np.pi], 'w-', linewidth=1.5, alpha=0.7)
-        ax.annotate('', xy=(shear1/2, np.pi), xytext=(0, np.pi),
-                   arrowprops=dict(arrowstyle='->', color='white', lw=1.5))
-        ax.text(shear1/4, np.pi + 0.3, f'Re(τ₁)={tau1_re:.1f}', fontsize=7, color='white')
-    
-    # Parallelogram edges for torus 2 (showing shear) - T2 at v ∈ [3π, 5π)
-    if abs(shear2) > 0.01:
-        ax.plot([0, shear2], [3*np.pi, 5*np.pi], 'w-', linewidth=1.5, alpha=0.7)
-        ax.plot([2*np.pi, 2*np.pi + shear2], [3*np.pi, 5*np.pi], 'w-', linewidth=1.5, alpha=0.7)
-        ax.annotate('', xy=(shear2/2, 4*np.pi), xytext=(0, 4*np.pi),
-                   arrowprops=dict(arrowstyle='->', color='white', lw=1.5))
-        ax.text(shear2/4, 4*np.pi + 0.3, f'Re(τ₂)={tau2_re:.1f}', fontsize=7, color='white')
-    
-    # Axis setup
-    ax.set_xlabel('u')
-    ax.set_ylabel('v')
-    ax.set_title('Three-Region Domain: T₁ + Catenoid + T₂', fontsize=10)
-    
-    ax.set_xlim(-0.5, 2*np.pi + 0.8)
-    ax.set_ylim(-0.3, 5*np.pi + 0.3)
-    
-    ax.set_xticks([0, np.pi, 2*np.pi])
-    ax.set_xticklabels(['0', 'π', '2π'])
-    ax.set_yticks([0, np.pi, 2*np.pi, 3*np.pi, 4*np.pi, 5*np.pi])
-    ax.set_yticklabels(['0', 'π', '2π', '3π', '4π', '5π'])
+    import math
+
+    r_oct = _octagon_disk_radius_val()
+    angles_v = [math.pi / 8 + k * math.pi / 4 for k in range(8)]
+    verts = np.array([[r_oct * math.cos(a), r_oct * math.sin(a)] for a in angles_v])
+
+    try:
+        from spectral import is_inside_octagon
+        _inside_fn = lambda pts: is_inside_octagon(pts, verts)
+    except ImportError:
+        def _inside_fn(pts):
+            inside = np.ones(len(pts), dtype=bool)
+            for i in range(8):
+                v1, v2 = verts[i], verts[(i + 1) % 8]
+                edge = v2 - v1
+                dp = pts - v1
+                inside &= (edge[0] * dp[:, 1] - edge[1] * dp[:, 0]) >= -1e-10
+            return inside
+
+    pad = r_oct * 0.12
+    lin = np.linspace(-r_oct - pad, r_oct + pad, num_points)
+    gx, gy = np.meshgrid(lin, lin)
+    pts = np.stack([gx.ravel(), gy.ravel()], axis=1)
+    mask = _inside_fn(pts)
+
+    rad = np.sqrt(pts[:, 0]**2 + pts[:, 1]**2)
+    norm_rad = np.clip(rad / r_oct, 0.0, 1.0)
+
+    rgba = np.zeros((len(pts), 4))
+    rgba[mask] = _GENUS2_CMAP(norm_rad[mask])
+    color_img = rgba.reshape(num_points, num_points, 4)
+
+    extent = [lin[0], lin[-1], lin[0], lin[-1]]
+    ax.imshow(color_img, origin='lower', extent=extent,
+              interpolation='bilinear', aspect='equal')
+
+    # Octagon outline
+    ox = list(verts[:, 0]) + [verts[0, 0]]
+    oy = list(verts[:, 1]) + [verts[0, 1]]
+    ax.plot(ox, oy, 'k-', linewidth=1.5)
+
+    ax.set_xlim(lin[0], lin[-1])
+    ax.set_ylim(lin[0], lin[-1])
+    ax.set_aspect('equal')
+
+    tick_vals = [-r_oct, 0.0, r_oct]
+    tick_labels = [f'−{r_oct:.2f}', '0', f'{r_oct:.2f}']
+    ax.set_xticks(tick_vals)
+    ax.set_xticklabels(tick_labels)
+    ax.set_yticks(tick_vals)
+    ax.set_yticklabels(tick_labels)
+    ax.set_xlabel('x')
+    ax.set_ylabel('y')
+    ax.set_title('Fundamental Domain (Genus 2)', fontsize=10)
 
 
 def get_next_run_number(base_dir: str, prefix: str = "run_") -> int:
@@ -608,7 +590,7 @@ def plot_curvature_distribution(
 
 def analyze_model(
     checkpoint_path: str = 'logs/checkpoints/best_model.pt',
-    config_path: str = 'hyperparameters.yaml',
+    config_path: str = 'configs/hyperparameters.yaml',
     num_test_points: int = 5000,
     device: torch.device = torch.device('cpu'),
     output_dir: str = 'logs/analysis'
@@ -700,7 +682,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze a trained Willmore embedding model")
     parser.add_argument("--checkpoint", type=str, default='logs/checkpoints/best_model.pt',
                        help="Path to model checkpoint")
-    parser.add_argument("--config", type=str, default='hyperparameters.yaml',
+    parser.add_argument("--config", type=str, default='configs/hyperparameters.yaml',
                        help="Path to configuration file")
     parser.add_argument("--num_points", type=int, default=5000,
                        help="Number of test points")

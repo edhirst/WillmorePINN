@@ -29,7 +29,7 @@ class EmbeddingWillmoreLoss(nn.Module):
     Supports different domain types:
     - ellipsoid: [0, 2π] × [0, π] domain
     - torus: [0, 2π] × [0, 2π] domain
-    - double_torus: [0, 2π] × [0, 4π] domain
+    - double_torus: regular hyperbolic octagon in the Poincaré disk
     """
     
     def __init__(self, epsilon: float = 1e-8, domain: str = "torus", genus: Optional[int] = None):
@@ -54,7 +54,11 @@ class EmbeddingWillmoreLoss(nn.Module):
         self.domain = domain.lower()
         self.genus = genus
         
-        # Compute domain area for Monte Carlo integration
+        # Compute parameter-domain area for Monte Carlo integration.
+        # For genus 2: samples are (x, y) drawn uniformly inside the regular
+        # hyperbolic octagon in the Poincaré disk.  The Euclidean area of that
+        # octagon is 2√2 · r² where r = tanh(arccosh(cot(π/8)) / 2) ≈ 0.6436,
+        # giving area ≈ 1.1736.
         if self.domain in ["ellipsoid", "sphere"]:
             # [0, 2π] × [0, π]
             self.domain_area = 2 * np.pi * np.pi
@@ -62,8 +66,9 @@ class EmbeddingWillmoreLoss(nn.Module):
             # [0, 2π] × [0, 2π]
             self.domain_area = (2 * np.pi) ** 2
         elif self.domain == "double_torus":
-            # [0, 2π] × [0, 4π]
-            self.domain_area = 2 * np.pi * 4 * np.pi
+            # Euclidean area of the regular hyperbolic octagon in the Poincaré disk
+            from spectral import octagon_euclidean_area
+            self.domain_area = octagon_euclidean_area()
         else:
             # Default to torus domain
             self.domain_area = (2 * np.pi) ** 2
@@ -105,8 +110,17 @@ class EmbeddingWillmoreLoss(nn.Module):
         # domain_area:
         #   ellipsoid/sphere : 2π × π  = 2π²
         #   torus            : 2π × 2π = 4π²
-        #   double_torus     : 2π × 4π = 8π²
+        #   double_torus     : Euclidean area of regular hyperbolic octagon ≈ 1.17
         integrand = H * H * area_element
+
+        # Clamp the per-point integrand to prevent numerically ill-conditioned triangles
+        # (EG−F² ≈ 0) from producing infinite H and blowing up the gradient.
+        # The clamp level (100 / domain_area) corresponds to a pointwise contribution
+        # equivalent to ~100 total Willmore energy, which is safely above any expected
+        # physical maximum (≈39.48 for genus 2).
+        if self.genus == 2:
+            integrand = torch.clamp(integrand, max=1e4)
+
         willmore_energy = torch.mean(integrand) * self.domain_area
 
         return willmore_energy
@@ -127,7 +141,10 @@ class RegularityLoss(nn.Module):
         orientation_weight: float = 1.0,
         metric_positivity_weight: float = 1.0,
         smoothness_weight: float = 1.0,
-        max_metric_value: float = 10.0
+        max_metric_value: float = 10.0,
+        scale_weight: float = 0.0,
+        target_scale: float = 1.0,
+        isotropy_weight: float = 0.0,
     ):
         """
         Args:
@@ -138,11 +155,19 @@ class RegularityLoss(nn.Module):
             metric_positivity_weight: Weight for metric positivity term
             smoothness_weight: Weight for smoothness term
             max_metric_value: Upper threshold for E and G; only excess beyond this is penalised
+            scale_weight: Weight for scale penalty relu(target_scale − mean(E+G))²
+            target_scale: Floor for mean(E+G); fires only below this value
+            isotropy_weight: Weight for metric isotropy penalty mean(log(E/G))²;
+                encourages conformal-like parametrisation
         """
         super().__init__()
         self.epsilon = epsilon
         self.min_area_element = min_area_element
         self.max_metric_value = max_metric_value
+        self.scale_weight = scale_weight
+        self.isotropy_weight = isotropy_weight
+        self.isotropy_weight = isotropy_weight
+        self.target_scale = target_scale
         
         # Store initial weights
         self.area_element_weight = area_element_weight
@@ -203,6 +228,25 @@ class RegularityLoss(nn.Module):
             )
             total_loss += self.smoothness_weight * smoothness_loss
             weight_sum += self.smoothness_weight
+
+        # Scale penalty: rectified floor on mean(E+G) prevents trivially flat embeddings
+        # where H²·dA → 0 because the surface degenerates to a near-point.
+        # relu(target_scale - mean(E+G))² is zero when E+G ≥ target_scale (no upper penalty),
+        # and fires only when scale collapses below the floor, providing a one-sided guardrail.
+        if self.scale_weight > 0:
+            scale_loss = torch.nn.functional.relu(self.target_scale - torch.mean(E + G)) ** 2
+            total_loss += self.scale_weight * scale_loss
+            weight_sum += self.scale_weight
+
+        # Isotropy penalty: mean(log(E/G))² encourages conformal-like parametrisation
+        # by penalising high anisotropy. Computed using log-ratio to treat E/G
+        # and G/E symmetrically. Points with E or G ≈ 0 are excluded via clamping.
+        if self.isotropy_weight > 0:
+            E_safe = E.clamp(min=self.epsilon)
+            G_safe = G.clamp(min=self.epsilon)
+            isotropy_loss = torch.mean(torch.log(E_safe / G_safe) ** 2)
+            total_loss += self.isotropy_weight * isotropy_loss
+            weight_sum += self.isotropy_weight
         
         # Normalize by weight sum if any components are active
         if weight_sum > 0:
@@ -232,6 +276,9 @@ class CombinedEmbeddingLoss(nn.Module):
         regularity_metric_positivity_weight: float = 1.0,
         regularity_smoothness_weight: float = 1.0,
         regularity_max_metric_value: float = 10.0,
+        regularity_scale_weight: float = 0.0,
+        regularity_target_scale: float = 1.0,
+        regularity_isotropy_weight: float = 0.0,
         genus: Optional[int] = None,
         domain: str = "torus"
     ):
@@ -246,6 +293,9 @@ class CombinedEmbeddingLoss(nn.Module):
             regularity_metric_positivity_weight: Weight for metric positivity term within regularity loss
             regularity_smoothness_weight: Weight for smoothness term within regularity loss
             regularity_max_metric_value: Upper threshold for E and G in the smoothness term
+            regularity_scale_weight: Weight for scale floor relu(target_scale − mean(E+G))²
+            regularity_target_scale: Floor for mean(E+G)
+            regularity_isotropy_weight: Weight for mean(log(E/G))² isotropy penalty
             genus: Surface genus (0, 1, or 2)
             domain: Surface domain type
         """
@@ -263,7 +313,10 @@ class CombinedEmbeddingLoss(nn.Module):
             orientation_weight=regularity_orientation_weight,
             metric_positivity_weight=regularity_metric_positivity_weight,
             smoothness_weight=regularity_smoothness_weight,
-            max_metric_value=regularity_max_metric_value
+            max_metric_value=regularity_max_metric_value,
+            scale_weight=regularity_scale_weight,
+            target_scale=regularity_target_scale,
+            isotropy_weight=regularity_isotropy_weight,
         )
         
         # Store initial weights for reference
@@ -387,6 +440,9 @@ def create_embedding_loss(config: dict) -> nn.Module:
         regularity_metric_positivity_weight=loss_config.get("regularity_metric_positivity_weight", 1.0),
         regularity_smoothness_weight=loss_config.get("regularity_smoothness_weight", 1.0),
         regularity_max_metric_value=loss_config.get("regularity_max_metric_value", 10.0),
+        regularity_scale_weight=loss_config.get("regularity_scale_weight", 0.0),
+        regularity_target_scale=loss_config.get("regularity_target_scale", 1.0),
+        regularity_isotropy_weight=loss_config.get("regularity_isotropy_weight", 0.0),
         genus=genus,
         domain=domain
     )

@@ -1,0 +1,151 @@
+# Hyperparameters for Willmore Energy Minimization — Genus 2 (double torus)
+# Target: Lawson's ξ_{2,1}, conjectured W ≈ 4π² ≈ 39.478
+#
+# Domain: regular hyperbolic octagon in the Poincaré disk (fundamental domain of Σ₂).
+# Network input: K Laplace-Beltrami eigenfunctions Ψ(x,y) = (φ₁,...,φ_K) of the
+#   identified mesh, pre-computed once and cached. Replaces Fourier features (genus 0/1).
+#
+# Topology guarantee: identified octagon boundary points share the same mesh DOF, so
+#   Ψ is identical at all identified points for every weight setting. Genus-2 topology
+#   is a structural invariant of the architecture — no loss term or pretraining needed.
+#
+# Initialisation: Xavier uniform, no supervised pretraining.
+#   The regularity loss bootstraps near-zero outputs into a non-degenerate embedding.
+#
+# This is a local-test configuration: fast spectral build, small network, 100 epochs.
+# For a production run increase num_eigenfunctions, mesh resolution, hidden_dims,
+# num_epochs, and num_points.
+
+topology:
+  genus: 2
+
+  ellipsoid:
+    a: 5.0
+    b: 1.0
+    c: 0.2
+
+  torus:
+    tau: "0.1+1.0j"
+    max_height: null
+
+  double_torus:
+    # Number of LB eigenfunctions used as input features.
+    # More eigenfunctions → richer spatial information but larger network input.
+    num_eigenfunctions: 32
+    # Mesh resolution: edge_divisions interior edge nodes per octagon edge,
+    # interior_grid_spacing controls the density of the interior grid.
+    # Coarser mesh builds faster; the basis is cached so subsequent runs are instant.
+    num_edge_divisions: 14
+    interior_grid_spacing: 0.05
+    # Cache path: basis is reloaded on re-runs if the above three params are unchanged.
+    cache_path: "spectral_cache/genus2_basis.npz"
+
+model:
+  input_dim: 2
+  output_dim: 3
+  # Compact network suitable for a local test.
+  hidden_dims: [128, 256, 256, 128]
+  activation: "tanh"
+  dropout: 0.0
+  # Ignored for genus 2 — spectral basis replaces periodic Fourier features.
+  use_periodic_embedding: true
+  num_frequencies: 2
+  initialization: "xavier_uniform"
+
+  use_residual: false
+  residual_scale: 0.5
+
+  supervised_pretraining:
+    # Pretrain the network to approximate the Abelian-blend reference surface.
+    # The reference is built by solving four harmonic Dirichlet BVPs on the
+    # octagon mesh (IDW weights) to get Abelian angles (u₁,v₁,u₂,v₂) ∈ [0,2π]⁴,
+    # then blending two standard tori with quadratic handle-activity weights
+    # wₖ = (sin²(uₖ/2)+sin²(vₖ/2))² + floor, giving a smooth identification-
+    # consistent embedding of Σ₂.
+    enabled: true
+    num_epochs: 200
+    learning_rate: 0.001
+    batch_size: 512
+    num_points_per_epoch: 8192
+    position_weight: 1.0
+    derivative_weight: 0.0
+
+training:
+  num_epochs: 300
+  # Batch size: number of octagon sample points per gradient step.
+  batch_size: 1024
+  learning_rate: 0.0001
+  weight_decay: 0.000001
+  scheduler: "cosine"
+  scheduler_params:
+    T_max: 300
+    eta_min: 0.000005
+  gradient_clip: 0.5
+  save_frequency: 20
+  # Log every epoch so progress is visible during a short local run.
+  log_frequency: 1
+
+  adaptive_training:
+    enabled: true
+    # Regularity threshold: if regularity loss exceeds this, boost regularity weight.
+    # With isotropy penalty enabled the regularity loss starts ~14 (conformal deficit)
+    # and decreases as the parametrisation improves; set the threshold above 10 so
+    # adaptive boosting only triggers on genuine collapse.
+    regularity_threshold: 10.0
+    regularity_boost_factor: 2.0
+    checkpoint_rollback: true
+    severe_degradation_threshold: 4.0
+    max_rollbacks: 5
+    early_stopping_patience: 50
+
+sampling:
+  # Points sampled uniformly in the octagon each epoch via rejection sampling.
+  # New samples drawn every epoch (resample_each_epoch has no effect for genus 2 —
+  # sample_uniform is always called fresh in train_epoch).
+  num_points: 8192
+  noise_level: 0.0
+  resample_each_epoch: true
+  use_rotation_augmentation: false
+  # Minimum perpendicular distance from each octagon edge for sampled points.
+  # Excludes a strip near identified edges to reduce gradient noise from the
+  # C¹ discontinuity of the discrete spectral basis at those edges.
+  # The octagon circumradius is ~0.644; a margin of 0.01–0.02 excludes ~1.5–3%
+  # of the domain area with negligible bias on the Willmore integral.
+  edge_margin: 0.01
+
+loss:
+  # Low initial Willmore weight relative to regularity; adaptive training raises it.
+  # Willmore energy of a pretrained genus-2 surface is ~10⁶–7 in Poincaré coordinates,
+  # so a tiny weight is needed initially to prevent Willmore gradients from
+  # overriding the regularity terms in early epochs.
+  willmore_weight: 0.00001
+  # Regularity terms protect against collapse but must not penalise valid genus-2 maps.
+  regularity_weight: 20.0
+  target_area: null
+  epsilon: 0.000001
+  regularity_area_element_weight: 1.0
+  regularity_orientation_weight: 1.0
+  regularity_metric_positivity_weight: 1.0
+  regularity_smoothness_weight: 0.0
+  regularity_max_metric_value: 20.0
+  # Scale floor: relu(target_scale - mean(E+G))² fires only on collapse.
+  regularity_scale_weight: 1.0
+  regularity_target_scale: 500.0
+  # Isotropy penalty: mean(log(E/G))² encourages conformal parametrisation
+  # and keeps H bounded by preventing extreme anisotropy.
+  regularity_isotropy_weight: 5.0
+
+optimizer:
+  type: "adam"
+  betas: [0.9, 0.999]
+  momentum: 0.9
+
+output:
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  save_best_only: false
+  metric_to_monitor: "willmore_energy"
+
+device: "auto"
+seed: 42
+dtype: "float32"

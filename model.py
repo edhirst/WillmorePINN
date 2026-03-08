@@ -111,6 +111,116 @@ class PeriodicEmbedding(nn.Module):
         return torch.cat(features, dim=1)
 
 
+class SphericalHarmonicEmbedding(nn.Module):
+    """
+    Real spherical harmonic embedding for genus 0 (sphere/ellipsoid).
+
+    Maps (u, v) → {Y_l^m(θ, φ) : 0 ≤ l ≤ L, -l ≤ m ≤ l} where φ = u ∈ [0, 2π]
+    is the azimuthal angle and θ = v ∈ [0, π] is the polar angle.
+
+    Real spherical harmonics form an orthonormal basis for L²(S²):
+      Y_l^0  = c_{l,0} · P_l^0(cos θ)
+      Y_l^m  = c_{l,m} · P_l^m(cos θ) · cos(m φ)    (m > 0)
+      Y_l^-m = c_{l,m} · P_l^m(cos θ) · sin(m φ)    (m > 0, written as Y_l^{-m})
+
+    where c_{l,m} = sqrt((2l+1)/(4π) · (l-m)!/(l+m)!) · sqrt(2) for m > 0,
+                    sqrt((2l+1)/(4π))                              for m = 0.
+
+    Pole regularity is automatic: P_l^m(±1) = 0 for m > 0, so all m≠0 features
+    vanish at θ=0 and θ=π, making the output φ-independent at the poles.
+
+    P_l^m is computed via the standard Bonnet-type recurrence (Condon-Shortley
+    phase included in the sectoral step):
+      P_0^0 = 1
+      P_l^l = -(2l-1) · sin θ · P_{l-1}^{l-1}
+      P_l^{l-1} = (2l-1) · cos θ · P_{l-1}^{l-1}
+      P_l^m = [(2l-1) · cos θ · P_{l-1}^m - (l+m-1) · P_{l-2}^m] / (l-m)
+    """
+
+    def __init__(self, max_degree: int = 4):
+        """
+        Args:
+            max_degree: Maximum spherical harmonic degree L; produces (L+1)² features.
+        """
+        super().__init__()
+        self.max_degree = max_degree
+        self.output_dim = (max_degree + 1) ** 2
+
+        # Precompute normalization constants c_{l,m}, ordered as
+        # (l=0,m=0), (l=1,m=-1), (l=1,m=0), (l=1,m=1), (l=2,m=-2), ...
+        norms = []
+        for l in range(max_degree + 1):
+            for m in range(-l, l + 1):
+                abs_m = abs(m)
+                # Factorial ratio (l - |m|)! / (l + |m|)! computed iteratively
+                fac = 1.0
+                for k in range(l - abs_m + 1, l + abs_m + 1):
+                    fac /= k
+                c = np.sqrt((2 * l + 1) / (4 * np.pi) * fac)
+                if m != 0:
+                    c *= np.sqrt(2)
+                norms.append(c)
+        self.register_buffer('norms', torch.tensor(norms, dtype=torch.float32))
+
+    def _assoc_legendre(self, x: torch.Tensor, s: torch.Tensor) -> dict:
+        """
+        Compute P_l^m(x) for 0 ≤ m ≤ l ≤ L using the recurrence above.
+
+        Args:
+            x: cos θ, shape (batch_size,)
+            s: sin θ ≥ 0, shape (batch_size,)
+
+        Returns:
+            dict mapping (l, m) → tensor of shape (batch_size,)
+        """
+        P = {(0, 0): torch.ones_like(x)}
+        for l in range(1, self.max_degree + 1):
+            # Sectoral recurrence: P_l^l
+            P[(l, l)] = -(2 * l - 1) * s * P[(l - 1, l - 1)]
+            # One-step recurrence: P_l^{l-1}
+            P[(l, l - 1)] = (2 * l - 1) * x * P[(l - 1, l - 1)]
+            # General recurrence: P_l^m for m ≤ l-2
+            for m in range(l - 2, -1, -1):
+                P[(l, m)] = (
+                    (2 * l - 1) * x * P[(l - 1, m)] - (l + m - 1) * P[(l - 2, m)]
+                ) / (l - m)
+        return P
+
+    def forward(self, uv: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            uv: Parameter coordinates (batch_size, 2) with
+                uv[:,0] = φ ∈ [0, 2π] (azimuthal / u)
+                uv[:,1] = θ ∈ [0, π]  (polar / v)
+
+        Returns:
+            Real spherical harmonics (batch_size, (L+1)²), orthonormal on S².
+        """
+        phi = uv[:, 0]          # azimuthal φ
+        theta = uv[:, 1]        # polar θ
+        x = torch.cos(theta)    # cos θ
+        s = torch.sin(theta)    # sin θ ≥ 0 for θ ∈ [0, π]
+
+        P = self._assoc_legendre(x, s)
+
+        features = []
+        norm_idx = 0
+        for l in range(self.max_degree + 1):
+            for m in range(-l, l + 1):
+                abs_m = abs(m)
+                c = self.norms[norm_idx]
+                norm_idx += 1
+                p = P[(l, abs_m)]
+                if m < 0:
+                    f = c * p * torch.sin(abs_m * phi)
+                elif m == 0:
+                    f = c * p
+                else:
+                    f = c * p * torch.cos(m * phi)
+                features.append(f.unsqueeze(1))
+        return torch.cat(features, dim=1)
+
+
 class EmbeddingNetwork(nn.Module):
     """
     Neural network that learns an embedding from parameter space (u,v) to R³.
@@ -130,7 +240,7 @@ class EmbeddingNetwork(nn.Module):
         hidden_dims: List[int] = [128, 256, 512, 256, 128],
         activation: str = "tanh",
         dropout: float = 0.0,
-        use_periodic_embedding: bool = True,
+        use_spectral_features: bool = True,
         num_frequencies: int = 4,
         initialization: str = "xavier_uniform",
         domain: str = "torus",  # Reference domain type
@@ -151,8 +261,11 @@ class EmbeddingNetwork(nn.Module):
             hidden_dims: List of hidden layer dimensions
             activation: Activation function name
             dropout: Dropout probability
-            use_periodic_embedding: Whether to use Fourier features for periodicity
-            num_frequencies: Number of frequency components (if using periodic embedding)
+            use_spectral_features: Whether to use a spectral input embedding (spherical harmonics
+                for genus 0, Fourier features for genus 1/2)
+            num_frequencies: Spectral order for the input embedding. For genus 0, the
+                maximum spherical harmonic degree L, giving (L+1)² features. For genus 1/2,
+                the number of Fourier frequency components per dimension.
             initialization: Weight initialization method
             domain: Surface domain type ('torus', 'ellipsoid', 'double_torus')
             domain_params: Domain-specific parameters (legacy, prefer topology_params)
@@ -167,7 +280,7 @@ class EmbeddingNetwork(nn.Module):
         
         self.input_dim = input_dim
         self.output_dim = output_dim
-        self.use_periodic_embedding = use_periodic_embedding
+        self.use_spectral_features = use_spectral_features
         self.domain_params = domain_params or {}
         self.use_residual = use_residual
         self.residual_scale = residual_scale
@@ -183,9 +296,15 @@ class EmbeddingNetwork(nn.Module):
         else:
             self.domain = domain
         
-        # Periodic embedding layer - adapted for the domain type
-        if use_periodic_embedding:
-            self.periodic_layer = PeriodicEmbedding(num_frequencies, domain=self.domain, genus=genus)
+        # Spectral embedding layer - adapted for the domain type.
+        # Genus 0: real spherical harmonics Y_l^m (natural orthonormal basis for S²),
+        #          with num_frequencies interpreted as the maximum degree L → (L+1)² features.
+        # Genus 1/2: Fourier features (natural basis for doubly-/singly-periodic domains).
+        if use_spectral_features:
+            if self.domain in ["ellipsoid", "sphere"]:
+                self.periodic_layer = SphericalHarmonicEmbedding(max_degree=num_frequencies)
+            else:
+                self.periodic_layer = PeriodicEmbedding(num_frequencies, domain=self.domain, genus=genus)
             effective_input_dim = self.periodic_layer.output_dim
         else:
             self.periodic_layer = None
@@ -438,7 +557,7 @@ class EmbeddingNetwork(nn.Module):
         Returns:
             Embedding coordinates (batch_size, 3) representing (x, y, z)
         """
-        if self.use_periodic_embedding:
+        if self.use_spectral_features:
             features = self.periodic_layer(uv)
             network_output = self.network(features)
         else:
@@ -661,7 +780,7 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         hidden_dims=model_config.get("hidden_dims", [128, 256, 512, 256, 128]),
         activation=model_config.get("activation", "tanh"),
         dropout=model_config.get("dropout", 0.0),
-        use_periodic_embedding=model_config.get("use_periodic_embedding", True),
+        use_spectral_features=model_config.get("use_spectral_features", True),
         num_frequencies=model_config.get("num_frequencies", 4),
         initialization=model_config.get("initialization", "xavier_uniform"),
         domain=domain,

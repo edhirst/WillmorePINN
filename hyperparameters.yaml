@@ -70,8 +70,8 @@ model:
   hidden_dims: [128, 256, 512, 256, 128]  # Hidden layer dimensions
   activation: "tanh"  # Activation function: relu, tanh, elu, silu
   dropout: 0.0  # Dropout rate
-  use_periodic_embedding: true  # Use Fourier features to enforce periodicity
-  num_frequencies: 2  # Fewer frequencies = smoother surfaces (reduces high-freq artifacts)
+  use_spectral_features: true  # Use spectral features: spherical harmonics (genus 0) or Fourier features (genus 1/2)
+  num_frequencies: 3  # Spectral order for input embedding. Genus 0: maximum spherical harmonic degree L → (L+1)² features. Genus 1/2: number of Fourier frequency components per dimension → 4·N features.
   initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
   
   # Residual learning (learning corrections to reference embedding)
@@ -90,7 +90,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 100  # Longer run for smoother convergence
+  num_epochs: 10  # Longer run for smoother convergence
   batch_size: 1024  # Larger batches for more stable gradients
   learning_rate: 0.00003  # Much lower LR for stable, gradual optimization
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features

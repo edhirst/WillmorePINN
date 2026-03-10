@@ -20,7 +20,7 @@ from pathlib import Path
 
 from model import create_embedding_model
 from sampling import sample_parameters, get_domain_for_genus
-from utils import get_next_run_number, plot_fundamental_domain_coloring, plot_surface_3d
+from utils import get_next_run_number, plot_fundamental_domain_coloring, plot_surface_3d, compute_mean_curvature_at_points
 
 
 def load_checkpoint_model(checkpoint_path, config, device):
@@ -217,6 +217,10 @@ def visualise_training_evolution(
         model, epoch, loss = load_checkpoint_model(checkpoint_path, config_ckpt, device)
         with torch.no_grad():
             xyz = model(uv_test)
+        if genus_ckpt == 2:
+            h_vals = compute_mean_curvature_at_points(model, uv_test).cpu().numpy()
+        else:
+            h_vals = None
         if 'best' in checkpoint_path:
             title = f'Best Model\nEpoch {epoch}, W={loss:.2f}'
         elif 'latest' in checkpoint_path:
@@ -226,7 +230,7 @@ def visualise_training_evolution(
             if expected_epoch != epoch:
                 print(f"  WARNING: Checkpoint {checkpoint_name} has epoch {epoch} but filename suggests {expected_epoch}")
             title = f'Epoch {epoch}\nW={loss:.2f}'
-        _plot_data.append((xyz, title, genus_ckpt))
+        _plot_data.append((xyz, title, genus_ckpt, h_vals))
 
     # Shared scale across all subplots
     _all_xyz = np.concatenate([d[0].detach().cpu().numpy() for d in _plot_data])
@@ -236,9 +240,19 @@ def visualise_training_evolution(
         _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
     ]).max() / 2.0
 
-    for idx, (xyz, title, genus_ckpt) in enumerate(_plot_data):
+    # Shared |H| colour scale (log1p) so the same shade means the same curvature across epochs
+    _h_vmax = None
+    if any(d[3] is not None for d in _plot_data):
+        all_h = np.concatenate([np.log1p(d[3]) for d in _plot_data if d[3] is not None])
+        _h_vmax = float(np.percentile(all_h, 95))
+
+    for idx, (xyz, title, genus_ckpt, h_vals) in enumerate(_plot_data):
         ax = fig.add_subplot(n_rows, n_cols, idx + 1, projection='3d')
-        plot_surface_3d(ax, xyz, uv_test, title, genus=genus_ckpt, global_range=_global_range)
+        if h_vals is not None:
+            plot_surface_3d(ax, xyz, uv_test, title, genus=genus_ckpt, global_range=_global_range,
+                            color_values=np.log1p(h_vals), cmap='hot', vmin=0.0, vmax=_h_vmax)
+        else:
+            plot_surface_3d(ax, xyz, uv_test, title, genus=genus_ckpt, global_range=_global_range)
         ax.view_init(elev=30, azim=-60)
     
     plt.tight_layout()

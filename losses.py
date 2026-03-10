@@ -112,13 +112,29 @@ class EmbeddingWillmoreLoss(nn.Module):
         #   torus            : 2π × 2π = 4π²
         #   double_torus     : 2π × 5π = 10π²
         integrand = H * H * area_element
-        if self.h2_clip is not None:
-            # Clamp per-point H² before weighting by area element.
-            # Bounds gradient contribution from high-curvature junction artefacts.
-            integrand = torch.clamp(H * H, max=self.h2_clip) * area_element
-        willmore_energy = torch.mean(integrand) * self.domain_area
 
-        return willmore_energy
+        # Always compute uncapped energy for honest reporting (detached — no gradient path)
+        uncapped_willmore = (torch.mean(integrand.detach()) * self.domain_area).item()
+
+        if self.h2_clip is not None:
+            # Huber loss on H²: matches exact Willmore (H²) for |H| ≤ √h2_clip, then
+            # switches to linear in |H| above the threshold.
+            # Gradient: 2H below threshold (exact Willmore gradient);
+            #           2√h2_clip · sign(H) above — constant non-zero magnitude, always
+            #           pushing toward H=0.  Unlike a hard clamp, the gradient never
+            #           vanishes at high-curvature junctions.  The Willmore minimum is
+            #           unaffected: the minimiser has bounded H, so H² < h2_clip there.
+            sqrt_clip = self.h2_clip ** 0.5
+            h2 = H * H
+            h2_huber = torch.where(h2 <= self.h2_clip,
+                                   h2,
+                                   2.0 * sqrt_clip * H.abs() - self.h2_clip)
+            integrand = h2_huber * area_element
+
+        training_energy = torch.mean(integrand) * self.domain_area
+
+        # Return (training_tensor_for_backward, uncapped_scalar_for_reporting)
+        return training_energy, uncapped_willmore
 
 
 class RegularityLoss(nn.Module):
@@ -245,7 +261,9 @@ class CombinedEmbeddingLoss(nn.Module):
         genus: Optional[int] = None,
         domain: str = "torus",
         max_willmore_weight: float = 0.5,
-        h2_clip: Optional[float] = None
+        h2_clip: Optional[float] = None,
+        topology_guard_weight: float = 0.0,
+        topology_guard_num_probes: int = 64
     ):
         """
         Args:
@@ -263,6 +281,10 @@ class CombinedEmbeddingLoss(nn.Module):
             domain: Surface domain type
             max_willmore_weight: Ceiling for willmore_weight annealing schedule
             h2_clip: Per-point H² ceiling passed to EmbeddingWillmoreLoss (None = no clipping)
+            topology_guard_weight: Weight for the topology guard loss (genus 2 only). Evaluates
+                regularity at fixed probe locations deep in each torus body, guaranteeing gradient
+                signal that prevents handle collapse regardless of main sampling distribution.
+            topology_guard_num_probes: Number of random-u probe points per torus body per forward pass.
         """
         super().__init__()
         
@@ -270,6 +292,13 @@ class CombinedEmbeddingLoss(nn.Module):
         self.regularity_weight = regularity_weight
         self.genus = genus
         self.domain = domain
+        self.topology_guard_weight = topology_guard_weight
+        self.topology_guard_num_probes = topology_guard_num_probes
+        # Fixed v₀ values for genus 2 topology guard probes:
+        #   T1 body midpoint  : v = π    (T1 occupies v ∈ [0, 2π))
+        #   Bridge midpoint   : v = 2.5π (bridge occupies v ∈ [2π, 3π))
+        #   T2 body midpoint  : v = 4π   (T2 occupies v ∈ [3π, 5π])
+        self._topology_guard_v_values = [np.pi, 2.5 * np.pi, 4 * np.pi]
         
         self.willmore_loss = EmbeddingWillmoreLoss(epsilon=epsilon, domain=domain, genus=genus,
                                                    h2_clip=h2_clip)
@@ -305,6 +334,14 @@ class CombinedEmbeddingLoss(nn.Module):
             regularity_value: Current regularity loss value (for adaptive adjustment)
             adaptive_config: Configuration for adaptive training safeguards
         """
+        adaptive_enabled = adaptive_config and adaptive_config.get('enabled', False)
+
+        if not adaptive_enabled:
+            # Freeze weights at initial values; no scheduling
+            self.willmore_weight = self.initial_willmore_weight
+            self.regularity_weight = self.initial_regularity_weight
+            return
+
         progress = min(1.0, (epoch - 1) / max(1, total_epochs))
         
         # Base schedule: Willmore gradually increases to max_willmore_weight, regularity decreases
@@ -312,7 +349,7 @@ class CombinedEmbeddingLoss(nn.Module):
         base_regularity = self.initial_regularity_weight * (1.0 - 0.5 * progress)
         
         # Adaptive adjustment based on regularity health
-        if adaptive_config and adaptive_config.get('enabled', False) and regularity_value is not None:
+        if adaptive_enabled and regularity_value is not None:
             threshold = adaptive_config.get('regularity_threshold', 0.5)
             boost_factor = adaptive_config.get('regularity_boost_factor', 2.0)
             
@@ -348,8 +385,9 @@ class CombinedEmbeddingLoss(nn.Module):
         
         # Compute Willmore loss if weight > 0
         if self.willmore_weight > 0:
-            willmore = self.willmore_loss(model, uv)
-            willmore_value = willmore.item()
+            willmore, willmore_value = self.willmore_loss(model, uv)
+            # willmore      — capped training tensor (stable backward pass)
+            # willmore_value — uncapped true W (honest metric for logging and rollback)
             total_loss += self.willmore_weight * willmore
         
         # Compute regularity loss if weight > 0
@@ -357,6 +395,20 @@ class CombinedEmbeddingLoss(nn.Module):
             regularity = self.regularity_loss(model, uv)
             regularity_value = regularity.item()
             total_loss += self.regularity_weight * regularity
+
+        # Topology guard (genus 2 only): evaluate regularity at fixed probe locations
+        # deep in each torus body (v = π for T1, v = 4π for T2), using randomly sampled u.
+        # This fires regardless of the main sampling distribution, preventing handle collapse.
+        if self.genus == 2 and self.topology_guard_weight > 0:
+            guard_loss = torch.tensor(0.0, device=uv.device)
+            n = self.topology_guard_num_probes
+            for v0 in self._topology_guard_v_values:
+                u_probe = torch.rand(n, device=uv.device, dtype=uv.dtype) * 2 * np.pi
+                v_probe = torch.full((n,), v0, device=uv.device, dtype=uv.dtype)
+                probe_uv = torch.stack([u_probe, v_probe], dim=1)
+                guard_loss = guard_loss + self.regularity_loss(model, probe_uv)
+            guard_loss = guard_loss / len(self._topology_guard_v_values)
+            total_loss = total_loss + self.topology_guard_weight * guard_loss
 
         # Normalise by fixed initial weight sum so scale is stable as weights anneal
         if self.initial_weight_sum > 0:
@@ -409,7 +461,9 @@ def create_embedding_loss(config: dict) -> nn.Module:
         genus=genus,
         domain=domain,
         max_willmore_weight=loss_config.get("max_willmore_weight", 0.5),
-        h2_clip=loss_config.get("h2_clip", None)
+        h2_clip=loss_config.get("h2_clip", None),
+        topology_guard_weight=loss_config.get("topology_guard_weight", 0.0),
+        topology_guard_num_probes=loss_config.get("topology_guard_num_probes", 64),
     )
 
 

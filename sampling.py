@@ -123,6 +123,8 @@ def sample_ellipsoid_parameters(
 def sample_double_torus_parameters(
     num_points: int,
     bridge_oversample_factor: float = 1.0,
+    junction_focus: float = 0.0,
+    junction_sigma: float = 1.0,
     device: torch.device = torch.device("cpu"),
     dtype: torch.dtype = torch.float32
 ) -> torch.Tensor:
@@ -147,36 +149,65 @@ def sample_double_torus_parameters(
             concentrates gradient signal on the catenoid region without reweighting,
             intentionally biasing the optimizer to improve bridge geometry.
             Set to 1.0 for uniform sampling.
+        junction_focus: Fraction of points drawn from Gaussians centred on the two
+            junctions (v=2π and v=3π).  0 = pure uniform/bridge-oversample;
+            1 = all points at junctions.  Annealed from high → 0 during training
+            to prioritise smoothing high-curvature regions first.
+        junction_sigma: Standard deviation (radians) of each junction Gaussian.
+            Controls how tightly samples cluster around v=2π and v=3π.
         device: Device to place tensor on
         dtype: Data type for tensor
     
     Returns:
         Parameter coordinates of shape (num_points, 2)
     """
-    if bridge_oversample_factor <= 1.0:
-        # Uniform sampling over [0, 2π] × [0, 5π]
-        u = torch.rand(num_points, device=device, dtype=dtype) * 2 * np.pi
-        v = torch.rand(num_points, device=device, dtype=dtype) * 5 * np.pi
-        return torch.stack([u, v], dim=1)
+    v_max = 5 * np.pi
 
-    # Stratified oversampling: bridge (v ∈ [2π, 3π)) gets f/(f+4) of points.
-    # Non-bridge regions T1 ([0, 2π)) and T2 ([3π, 5π)) each have width 2π;
-    # remaining 4/(f+4) points are split evenly between them via a linear remap.
-    f = bridge_oversample_factor
-    n_bridge = int(round(num_points * f / (f + 4)))
-    n_other = num_points - n_bridge
+    # --- Junction-focused component -----------------------------------------
+    # When junction_focus > 0, a fraction of points are drawn from Gaussians
+    # centred on the T1/catenoid junction (v=2π) and the catenoid/T2 junction
+    # (v=3π).  u is always uniform in [0, 2π].
+    n_junction = max(0, min(num_points - 1, int(round(junction_focus * num_points))))
+    n_uniform = num_points - n_junction
 
-    u_bridge = torch.rand(n_bridge, device=device, dtype=dtype) * 2 * np.pi
-    v_bridge = torch.rand(n_bridge, device=device, dtype=dtype) * np.pi + 2 * np.pi  # [2π, 3π)
+    parts_u, parts_v = [], []
 
-    # Non-bridge: v ∈ [0, 2π) ∪ [3π, 5π).  Both intervals width 2π.
-    # Sample v_raw ∈ [0, 4π) then shift upper half by π to skip the bridge interval.
-    u_other = torch.rand(n_other, device=device, dtype=dtype) * 2 * np.pi
-    v_other_raw = torch.rand(n_other, device=device, dtype=dtype) * 4 * np.pi
-    v_other = torch.where(v_other_raw < 2 * np.pi, v_other_raw, v_other_raw + np.pi)
+    if n_junction > 0:
+        n_j1 = n_junction // 2          # points near v = 2π
+        n_j2 = n_junction - n_j1        # points near v = 3π
+        v_j1 = torch.clamp(
+            torch.randn(n_j1, device=device, dtype=dtype) * junction_sigma + 2 * np.pi,
+            0.0, v_max)
+        v_j2 = torch.clamp(
+            torch.randn(n_j2, device=device, dtype=dtype) * junction_sigma + 3 * np.pi,
+            0.0, v_max)
+        u_j = torch.rand(n_junction, device=device, dtype=dtype) * 2 * np.pi
+        parts_u.append(u_j)
+        parts_v.append(torch.cat([v_j1, v_j2]))
 
-    u = torch.cat([u_bridge, u_other])
-    v = torch.cat([v_bridge, v_other])
+    # --- Uniform / bridge-oversampled component -----------------------------
+    if n_uniform > 0:
+        if bridge_oversample_factor <= 1.0:
+            u_uni = torch.rand(n_uniform, device=device, dtype=dtype) * 2 * np.pi
+            v_uni = torch.rand(n_uniform, device=device, dtype=dtype) * v_max
+            parts_u.append(u_uni)
+            parts_v.append(v_uni)
+        else:
+            f = bridge_oversample_factor
+            n_bridge = int(round(n_uniform * f / (f + 4)))
+            n_other = n_uniform - n_bridge
+
+            parts_u.append(torch.rand(n_bridge, device=device, dtype=dtype) * 2 * np.pi)
+            parts_v.append(torch.rand(n_bridge, device=device, dtype=dtype) * np.pi + 2 * np.pi)
+
+            u_other = torch.rand(n_other, device=device, dtype=dtype) * 2 * np.pi
+            v_raw = torch.rand(n_other, device=device, dtype=dtype) * 4 * np.pi
+            v_other = torch.where(v_raw < 2 * np.pi, v_raw, v_raw + np.pi)
+            parts_u.append(u_other)
+            parts_v.append(v_other)
+
+    u = torch.cat(parts_u) if parts_u else torch.empty(0, device=device, dtype=dtype)
+    v = torch.cat(parts_v) if parts_v else torch.empty(0, device=device, dtype=dtype)
     return torch.stack([u, v], dim=1)
 
 
@@ -186,7 +217,9 @@ def sample_parameters(
     device: torch.device = torch.device("cpu"),
     dtype: torch.dtype = torch.float32,
     genus: Optional[int] = None,
-    bridge_oversample_factor: float = 1.0
+    bridge_oversample_factor: float = 1.0,
+    junction_focus: float = 0.0,
+    junction_sigma: float = 1.0
 ) -> torch.Tensor:
     """
     Sample points in parameter space for the specified domain/topology.
@@ -199,6 +232,9 @@ def sample_parameters(
         genus: If provided, overrides domain selection (0=ellipsoid, 1=torus, 2=double_torus)
         bridge_oversample_factor: For double_torus only — oversample catenoid bridge region.
             See sample_double_torus_parameters for details.
+        junction_focus: For double_torus only — fraction of points near junctions.
+            See sample_double_torus_parameters for details.
+        junction_sigma: For double_torus only — Gaussian std dev around junctions (radians).
     
     Returns:
         Parameter coordinates of shape (num_points, 2)
@@ -232,6 +268,8 @@ def sample_parameters(
         return sample_double_torus_parameters(
             num_points,
             bridge_oversample_factor=bridge_oversample_factor,
+            junction_focus=junction_focus,
+            junction_sigma=junction_sigma,
             device=device,
             dtype=dtype
         )

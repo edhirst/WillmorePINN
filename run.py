@@ -154,7 +154,9 @@ def train_epoch(
     gradient_clip: Optional[float] = None,
     use_rotation_augmentation: bool = True,
     genus: Optional[int] = None,
-    bridge_oversample_factor: float = 1.0
+    bridge_oversample_factor: float = 1.0,
+    junction_focus: float = 0.0,
+    junction_sigma: float = 1.0
 ) -> Dict[str, float]:
     """Train for one epoch."""
     model.train()
@@ -163,7 +165,9 @@ def train_epoch(
     uv = sample_parameters(
         num_points, domain, device, dtype,
         genus=genus,
-        bridge_oversample_factor=bridge_oversample_factor
+        bridge_oversample_factor=bridge_oversample_factor,
+        junction_focus=junction_focus,
+        junction_sigma=junction_sigma
     )
     
     # Apply random z-axis rotation augmentation if enabled
@@ -447,6 +451,13 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     # Track rollbacks to prevent infinite loops
     rollback_count = 0
     max_rollbacks = config['training'].get('adaptive_training', {}).get('max_rollbacks', 3)
+
+    # EMA of uncapped Willmore energy for rollback decisions.
+    # Raw single-epoch MC estimates have high variance when sampling is junction-focused,
+    # causing false-positive rollbacks.  The EMA smooths over ~5 epochs so only genuine
+    # multi-epoch degradation triggers a rollback.
+    _ema_alpha = config['training'].get('adaptive_training', {}).get('willmore_ema_alpha', 0.2)
+    ema_willmore: Optional[float] = None
     
     # Training loop
     for epoch in range(start_epoch, num_epochs + 1):
@@ -461,60 +472,127 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         # Train one epoch
         use_rotation_aug = config["sampling"].get("use_rotation_augmentation", True)
         bridge_oversample_factor = config["sampling"].get("bridge_oversample_factor", 1.0)
+
+        # Junction-focus curriculum: concentrate samples near high-curvature junctions
+        # early in training, then cosine-anneal to zero for uniform coverage.
+        # Only active for genus 2 (double torus).
+        junction_focus = 0.0
+        if genus == 2:
+            jf_start = config["sampling"].get("junction_focus_start", 0.0)
+            jf_floor = config["sampling"].get("junction_focus_floor", 0.0)
+            jf_epochs = config["sampling"].get("junction_focus_epochs", 1)
+            junction_sigma = config["sampling"].get("junction_sigma", 1.0)
+            if jf_start > 0.0 and jf_epochs > 0:
+                t = min(epoch - 1, jf_epochs) / jf_epochs  # 0 → 1
+                # Cosine anneal from jf_start down to jf_floor, then hold at floor
+                junction_focus = jf_floor + (jf_start - jf_floor) * 0.5 * (1.0 + np.cos(np.pi * t))
+            else:
+                junction_focus = jf_floor
+        else:
+            junction_sigma = 1.0
+
         epoch_losses = train_epoch(
             model, loss_fn, optimizer,
             num_points, batch_size, domain,
             device, dtype, gradient_clip,
             use_rotation_augmentation=use_rotation_aug,
             genus=genus,
-            bridge_oversample_factor=bridge_oversample_factor
+            bridge_oversample_factor=bridge_oversample_factor,
+            junction_focus=junction_focus,
+            junction_sigma=junction_sigma
         )
-        
-        # Check for severe regularity degradation and rollback if needed
+
+        # --- Unbiased Willmore evaluation ---
+        # epoch_losses['willmore'] was computed from junction-focused training samples,
+        # which inflate the MC estimate when H is large at the junctions.  Evaluate on
+        # a separate uniform sample so that best-model selection, rollback decisions,
+        # and training history all reflect the true Willmore energy.
+        eval_num_points = config["sampling"].get("eval_num_points", 5000)
+        eval_uv = sample_parameters(eval_num_points, domain, device, dtype, genus=genus)
+        model.eval()
+        _, eval_willmore = loss_fn.willmore_loss(model, eval_uv)
+        model.train()
+
+        # Helper to execute a rollback: loads a checkpoint, halves LR, rescales scheduler.
+        def _do_rollback(checkpoint_path: str, lr_scale: float = 0.5) -> bool:
+            """Load checkpoint, apply lr_scale to LR and scheduler base_lrs. Returns True on success."""
+            if not os.path.exists(checkpoint_path):
+                return False
+            ckpt = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(ckpt['model'])
+            optimizer.load_state_dict(ckpt['optimizer'])
+            if scheduler is not None and 'scheduler' in ckpt:
+                scheduler.load_state_dict(ckpt['scheduler'])
+            for pg in optimizer.param_groups:
+                pg['lr'] *= lr_scale
+            if scheduler is not None and hasattr(scheduler, 'base_lrs'):
+                scheduler.base_lrs = [lr * lr_scale for lr in scheduler.base_lrs]
+            return True
+
+        rolled_back = False
+
+        # --- Check 1: Regularity degradation ---
+        # Guard with an absolute minimum so near-zero regularity never spuriously fires.
+        # Regularity ≈ 1e-9 (numerically inactive) must not trigger this.
         if adaptive_config.get('checkpoint_rollback', False) and epoch > 5 and len(history['regularity']) >= 5:
-            threshold = adaptive_config.get('severe_degradation_threshold', 2.0)
+            reg_abs_min = adaptive_config.get('regularity_abs_threshold', 1e-6)
+            threshold = adaptive_config.get('severe_degradation_threshold', 4.0)
             recent_window = min(5, len(history['regularity']))
             baseline_regularity = min(history['regularity'][-recent_window:])
             current_regularity = epoch_losses['regularity']
-            
-            if current_regularity > baseline_regularity * threshold:
+
+            if (current_regularity > reg_abs_min
+                    and current_regularity > baseline_regularity * threshold):
                 if rollback_count < max_rollbacks:
                     rollback_count += 1
-                    print(f"\n🚨 SEVERE REGULARITY DEGRADATION DETECTED (Rollback {rollback_count}/{max_rollbacks})")
-                    print(f"   Current: {current_regularity:.6f}, Baseline: {baseline_regularity:.6f}")
-                    print(f"   Rolling back to checkpoint from epoch {epoch - 1}")
-                    
-                    # Load previous checkpoint
-                    rollback_path = os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch-1}.pt")
-                    if os.path.exists(rollback_path):
-                        checkpoint_data = torch.load(rollback_path, map_location=device)
-                        model.load_state_dict(checkpoint_data['model'])
-                        optimizer.load_state_dict(checkpoint_data['optimizer'])
-                        if scheduler is not None and 'scheduler' in checkpoint_data:
-                            scheduler.load_state_dict(checkpoint_data['scheduler'])
-                        
-                        # Reduce learning rate aggressively
-                        for param_group in optimizer.param_groups:
-                            param_group['lr'] *= 0.5
-                        print(f"   Reduced learning rate to {optimizer.param_groups[0]['lr']:.2e}")
-                        
-                        # Boost regularity weight
+                    print(f"\n🚨 REGULARITY DEGRADATION (Rollback {rollback_count}/{max_rollbacks})")
+                    print(f"   Current: {current_regularity:.2e}, Baseline: {baseline_regularity:.2e}")
+                    ok = _do_rollback(os.path.join(checkpoint_dir, f"checkpoint_epoch_{epoch-1}.pt"))
+                    if ok:
                         loss_fn.regularity_weight *= 2.0
-                        print(f"   Boosted regularity weight to {loss_fn.regularity_weight:.2f}")
-                        
-                        # Skip recording this failed epoch and retry
-                        continue
+                        print(f"   LR → {optimizer.param_groups[0]['lr']:.2e}, regularity_weight → {loss_fn.regularity_weight:.2f}")
+                        rolled_back = True
                     else:
-                        print(f"   Warning: Rollback checkpoint not found, continuing anyway")
+                        print(f"   Warning: rollback checkpoint not found, continuing")
                 else:
-                    print(f"\n⚠️  Max rollbacks ({max_rollbacks}) reached. Permanently reducing learning rate.")
-                    print(f"   Current regularity: {current_regularity:.6f}, Baseline: {baseline_regularity:.6f}")
-                    for param_group in optimizer.param_groups:
-                        param_group['lr'] *= 0.1
+                    print(f"\n⚠️  Max regularity rollbacks reached. Permanently reducing LR.")
+                    for pg in optimizer.param_groups:
+                        pg['lr'] *= 0.1
+                    if scheduler is not None and hasattr(scheduler, 'base_lrs'):
+                        scheduler.base_lrs = [lr * 0.1 for lr in scheduler.base_lrs]
                     loss_fn.regularity_weight *= 3.0
-                    print(f"   New learning rate: {optimizer.param_groups[0]['lr']:.2e}")
-                    print(f"   New regularity weight: {loss_fn.regularity_weight:.2f}")
-                    rollback_count = 0  # Reset counter after permanent adjustment
+                    rollback_count = 0
+
+        # --- Check 2: Willmore spike rollback ---
+        # If W spikes far above the running best, revert to the best checkpoint.
+        # Uses an EMA of uncapped W to suppress false positives from MC sampling variance.
+        willmore_spike_threshold = adaptive_config.get('willmore_spike_threshold', 0.0)
+        if (not rolled_back
+                and adaptive_config.get('checkpoint_rollback', False)
+                and willmore_spike_threshold > 0
+                and epoch > 5
+                and best_willmore < float('inf')
+                and rollback_count < max_rollbacks):
+            # Use the unbiased eval_willmore so junction-focused sampling noise
+            # does not trigger false-positive rollbacks.
+            ema_willmore = eval_willmore if ema_willmore is None else _ema_alpha * eval_willmore + (1.0 - _ema_alpha) * ema_willmore
+            if ema_willmore > best_willmore * willmore_spike_threshold:
+                rollback_count += 1
+                print(f"\n🚨 WILLMORE SPIKE (Rollback {rollback_count}/{max_rollbacks})")
+                print(f"   EMA W={ema_willmore:.1f}, eval W={eval_willmore:.1f}, best W={best_willmore:.1f}")
+                ok = _do_rollback(os.path.join(checkpoint_dir, 'best_model.pt'), lr_scale=0.5)
+                if ok:
+                    ema_willmore = best_willmore  # reset EMA to best after rollback
+                    print(f"   Reverted to best model. LR → {optimizer.param_groups[0]['lr']:.2e}")
+                    rolled_back = True
+                else:
+                    print(f"   Warning: best_model.pt not found, continuing")
+        elif ema_willmore is None:
+            ema_willmore = eval_willmore
+
+        # Skip recording this failed epoch if we rolled back
+        if rolled_back:
+            continue
         
         # Update learning rate
         if scheduler is not None:
@@ -525,54 +603,59 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         
         current_lr = optimizer.param_groups[0]['lr']
         
-        # Record history
+        # Record history — use eval_willmore (unbiased) for the logged energy
         history['epoch'].append(epoch)
         history['total_loss'].append(epoch_losses['total'])
-        history['willmore_energy'].append(epoch_losses['willmore'])
+        history['willmore_energy'].append(eval_willmore)
         history['regularity'].append(epoch_losses['regularity'])
         history['learning_rate'].append(current_lr)
-        
-        # Check if best model using the actual Willmore energy
-        current_willmore = epoch_losses['willmore']
-        is_best = current_willmore < best_willmore
+
+        # Best-model check uses the unbiased eval_willmore
+        is_best = eval_willmore < best_willmore
         if is_best:
-            best_willmore = current_willmore
+            best_willmore = eval_willmore
         
         # Log progress
         if epoch % log_frequency == 0:
-            print(f"Epoch [{epoch}/{num_epochs}] - LR: {current_lr:.6f}")
+            print(f"Epoch [{epoch}/{num_epochs}] - LR: {current_lr:.6f}", end="")
+            if genus == 2 and junction_focus > 0.001:
+                print(f"  junction_focus: {junction_focus:.3f}", end="")
+            print()
             print(f"  Loss Weights - Willmore:{loss_fn.willmore_weight:.3f} Regularity:{loss_fn.regularity_weight:.3f}")
             print(f"  Total Loss: {epoch_losses['total']:.6f}")
-            print(f"  Willmore Energy: {epoch_losses['willmore']:.6f}")
+            print(f"  Willmore Energy (eval): {eval_willmore:.6f}")
+            print(f"  Willmore Energy (train sample): {epoch_losses['willmore']:.6f}")
             print(f"  Regularity: {epoch_losses['regularity']:.6f}")
-            
+
             # Print topology-specific info
             if theoretical_min:
-                ratio_to_optimal = epoch_losses['willmore'] / theoretical_min
+                ratio_to_optimal = eval_willmore / theoretical_min
                 print(f"  Ratio to theoretical minimum: {ratio_to_optimal:.4f}x")
-        
+
         # Save checkpoint - save at regular intervals AND when we find a new best
         # Use separate condition to save regular checkpoints vs best model
         should_save_regular = (epoch % save_frequency == 0)
         if should_save_regular or is_best:
             save_checkpoint(
                 model, optimizer, epoch,
-                epoch_losses['willmore'], config,
+                eval_willmore, config,
                 checkpoint_dir, is_best, scheduler
             )
+        if is_best:
+            print(f"[Epoch {epoch}] Saved best model with Willmore energy: {eval_willmore:.6f}")
     
     # Save final model (only if we actually trained)
     if num_epochs > 0:
         save_checkpoint(
             model, optimizer, num_epochs,
-            epoch_losses['willmore'], config,
+            eval_willmore, config,
             checkpoint_dir, is_best=False, scheduler=scheduler
         )
     else:
         # For num_epochs=0, save the pretrained model
         save_checkpoint(
             model, optimizer, 0,
-            epoch_losses['willmore'], config,
+            eval_willmore, config,
             checkpoint_dir, is_best=False, scheduler=scheduler
         )
     

@@ -44,7 +44,35 @@ def hsv_to_rgb_colors(values: np.ndarray, period: float = 2 * np.pi) -> np.ndarr
     return colors
 
 
-def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6, global_range=None):
+def compute_mean_curvature_at_points(
+    model,
+    uv: torch.Tensor,
+    epsilon: float = 1e-6
+) -> torch.Tensor:
+    """
+    Compute |H| (mean curvature magnitude) at each (u,v) point.
+
+    Enables grad on uv (needed for second fundamental form) while keeping
+    model parameters frozen.  Safe to call inside torch.no_grad() blocks.
+
+    Args:
+        model: Trained EmbeddingNetwork.
+        uv: Parameter coords, shape (N, 2).
+        epsilon: Small constant for numerical stability.
+
+    Returns:
+        |H| values, shape (N,), detached from the computation graph.
+    """
+    with torch.enable_grad():
+        uv_g = uv.detach().requires_grad_(True)
+        E, F, G, phi_u, phi_v = model.compute_first_fundamental_form(uv_g)
+        L, M, N, _ = model.compute_second_fundamental_form(uv_g, phi_u, phi_v)
+        H = model.compute_mean_curvature(E, F, G, L, M, N, epsilon)
+    return H.abs().detach()
+
+
+def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6, global_range=None,
+                   color_values=None, cmap='hot_r', vmin=None, vmax=None):
     """Plot a 3D surface with improved coloring.
 
     Args:
@@ -54,31 +82,36 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6, global_range=None):
         title: Subplot title.
         genus: Surface genus (for colour period).
         alpha: Point transparency.
-        global_range: Shared half-extent for all three axes. Each axis is set to
-            [mid - global_range, mid + global_range], where mid is the midpoint
-            of that axis for this subplot. Passing the same value to every subplot
-            in a figure enforces a uniform spatial scale.
+        global_range: Shared half-extent for all three axes.
+        color_values: Optional (N,) array of scalar values to use as colours
+            instead of the default HSV-by-parameter colouring.  Useful for
+            visualising |H|, area element, etc.
+        cmap: Matplotlib colormap name used when color_values is provided.
+        vmin, vmax: Colour scale limits for color_values (None = data range).
     """
     xyz_np = xyz.detach().cpu().numpy() if torch.is_tensor(xyz) else xyz
     uv_np = uv.cpu().numpy() if torch.is_tensor(uv) else uv
 
-    # Genus 2: colour by u ∈ [0, 2π] (the tube angle), full spectrum per point.
-    # Other genera: colour by v.
-    if genus == 2:
-        coord = uv_np[:, 0]  # u ∈ [0, 2π]
-        period = 2 * np.pi
+    if color_values is not None:
+        cv = color_values.detach().cpu().numpy() if torch.is_tensor(color_values) else np.asarray(color_values)
+        scatter_kwargs = dict(c=cv, cmap=cmap, vmin=vmin, vmax=vmax, alpha=alpha, s=2)
     else:
-        coord = uv_np[:, 1]  # v
-        if genus == 0:
-            period = np.pi       # v ∈ [0, π] for ellipsoid
+        # Genus 2: colour by u ∈ [0, 2π] (the tube angle), full spectrum per point.
+        # Other genera: colour by v.
+        if genus == 2:
+            coord = uv_np[:, 0]  # u ∈ [0, 2π]
+            period = 2 * np.pi
         else:
-            period = 2 * np.pi  # v ∈ [0, 2π] for torus
-
-    colors = hsv_to_rgb_colors(coord, period)
+            coord = uv_np[:, 1]  # v
+            if genus == 0:
+                period = np.pi       # v ∈ [0, π] for ellipsoid
+            else:
+                period = 2 * np.pi  # v ∈ [0, 2π] for torus
+        scatter_kwargs = dict(c=hsv_to_rgb_colors(coord, period), alpha=alpha, s=2)
     
     ax.scatter(
         xyz_np[:, 0], xyz_np[:, 1], xyz_np[:, 2],
-        c=colors, alpha=alpha, s=2
+        **scatter_kwargs
     )
     
     ax.set_xlabel('X')

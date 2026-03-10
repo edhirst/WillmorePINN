@@ -111,6 +111,125 @@ class PeriodicEmbedding(nn.Module):
         return torch.cat(features, dim=1)
 
 
+class DoubleToriEmbedding(nn.Module):
+    """
+    Composite spectral embedding for genus 2 (double torus).
+
+    Enforces the correct periodicity structure by using three region-specific
+    Fourier bases blended with the same quintic smooth-step used in sampling.py:
+
+      T1 region  v ∈ [0, 2π):  sin(k·v), cos(k·v)       periodic in v with period 2π
+                                → φ(u, 0) ≡ φ(u, 2π) is automatic
+      Bridge     v ∈ [2π, 3π): sin(k·(v−2π)), cos(k·(v−2π))   argument v−2π ∈ [0, π), shared with T2
+      T2 region  v ∈ [3π, 5π): sin(k·(v−2π)), cos(k·(v−2π))   argument v−2π ∈ [π, 3π), periodic:
+                                fourier(3π) = fourier(π+2π) = fourier(π) → φ(u, 3π) ≡ φ(u, 5π) ✓
+
+    Bridge and T2 share the Fourier argument v−2π.  This makes the blend a simple two-way
+    transition (T1 ↔ other) which is automatically continuous at BOTH junctions.  Crucially:
+      v=2π: v−2π=0   → [0, 1, ...]  matches T1 value at v=2π      (continuity ✓)
+      v=3π: v−2π=π   → [0, (−1)^k, ...]  ≠ T1 value [0, 1, ...]  (distinguishable ✓)
+    This prevents the previous collapse where v_br scaled to 2π made f_bridge(v=3π)=[0,1,...]
+    identical to f_T1(v=2π), forcing φ(u,2π)≡φ(u,3π) and collapsing the bridge to zero.
+
+    The u-direction is always periodic in [0, 2π].
+    The three v-feature blocks are smoothly blended so the combined vector is C∞.
+
+    Output dim: 2·N (u-features) + 2·N (blended v-features) + 2 (region indicators) = 4·N + 2.
+
+    Args:
+        num_frequencies: Number of frequency components N per region per dimension.
+        s_blend: Half-width of the quintic blend window at each junction v=2π and v=3π.
+            Must match the s_blend used in sampling.py / hyperparameters.yaml.
+    """
+
+    def __init__(self, num_frequencies: int = 4, s_blend: float = 0.5):
+        super().__init__()
+        self.num_frequencies = num_frequencies
+        self.s_blend = s_blend
+        # u-features: 2·N; blended v-features: 2·N; region indicators: 2
+        #
+        # Region indicators break the T1/T2 Fourier redundancy: a point (u, v) in T1
+        # and the corresponding point (u, v+3π) in T2 have identical Fourier features
+        # (same v_local) but clearly different indicator values.
+        #
+        # Using interior-only indicators that are EXACTLY ZERO at all four torus boundary
+        # points (v=0, 2π for T1; v=3π, 5π for T2) preserves the exact periodicity of the
+        # Fourier basis while adding distinguishability:
+        #   I_T1(v) = w1 · sin(v/2)²           zero at v=0 (sin=0) and v=2π (sin(π)=0)
+        #   I_T2(v) = w3 · sin((v−3π)/2)²     zero at v=3π (sin=0) and v=5π (sin(π)=0)
+        # Deep T1 (v≈π):  [I_T1≈1, I_T2≈0]   Deep T2 (v≈4π): [I_T1≈0, I_T2≈1]
+        self.output_dim = 4 * num_frequencies + 2
+
+    @staticmethod
+    def _quintic(t: torch.Tensor) -> torch.Tensor:
+        """Quintic smooth-step: 0→1 over t ∈ [0,1], with f'=f''=0 at endpoints."""
+        t = torch.clamp(t, 0.0, 1.0)
+        return t ** 3 * (10.0 + t * (-15.0 + 6.0 * t))
+
+    def forward(self, uv: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            uv: (batch, 2), uv[:,0]=u ∈ [0,2π], uv[:,1]=v ∈ [0,5π]
+
+        Returns:
+            Spectral features (batch, 4·N + 2).
+        """
+        u = uv[:, 0]
+        v = uv[:, 1]
+
+        # ── u-features: always periodic in [0, 2π] ──────────────────────────
+        u_feats = []
+        for k in range(1, self.num_frequencies + 1):
+            u_feats.append(torch.sin(k * u))
+            u_feats.append(torch.cos(k * u))
+        u_block = torch.stack(u_feats, dim=1)          # (batch, 2·N)
+
+        # ── v-feature blocks for each region ────────────────────────────────
+        # T1   uses argument v         ∈ [0, 2π):   periodic in v, period 2π
+        # Bridge+T2 share argument v−2π: bridge ∈ [0, π), T2 ∈ [π, 3π)
+        #   Continuity at v=2π: v−2π=0 → [0,1,...] = T1(2π) ✓
+        #   Continuity at bridge/T2 junction (v=3π): same basis on both sides ✓
+        #   Distinction: v=3π → v−2π=π → [0,(−1)^k,...] ≠ T1 junction [0,1,...] ✓
+        #   T2 periodicity: v=3π → v−2π=π; v=5π → v−2π=3π; fourier(3π)=fourier(π+2π)=fourier(π) ✓
+
+        v_T1   = v                       # T1 Fourier argument
+        v_brt2 = v - 2.0 * np.pi        # shared bridge+T2 Fourier argument
+
+        def _fourier_block(x: torch.Tensor) -> torch.Tensor:
+            feats = []
+            for k in range(1, self.num_frequencies + 1):
+                feats.append(torch.sin(k * x))
+                feats.append(torch.cos(k * x))
+            return torch.stack(feats, dim=1)   # (batch, 2·N)
+
+        f_T1   = _fourier_block(v_T1)    # T1 region
+        f_brt2 = _fourier_block(v_brt2)  # bridge and T2 share this block
+
+        # ── quintic blend weights matching get_double_torus_embedding ────────
+        s = self.s_blend
+        v_T1_end  = 2.0 * np.pi   # T1 / bridge junction
+        v_cat_end = 3.0 * np.pi   # bridge / T2 junction
+
+        w_to_cat = self._quintic((v - (v_T1_end  - s)) / (2.0 * s))  # 0→1 at v=2π
+        w_to_T2  = self._quintic((v - (v_cat_end - s)) / (2.0 * s))  # 0→1 at v=3π
+
+        w_T1 = (1.0 - w_to_cat).unsqueeze(1)           # T1 weight
+        w_T2 = (w_to_cat * w_to_T2).unsqueeze(1)       # T2 weight (for indicator only)
+
+        # Two-way blend: T1 vs bridge+T2 (they share the same Fourier block)
+        v_block = w_T1 * f_T1 + (1.0 - w_T1) * f_brt2  # (batch, 2·N)
+
+        # Interior-only region indicators, exactly zero at all four torus boundary
+        # points so the Fourier periodicity is preserved exactly:
+        #   I_T1 = w1 · sin(v/2)²          : 0 at v=0 (sin²=0) and v=2π (sin²(π)=0)
+        #   I_T2 = w3 · sin((v-3π)/2)²     : 0 at v=3π (sin²=0) and v=5π (sin²(π)=0)
+        I_T1 = (w_T1 * torch.sin(v / 2.0).unsqueeze(1) ** 2)                      # (batch, 1)
+        I_T2 = (w_T2 * torch.sin((v - 3.0 * np.pi) / 2.0).unsqueeze(1) ** 2)     # (batch, 1)
+        region = torch.cat([I_T1, I_T2], dim=1)                      # (batch, 2)
+
+        return torch.cat([u_block, v_block, region], dim=1)  # (batch, 4·N + 2)
+
+
 class SphericalHarmonicEmbedding(nn.Module):
     """
     Real spherical harmonic embedding for genus 0 (sphere/ellipsoid).
@@ -299,10 +418,18 @@ class EmbeddingNetwork(nn.Module):
         # Spectral embedding layer - adapted for the domain type.
         # Genus 0: real spherical harmonics Y_l^m (natural orthonormal basis for S²),
         #          with num_frequencies interpreted as the maximum degree L → (L+1)² features.
-        # Genus 1/2: Fourier features (natural basis for doubly-/singly-periodic domains).
+        # Genus 1: Fourier features, both u and v periodic in [0, 2π].
+        # Genus 2: DoubleToriEmbedding — three region-specific Fourier bases blended with the
+        #          same quintic smooth-step as the reference embedding.  The T1 and T2 bases are
+        #          periodic in v with period 2π, which structurally enforces that both open ends
+        #          of each torus's v-range (v=0 ≡ v=2π for T1; v=3π ≡ v=5π for T2) map to the
+        #          same feature vector, preventing each torus from unfolding.
         if use_spectral_features:
             if self.domain in ["ellipsoid", "sphere"]:
                 self.periodic_layer = SphericalHarmonicEmbedding(max_degree=num_frequencies)
+            elif self.domain == "double_torus":
+                s_blend = (self.topology_params or {}).get("double_torus", {}).get("s_blend", 0.5)
+                self.periodic_layer = DoubleToriEmbedding(num_frequencies, s_blend=s_blend)
             else:
                 self.periodic_layer = PeriodicEmbedding(num_frequencies, domain=self.domain, genus=genus)
             effective_input_dim = self.periodic_layer.output_dim

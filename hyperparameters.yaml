@@ -59,7 +59,8 @@ topology:
     # The catenoid length is computed automatically to match tube radii
     # r(s) = a * cosh(s/a), where a = bridge_radius
     bridge_radius: 0.25  # Neck radius (must be < tube radii)
-    neck_twist: 0.0      # Rigid angular offset of T2’s tube at the bridge attachment
+    neck_twist: 0.0      # Rigid angular offset of T2's tube at the bridge attachment
+    s_blend: 0.2         # Half-width (radians) of quintic blend zone at each junction (T1↔bridge, bridge↔T2)
     # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 2π² × 2 = 4π² ≈ 39.48
 
 # Model Architecture
@@ -90,15 +91,15 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 10  # Longer run for smoother convergence
+  num_epochs: 70  # Phase 1 (junction focus, ~150 epochs) + phase 2 (uniform refinement)
   batch_size: 1024  # Larger batches for more stable gradients
-  learning_rate: 0.00003  # Much lower LR for stable, gradual optimization
+  learning_rate: 0.00003  # Higher peak LR for warm-restart velocity
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
-  scheduler: "cosine"  # Learning rate scheduler: step, cosine, exponential, plateau, none
+  scheduler: "cosine"  # Single cosine decay — restarts are disruptive on a slowly annealing loss landscape
   scheduler_params:
-    T_max: 60  # Match num_epochs for full cosine cycle
-    eta_min: 0.000005  # Higher minimum to maintain stability
-  gradient_clip: 0.3  # Conservative gradient clipping for stability
+    T_max: 400  # Aligned with num_epochs
+    eta_min: 0.0000005  # Low floor enables fine-tuning in final epochs
+  gradient_clip: 0.1  # Tight clipping to suppress junction instability spikes
   save_frequency: 5  # Save checkpoints frequently for rollback capability
   log_frequency: 5  # Log metrics frequently to monitor stability
   
@@ -109,7 +110,10 @@ training:
     regularity_boost_factor: 2.0  # Multiply regularity weight by this when threshold exceeded
     checkpoint_rollback: true  # Roll back to previous checkpoint if regularity degrades severely
     severe_degradation_threshold: 4.0  # Rollback if regularity increases by this factor
-    max_rollbacks: 3  # Maximum number of rollbacks before reducing LR permanently
+    regularity_abs_threshold: 0.000001  # Minimum absolute regularity value before rollback can fire (guards against near-zero noise)
+    willmore_spike_threshold: 4.0  # Roll back to best model if EMA(W) exceeds best_W × this factor (0 = disabled)
+    willmore_ema_alpha: 0.2        # EMA decay for uncapped W used in rollback check (~5-epoch memory); suppresses MC sampling noise
+    max_rollbacks: 30  # Maximum number of rollbacks per training run
     early_stopping_patience: 30  # Stop earlier for local runs
 
 # Sampling Parameters
@@ -118,17 +122,33 @@ training:
 # - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
 # - genus 2: double_torus domain with custom parametrization
 sampling:
-  num_points: 20000  
+  num_points: 20000
+  eval_num_points: 5000  # Uniform sample used ONLY for unbiased W evaluation/rollback (no junction focus)
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
+  bridge_oversample_factor: 1.0  # Disable bridge oversampling; junction curriculum handles this more precisely
   use_rotation_augmentation: false  # Apply random z-axis rotations for symmetry enforcement
+  # Junction-focus curriculum (genus 2 only):
+  # Phase 1 samples junction_focus_start fraction of points from Gaussians around v=2π
+  # and v=3π (the T1/bridge and bridge/T2 junctions).  The fraction cosine-anneals
+  # to zero over junction_focus_epochs, after which sampling is fully uniform.
+  junction_focus_start: 0.6   # Fraction of points near junctions (constant — start == floor disables annealing)
+  junction_focus_floor: 0.6   # Equal to start: junction focus is constant throughout training
+  junction_focus_epochs: 150  # Unused when start == floor, retained for reference
+  junction_sigma: 1.0         # Gaussian std dev (radians) around each junction centre; ±3σ = ±3 rad covers full blend zone and bridge interior
 
 # Loss Function Parameters
 loss:
-  willmore_weight: 0.5  # Moderate weight for gradual shape optimization
-  regularity_weight: 10.0  # Strong regularity to maintain stable geometry
+  willmore_weight: 1.5  # Willmore loss weight (constant; set max_willmore_weight equal to disable annealing)
+  max_willmore_weight: 1.5  # Equal to willmore_weight: no annealing — prevents total loss from inflating as a scheduling artefact
+  regularity_weight: 5.0  # Compensates for 50% annealing decay in update_weights (effective floor ≈ 2.5)
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
+  h2_clip: 1000  # Huber threshold for H² in the training integrand. Below √h2_clip: exact Willmore
+                 # gradient (2H). Above: linear in |H| with constant gradient magnitude 2√h2_clip —
+                 # never zero, always pushing the junction toward lower curvature.
+                 # Reported willmore_energy is always the true uncapped ∫H²dA.
+  regularity_min_area_element: 0.05  # Minimum allowed area element √(EG−F²); 5× higher than default to prevent bridge neck collapse
   
   # Regularity loss sub-components (normalized internally to sum to 1.0)
   regularity_area_element_weight: 1.0  # Prevent area element collapse
@@ -137,6 +157,14 @@ loss:
   regularity_smoothness_weight: 0.5  # Penalise derivatives that exceed the threshold (ReLU gate)
   regularity_max_metric_value: 10.0  # Upper threshold for E = |φ_u|² and G = |φ_v|²; excess beyond this is penalised
   # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
+
+  # Topology guard (genus 2 only): evaluates regularity at fixed probe locations
+  # in each torus body AND the bridge midpoint on every forward pass, guaranteeing
+  # gradient signal that protects handles and the bridge from collapsing regardless
+  # of the main sampling distribution.
+  # Probe v values: π (T1 mid), 2.5π (bridge mid), 4π (T2 mid).
+  topology_guard_weight: 5.0    # Weight for topology guard loss; matches regularity_weight scale
+  topology_guard_num_probes: 64 # Random-u probe points per location per forward pass
 
   # Disabled losses (moved to end of losses.py):
   # - area_weight: 0.0

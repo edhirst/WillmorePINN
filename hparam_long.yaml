@@ -1,0 +1,176 @@
+# Hyperparameters for Willmore Energy Minimization — long run variant
+
+# Topology Parameters
+# The genus defines the topology of the surface being optimized
+topology:
+  genus: 2  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
+  
+  # Genus 0 (sphere/ellipsoid) initialization parameters
+  # Uses polar coordinates on [0, π] × [0, 2π]
+  ellipsoid:
+    a: 2.0  # Semi-axis along x
+    b: 1.0  # Semi-axis along y  
+    c: 0.5  # Semi-axis along z
+    # For a sphere, set a = b = c
+    # Willmore energy of a sphere is 4π ≈ 12.566 (the minimum for genus 0)
+  
+  # Genus 1 (torus) initialization parameters
+  # Uses doubly-periodic coordinates on [0, 2π] × [0, 2π]
+  torus:
+    tau: "0.1+0.1j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
+               # Clifford torus has tau ≈ 0.707j (1/√2), start slightly higher for visible convergence
+               # Can also use dict format: {real: 0.5, imag: 0.866}
+    max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
+    # Clifford torus (R = √2, r = 1) has minimum Willmore energy 2π² ≈ 19.74
+  
+  # Genus 2 (double torus) initialization parameters
+  # Two independent tori connected by a catenoid (capillary bridge)
+  #
+  # GEOMETRY:
+  # - Two tori with major radius axes parallel to z-axis (standard orientation)
+  # - Centers at y=0, z=0, separated along x-axis
+  # - Catenoid bridge parallel to x-axis, centered at y=0, z=0
+  #
+  # SEPARATION:
+  # x_separation = r1 + R1 + R2 + r2 + neck_length
+  # (outer edges of tori are neck_length apart)
+  #
+  # THREE FUNDAMENTAL DOMAINS:
+  # 1. Torus 1 parallelogram (with gluing disk excluded)
+  # 2. Catenoid rectangle
+  # 3. Torus 2 parallelogram (with gluing disk excluded)
+  #
+  # Parameters:
+  #   τ₁, τ₂ ∈ ℂ: modular parameters for each torus
+  #     - Im(τ) > 0: controls tube thickness (larger = thinner)
+  #     - Re(τ): shear of the fundamental domain
+  #   neck_length: physical length of the catenoid bridge
+  #   neck_twist: twist at the bridge (placeholder, not yet implemented)
+  #
+  double_torus:
+    # Torus 1 modular parameter (same string format as genus 1 tau)
+    tau1: "0.8j"   # Im(τ₁) controls tube thickness; Re(τ₁)/Im(τ₁) is the helical twist rate
+    
+    # Torus 2 modular parameter
+    tau2: "0.8j"   # Im(τ₂) controls tube thickness; Re(τ₂)/Im(τ₂) is the helical twist rate
+    
+    # Catenoid bridge parameters
+    # bridge_radius: minimum radius at the catenoid neck
+    # The catenoid length is computed automatically to match tube radii
+    # r(s) = a * cosh(s/a), where a = bridge_radius
+    bridge_radius: 0.25  # Neck radius (must be < tube radii)
+    neck_twist: 0.0      # Rigid angular offset of T2's tube at the bridge attachment
+    s_blend: 0.2         # Half-width (radians) of quintic blend zone at each junction (T1↔bridge, bridge↔T2)
+    # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 2π² × 2 = 4π² ≈ 39.48
+
+# Model Architecture
+model:
+  # Base network structure
+  input_dim: 2  # Dimension of parameter space (u, v coordinates)
+  output_dim: 3  # Dimension of embedding space (x, y, z coordinates)
+  hidden_dims: [128, 256, 512, 256, 128]  # Hidden layer dimensions
+  activation: "tanh"  # Activation function: relu, tanh, elu, silu
+  dropout: 0.0  # Dropout rate
+  use_spectral_features: true  # Use spectral features: spherical harmonics (genus 0) or Fourier features (genus 1/2)
+  num_frequencies: 3  # Spectral order for input embedding. Genus 0: maximum spherical harmonic degree L → (L+1)² features. Genus 1/2: number of Fourier frequency components per dimension → 4·N features.
+  initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
+  
+  # Residual learning (learning corrections to reference embedding)
+  use_residual: false  # Learn residuals from reference (true) or full embedding (false)
+  residual_scale: 0.5  # Scale factor for residual corrections (only if use_residual=true)
+  
+  # Supervised pretraining (initialize network to match reference embedding)
+  supervised_pretraining:
+    enabled: true  # Whether to pretrain network on reference embedding
+    num_epochs: 100  # More epochs for better initialization
+    learning_rate: 0.003  # Lower LR for careful pretraining
+    batch_size: 512  # Larger batches for stable pretraining
+    num_points_per_epoch: 4096  # More points for better coverage
+    position_weight: 1.0  # Weight for position matching loss
+    derivative_weight: 0.5  # Higher derivative weight for better geometry
+
+# Training Parameters
+training:
+  num_epochs: 1000
+  batch_size: 4096
+  learning_rate: 0.00003
+  weight_decay: 0.000001
+  scheduler: "none"  # Fixed LR throughout — no decay
+  gradient_clip: 0.1
+  save_frequency: 50
+  log_frequency: 10
+  
+  # Adaptive safeguards — all disabled for long uninterrupted run
+  adaptive_training:
+    enabled: false             # No weight scheduling
+    regularity_threshold: 0.3
+    regularity_boost_factor: 2.0
+    checkpoint_rollback: false # No rollbacks
+    severe_degradation_threshold: 4.0
+    regularity_abs_threshold: 0.000001
+    willmore_spike_threshold: 0  # 0 = disabled
+    willmore_ema_alpha: 0.2
+    max_rollbacks: 0
+    early_stopping_patience: 1000
+
+# Sampling Parameters
+sampling:
+  num_points: 200000
+  eval_num_points: 10000  # Uniform sample for unbiased W evaluation
+  noise_level: 0.0
+  resample_each_epoch: true
+  bridge_oversample_factor: 1.0
+  use_rotation_augmentation: false
+  # Junction focus held constant for the full 1000-epoch run (start == floor)
+  junction_focus_start: 0.6
+  junction_focus_floor: 0.6
+  junction_focus_epochs: 1000  # Span equals num_epochs; combined with start==floor this is a no-op
+  junction_sigma: 1.0         # Gaussian std dev (radians) around each junction centre
+
+# Loss Function Parameters
+loss:
+  willmore_weight: 1.5         # Fixed — no annealing (max_willmore_weight == willmore_weight)
+  max_willmore_weight: 1.5     # Equal to willmore_weight: Willmore weight is constant
+  regularity_weight: 5.0       # Fixed at initial value (adaptive_training.enabled=false freezes it)
+  target_area: null
+  epsilon: 0.000001
+  h2_clip: 10000  # Huber threshold for H²; √10000=100, so |H|>100 gets constant gradient.
+                  # Covers the full non-pathological curvature range seen in training (max |H|≈60)
+                  # while still bounding runaway junction spikes.
+                  # Reported willmore_energy is always the true uncapped ∫H²dA.
+  regularity_min_area_element: 0.05
+  
+  # Regularity loss sub-components (normalized internally to sum to 1.0)
+  regularity_area_element_weight: 1.0
+  regularity_orientation_weight: 1.0
+  regularity_metric_positivity_weight: 0.5
+  regularity_smoothness_weight: 0.5
+  regularity_max_metric_value: 10.0
+
+  # Topology guard: probes T1 mid (v=π), bridge mid (v=2.5π), T2 mid (v=4π) every step
+  topology_guard_weight: 5.0
+  topology_guard_num_probes: 64
+
+  # Disabled losses:
+  # - area_weight: 0.0
+  # - symmetry_weight: 0.0
+
+# Optimization
+optimizer:
+  type: "adam"
+  betas: [0.9, 0.999]
+  momentum: 0.9
+
+# Output and Logging
+output:
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  save_best_only: false
+  metric_to_monitor: "willmore_energy"
+  
+# Computation
+device: "auto"  # auto, cpu, cuda, mps
+               # Note: auto defaults to CPU (MPS has incomplete linalg support)
+               # For MPS, set device: "mps" and run with PYTORCH_ENABLE_MPS_FALLBACK=1
+seed: 42
+dtype: "float32"

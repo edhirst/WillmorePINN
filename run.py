@@ -192,7 +192,7 @@ def train_epoch(
         uv_batch = uv[start_idx:end_idx]
         
         # Zero gradients
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         
         # Forward pass
         loss_dict = loss_fn(model, uv_batch)
@@ -346,7 +346,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     batch_size = config["training"]["batch_size"]
     num_points = config["sampling"]["num_points"]
     log_frequency = config["training"].get("log_frequency", 10)
-    save_frequency = config["training"].get("save_frequency", 50)
     gradient_clip = config["training"].get("gradient_clip", None)
     
     # Output directories with run numbering
@@ -507,11 +506,26 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         # which inflate the MC estimate when H is large at the junctions.  Evaluate on
         # a separate uniform sample so that best-model selection, rollback decisions,
         # and training history all reflect the true Willmore energy.
+        #
+        # When print_eval=False, the full eval only runs on logging/saving epochs;
+        # other epochs use the training-sample willmore as a cheap proxy.
         eval_num_points = config["sampling"].get("eval_num_points", 5000)
-        eval_uv = sample_parameters(eval_num_points, domain, device, dtype, genus=genus)
-        model.eval()
-        _, eval_willmore = loss_fn.willmore_loss(model, eval_uv)
-        model.train()
+        print_eval = config["sampling"].get("print_eval", True)
+        should_eval = print_eval or (epoch % log_frequency == 0)
+
+        if should_eval:
+            eval_uv = sample_parameters(eval_num_points, domain, device, dtype, genus=genus)
+            model.eval()
+            # Evaluate in 10 chunks to reduce peak autograd graph size
+            chunk = (eval_num_points + 9) // 10
+            total_weighted = 0.0
+            for _start in range(0, eval_num_points, chunk):
+                _end = min(_start + chunk, eval_num_points)
+                total_weighted += loss_fn.willmore_loss(model, eval_uv[_start:_end])[1] * (_end - _start)
+            eval_willmore = total_weighted / eval_num_points
+            model.train()
+        else:
+            eval_willmore = epoch_losses['willmore']
 
         # Helper to execute a rollback: loads a checkpoint, halves LR, rescales scheduler.
         def _do_rollback(checkpoint_path: str, lr_scale: float = 0.5) -> bool:
@@ -610,8 +624,8 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         history['regularity'].append(epoch_losses['regularity'])
         history['learning_rate'].append(current_lr)
 
-        # Best-model check uses the unbiased eval_willmore
-        is_best = eval_willmore < best_willmore
+        # Best-model check: only update on epochs where a proper eval was run
+        is_best = should_eval and (eval_willmore < best_willmore)
         if is_best:
             best_willmore = eval_willmore
         
@@ -632,17 +646,14 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
                 ratio_to_optimal = eval_willmore / theoretical_min
                 print(f"  Ratio to theoretical minimum: {ratio_to_optimal:.4f}x")
 
-        # Save checkpoint - save at regular intervals AND when we find a new best
-        # Use separate condition to save regular checkpoints vs best model
-        should_save_regular = (epoch % save_frequency == 0)
+        # Save checkpoint at log frequency and when a new best is found
+        should_save_regular = (epoch % log_frequency == 0)
         if should_save_regular or is_best:
             save_checkpoint(
                 model, optimizer, epoch,
                 eval_willmore, config,
                 checkpoint_dir, is_best, scheduler
             )
-        if is_best:
-            print(f"[Epoch {epoch}] Saved best model with Willmore energy: {eval_willmore:.6f}")
     
     # Save final model (only if we actually trained)
     if num_epochs > 0:

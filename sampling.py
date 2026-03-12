@@ -689,13 +689,34 @@ def _smooth_step_quintic(t: torch.Tensor) -> torch.Tensor:
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 
 
+def _bridge_radius_optimal(r1: float, r2: float) -> float:
+    """
+    Catenoid waist radius a that maximises the natural bridge span L₁+L₂.
+
+    For a catenoid connecting tube radii r₁ and r₂, the natural bridge span is
+    L₁+L₂ = a·arccosh(r₁/a) + a·arccosh(r₂/a).  This function has a unique
+    maximum over a ∈ (0, min(r₁,r₂)), found by coarse grid search.  Using this
+    a gives the smoothest possible (least-stretched) catenoid for the given tori.
+
+    Args:
+        r1, r2: Tube radii of the two tori
+
+    Returns:
+        Optimal waist radius a
+    """
+    r_min = min(r1, r2)
+    a_vals = np.linspace(0.05 * r_min, 0.98 * r_min, 500)
+    spans = a_vals * np.arccosh(r1 / a_vals) + a_vals * np.arccosh(r2 / a_vals)
+    return float(a_vals[np.argmax(spans)])
+
+
 def get_double_torus_embedding(
     uv: torch.Tensor,
     tau1: complex = 1j,
     tau2: complex = 1j,
-    bridge_radius: float = 0.3,
+    bridge_radius: Optional[float] = None,
     neck_twist: float = 0.0,
-    neck_length: float = None,  # Legacy parameter, ignored
+    neck_length: float = 0.0,
     s_blend: float = 0.15,
     **kwargs
 ) -> torch.Tensor:
@@ -735,8 +756,26 @@ def get_double_torus_embedding(
         uv: Parameter coordinates (batch_size, 2)
         tau1: Complex modulus for torus 1 (Im controls thickness, Re controls twist)
         tau2: Complex modulus for torus 2
-        bridge_radius: Minimum radius at the catenoid neck (must be < torus tube radii)
+        bridge_radius: Waist radius of the catenoid neck.  If None (default), inferred
+            automatically as the value that maximises the natural bridge span
+            L₁+L₂ = a·arccosh(r₁/a) + a·arccosh(r₂/a) for the given tube radii.
+            This is the smoothest possible catenoid for the current τ₁, τ₂.
+            Set explicitly to override (must be < tube radii).
         neck_twist: Additional twist angle applied to torus 2
+        neck_length: Extra physical gap added to (or subtracted from) the natural
+            catenoid length.  The natural catenoid length L₁+L₂ = a·arccosh(r₁/a)
+            + a·arccosh(r₂/a) is the minimum bridge extent needed for the
+            cosh profile to reach both tube radii; it depends only on
+            bridge_radius and the implicit tube radii.
+
+            neck_length=0: tori positioned so the natural catenoid just fills
+              the gap — the most compact valid reference geometry.
+            neck_length>0: tori further apart; the catenoid is physically
+              stretched (lower curvature from the orientation rotation).
+            neck_length<0: tori closer together; the catenoid is compressed.
+              Clamped automatically so total_sep ≥ R+r (no self-intersection).
+              At neck_length ≈ -(L₁+L₂) the bridge degenerates to a flat disk
+              (connected-sum limit).
         s_blend: Half-width (in v units) of the quintic smooth-step transition between
             regions.  The blend weight goes from 0 to 1 over the window
             [junction − s_blend, junction + s_blend].  Because the quintic has
@@ -767,17 +806,22 @@ def get_double_torus_embedding(
     
     R1 = 1.0
     R2 = 1.0
-    
-    # Bridge radius: minimum catenoid waist radius
-    a = float(bridge_radius)
-    a = np.clip(a, 0.1, min(r1, r2) * 0.95)
+
+    # Bridge radius: infer from tube radii if not supplied, otherwise clamp to valid range
+    if bridge_radius is None:
+        a = _bridge_radius_optimal(r1, r2)
+    else:
+        a = float(np.clip(float(bridge_radius), 0.05 * min(r1, r2), min(r1, r2) * 0.95))
     
     # Catenoid half-lengths: a·arccosh(r/a) gives the x-extent on each side
     L1 = a * np.arccosh(r1 / a)
     L2 = a * np.arccosh(r2 / a)
     
-    margin = 0.1
-    total_sep = R1 + r1 + R2 + r2 + L1 + L2 + margin
+    # Minimum total_sep that prevents torus-tube self-intersection: R1+r1+R2+r2
+    # plus a small safety margin.  neck_length can be negative (tori closer
+    # together, catenoid compressed) down to this floor.
+    min_sep = R1 + r1 + R2 + r2 + 0.05
+    total_sep = max(R1 + r1 + R2 + r2 + L1 + L2 + 0.1 + float(neck_length), min_sep)
     x1 = -total_sep / 2
     x2 = +total_sep / 2
     
@@ -919,9 +963,10 @@ def get_reference_embedding(
             tau2 = complex(tau2_raw)
         
         # Catenoid bridge parameters
-        neck_length = float(dt_params.get('neck_length', 1.0))
+        neck_length = float(dt_params.get('neck_length', 0.0))
         neck_twist = float(dt_params.get('neck_twist', 0.0))
-        bridge_radius = float(dt_params.get('bridge_radius', 0.3))
+        bridge_radius_raw = dt_params.get('bridge_radius', None)
+        bridge_radius = None if bridge_radius_raw is None else float(bridge_radius_raw)
         s_blend = float(dt_params.get('s_blend', 0.15))
         return get_double_torus_embedding(
             uv,
@@ -929,6 +974,7 @@ def get_reference_embedding(
             tau2=tau2,
             bridge_radius=bridge_radius,
             neck_twist=neck_twist,
+            neck_length=neck_length,
             s_blend=s_blend,
         )
     

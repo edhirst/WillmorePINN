@@ -236,6 +236,76 @@ class RegularityLoss(nn.Module):
         return total_loss
 
 
+def _self_avoidance_penalty(
+    xyz: torch.Tensor,
+    uv: torch.Tensor,
+    d_avoid: float = 0.2,
+    d_param_min: float = 2.5,
+    num_pairs: int = 1000,
+) -> torch.Tensor:
+    """
+    Soft self-avoidance penalty: penalise pairs of points that are far in
+    parameter space but close in 3-D.  This is the only loss component that
+    can directly detect and discourage self-intersection, because all other
+    terms are purely pointwise (they measure local immersion quality at each
+    individual (u,v) sample and cannot see that two distant parameter points
+    have collided in ℝ³).
+
+    Draws `num_pairs` random index pairs (i, j) from the batch, discards pairs
+    whose parameter-space L2 distance is ≤ d_param_min (topologically adjacent),
+    and penalises the remaining pairs if their 3-D distance is < d_avoid:
+
+        penalty = mean over far pairs of relu(d_avoid - ||φ_i - φ_j||)²
+
+    Gradients flow through xyz = model(uv) and push the two colliding sheets
+    apart along the line joining them.
+
+    Args:
+        xyz:          Surface positions (N, 3) — must be the model's output tensor
+                      so that gradients can flow back to model parameters.
+        uv:           Parameter coords (N, 2), treated as constants (detached).
+                      u ∈ [0, 2π] is periodic; v ∈ [0, 5π] is not.
+        d_avoid:      Desired minimum 3-D separation between topologically
+                      distant points.  Should be ≲ the minimum separation in
+                      the reference geometry.
+        d_param_min:  L2 threshold in parameter space above which a pair is
+                      considered topologically distant.  For genus 2, any pair
+                      with one point in T1 (v ∈ [0, 2π]) and one in T2
+                      (v ∈ [3π, 5π]) has |Δv| ≥ π ≈ 3.14, so d_param_min=2.5
+                      catches all T1-T2 pairs without false-positives from
+                      adjacent regions.
+        num_pairs:    Number of random pairs sampled per call.
+
+    Returns:
+        Scalar penalty tensor.
+    """
+    N = xyz.shape[0]
+    if N < 2:
+        return xyz.new_zeros(())
+
+    device = xyz.device
+    idx_a = torch.randint(0, N, (num_pairs,), device=device)
+    idx_b = torch.randint(0, N, (num_pairs,), device=device)
+    # Avoid self-pairs
+    same = idx_a == idx_b
+    idx_b = torch.where(same, (idx_b + 1) % N, idx_b)
+
+    # Parameter-space distance (u is 2π-periodic, v is not periodic)
+    uv_d = uv.detach()
+    du = (uv_d[idx_a, 0] - uv_d[idx_b, 0]).abs()
+    du = torch.min(du, 2.0 * float(np.pi) - du)
+    dv = (uv_d[idx_a, 1] - uv_d[idx_b, 1]).abs()
+    d_param = (du.pow(2) + dv.pow(2)).sqrt()
+
+    # 3-D distance
+    d3d = (xyz[idx_a] - xyz[idx_b]).norm(dim=1)
+
+    # Only penalise topologically distant pairs
+    far = (d_param > d_param_min).float().detach()
+    penalty = torch.nn.functional.relu(d_avoid - d3d).pow(2)
+    return (far * penalty).mean()
+
+
 class CombinedEmbeddingLoss(nn.Module):
     """
     Combined loss function for embedding-based Willmore minimization.
@@ -263,7 +333,11 @@ class CombinedEmbeddingLoss(nn.Module):
         max_willmore_weight: float = 0.5,
         h2_clip: Optional[float] = None,
         topology_guard_weight: float = 0.0,
-        topology_guard_num_probes: int = 64
+        topology_guard_num_probes: int = 64,
+        self_avoidance_weight: float = 0.0,
+        self_avoidance_d_avoid: float = 0.2,
+        self_avoidance_d_param_min: float = 2.5,
+        self_avoidance_num_pairs: int = 1000
     ):
         """
         Args:
@@ -285,6 +359,15 @@ class CombinedEmbeddingLoss(nn.Module):
                 regularity at fixed probe locations deep in each torus body, guaranteeing gradient
                 signal that prevents handle collapse regardless of main sampling distribution.
             topology_guard_num_probes: Number of random-u probe points per torus body per forward pass.
+            self_avoidance_weight: Weight for the self-avoidance penalty.  Penalises pairs of
+                parameter-space points that are far apart (> self_avoidance_d_param_min) but
+                close in 3-D (< self_avoidance_d_avoid).  This is the only non-local loss
+                and directly discourages self-intersection.  Effective for all genera.
+            self_avoidance_d_avoid: Target minimum 3-D separation for topologically distant pairs.
+            self_avoidance_d_param_min: Parameter-space L2 distance threshold above which a
+                pair is considered topologically distant.  For genus 2, 2.5 catches all T1-T2
+                pairs (min |Δv| ≈ π) without false-positives from adjacent regions.
+            self_avoidance_num_pairs: Random pairs drawn per forward call.
         """
         super().__init__()
         
@@ -294,6 +377,10 @@ class CombinedEmbeddingLoss(nn.Module):
         self.domain = domain
         self.topology_guard_weight = topology_guard_weight
         self.topology_guard_num_probes = topology_guard_num_probes
+        self.self_avoidance_weight = self_avoidance_weight
+        self.self_avoidance_d_avoid = self_avoidance_d_avoid
+        self.self_avoidance_d_param_min = self_avoidance_d_param_min
+        self.self_avoidance_num_pairs = self_avoidance_num_pairs
         # Fixed v₀ values for genus 2 topology guard probes:
         #   T1 body midpoint  : v = π    (T1 occupies v ∈ [0, 2π))
         #   Bridge midpoint   : v = 2.5π (bridge occupies v ∈ [2π, 3π))
@@ -410,6 +497,19 @@ class CombinedEmbeddingLoss(nn.Module):
             guard_loss = guard_loss / len(self._topology_guard_v_values)
             total_loss = total_loss + self.topology_guard_weight * guard_loss
 
+        # Self-avoidance: penalise topologically distant pairs that collide in 3-D.
+        # Requires a model forward pass, but the MLP call is cheap compared to
+        # the autograd computation in willmore_loss / regularity_loss.
+        if self.self_avoidance_weight > 0:
+            xyz = model(uv)
+            sa_loss = _self_avoidance_penalty(
+                xyz, uv,
+                d_avoid=self.self_avoidance_d_avoid,
+                d_param_min=self.self_avoidance_d_param_min,
+                num_pairs=self.self_avoidance_num_pairs,
+            )
+            total_loss = total_loss + self.self_avoidance_weight * sa_loss
+
         # Normalise by fixed initial weight sum so scale is stable as weights anneal
         if self.initial_weight_sum > 0:
             total_loss = total_loss / self.initial_weight_sum
@@ -464,6 +564,10 @@ def create_embedding_loss(config: dict) -> nn.Module:
         h2_clip=loss_config.get("h2_clip", None),
         topology_guard_weight=loss_config.get("topology_guard_weight", 0.0),
         topology_guard_num_probes=loss_config.get("topology_guard_num_probes", 64),
+        self_avoidance_weight=loss_config.get("self_avoidance_weight", 0.0),
+        self_avoidance_d_avoid=loss_config.get("self_avoidance_d_avoid", 0.2),
+        self_avoidance_d_param_min=loss_config.get("self_avoidance_d_param_min", 2.5),
+        self_avoidance_num_pairs=loss_config.get("self_avoidance_num_pairs", 1000),
     )
 
 

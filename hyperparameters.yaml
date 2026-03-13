@@ -49,10 +49,10 @@ topology:
   #
   double_torus:
     # Torus 1 modular parameter (same string format as genus 1 tau)
-    tau1: "0.8j"   # Im(τ₁) controls tube thickness; Re(τ₁)/Im(τ₁) is the helical twist rate
+    tau1: "1.5j"   # Im(τ₁) controls tube thickness; Re(τ₁)/Im(τ₁) is the helical twist rate
     
     # Torus 2 modular parameter
-    tau2: "0.8j"   # Im(τ₂) controls tube thickness; Re(τ₂)/Im(τ₂) is the helical twist rate
+    tau2: "1.5j"   # Im(τ₂) controls tube thickness; Re(τ₂)/Im(τ₂) is the helical twist rate
     
     # Catenoid bridge parameters
     # bridge_radius: minimum radius at the catenoid neck
@@ -60,7 +60,7 @@ topology:
     # r(s) = a * cosh(s/a), where a = bridge_radius
     bridge_radius: null  # Waist radius of catenoid neck; null = auto-inferred as the value maximising bridge span for the current tau (recommended)
     neck_twist: 0.0      # Rigid angular offset of T2's tube at the bridge attachment
-    neck_length: 0.0     # Extra gap relative to natural catenoid length; 0 = compact (catenoid just fits), negative = tori closer (compressed bridge), positive = tori further apart
+    neck_length: 0.5     # Extra gap relative to natural catenoid length; 0 = compact (catenoid just fits), negative = tori closer (compressed bridge), positive = tori further apart
     s_blend: 0.2         # Half-width (radians) of quintic blend zone at each junction (T1↔bridge, bridge↔T2)
     # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 2π² × 2 = 4π² ≈ 39.48
 
@@ -73,7 +73,7 @@ model:
   activation: "tanh"  # Activation function: relu, tanh, elu, silu
   dropout: 0.0  # Dropout rate
   use_spectral_features: true  # Use spectral features: spherical harmonics (genus 0) or Fourier features (genus 1/2)
-  num_frequencies: 4  # Spectral order for input embedding. Genus 0: maximum spherical harmonic degree L → (L+1)² features. Genus 1/2: number of Fourier frequency components per dimension → 4·N features.
+  num_frequencies: 6  # Spectral order for input embedding. Genus 0: maximum spherical harmonic degree L → (L+1)² features. Genus 1/2: number of Fourier frequency components per dimension → 4·N features.
   initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
   
   # Residual learning (learning corrections to reference embedding)
@@ -92,7 +92,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 500
+  num_epochs: 1000
   batch_size: 2000  # Larger batches for more stable gradients
   learning_rate: 0.0001
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
@@ -140,8 +140,8 @@ sampling:
 
 # Loss Function Parameters
 loss:
-  willmore_weight: 1.5  # Willmore loss weight (constant; set max_willmore_weight equal to disable annealing)
-  max_willmore_weight: 1.5  # Equal to willmore_weight: no annealing — prevents total loss from inflating as a scheduling artefact
+  willmore_weight: 0.3  # Willmore loss weight; anneals to max_willmore_weight over training
+  max_willmore_weight: 1.5  # Final Willmore weight after linear annealing — allows regularity to stabilise the surface first
   regularity_weight: 2.0  # Surface stays smooth (reg≈0) after pretraining; lower weight lets Willmore dominate
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision

@@ -49,16 +49,16 @@ topology:
   #
   double_torus:
     # Torus 1 modular parameter (same string format as genus 1 tau)
-    tau1: "1.5j"   # Im(τ₁) controls tube thickness; Re(τ₁)/Im(τ₁) is the helical twist rate
+    tau1: "0.7j"   # Im(τ₁) controls tube thickness; Re(τ₁)/Im(τ₁) is the helical twist rate
     
     # Torus 2 modular parameter
-    tau2: "1.5j"   # Im(τ₂) controls tube thickness; Re(τ₂)/Im(τ₂) is the helical twist rate
+    tau2: "0.7j"   # Im(τ₂) controls tube thickness; Re(τ₂)/Im(τ₂) is the helical twist rate
     
     # Catenoid bridge parameters
     # bridge_radius: minimum radius at the catenoid neck
     # The catenoid length is computed automatically to match tube radii
     # r(s) = a * cosh(s/a), where a = bridge_radius
-    bridge_radius: null  # Waist radius of catenoid neck; null = auto-inferred as the value maximising bridge span for the current tau (recommended)
+    bridge_radius: 0.33  # Waist radius of catenoid neck; 0.33 ≈ 0.84·r for τ=0.7j, giving a wide initial neck
     neck_twist: 0.0      # Rigid angular offset of T2's tube at the bridge attachment
     neck_length: 0.5     # Extra gap relative to natural catenoid length; 0 = compact (catenoid just fits), negative = tori closer (compressed bridge), positive = tori further apart
     s_blend: 0.2         # Half-width (radians) of quintic blend zone at each junction (T1↔bridge, bridge↔T2)
@@ -140,15 +140,15 @@ sampling:
 
 # Loss Function Parameters
 loss:
-  willmore_weight: 0.3  # Willmore loss weight; anneals to max_willmore_weight over training
-  max_willmore_weight: 1.5  # Final Willmore weight after linear annealing — allows regularity to stabilise the surface first
+  willmore_weight: 0.3  # Willmore loss weight (constant throughout training)
+  max_willmore_weight: 0.3  # Set equal to willmore_weight to disable annealing
   regularity_weight: 2.0  # Surface stays smooth (reg≈0) after pretraining; lower weight lets Willmore dominate
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
-  h2_clip: 1000  # Huber threshold for H² in the training integrand. Below √h2_clip: exact Willmore
-                 # gradient (2H). Above: linear in |H| with constant gradient magnitude 2√h2_clip —
-                 # never zero, always pushing the junction toward lower curvature.
-                 # Reported willmore_energy is always the true uncapped ∫H²dA.
+  h2_clip: 50  # Huber threshold for H² in the training integrand. Below √h2_clip: exact Willmore
+               # gradient (2H). Above: linear in |H| with constant gradient magnitude 2√h2_clip —
+               # never zero, always pushing the junction toward lower curvature.
+               # Reported willmore_energy is always the true uncapped ∫H²dA.
   regularity_min_area_element: 0.05  # Minimum allowed area element √(EG−F²); 5× higher than default to prevent bridge neck collapse
   
   # Regularity loss sub-components (normalized internally to sum to 1.0)

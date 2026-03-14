@@ -60,8 +60,8 @@ topology:
     # r(s) = a * cosh(s/a), where a = bridge_radius
     bridge_radius: 0.33  # Waist radius of catenoid neck; 0.33 ≈ 0.84·r for τ=0.7j, giving a wide initial neck
     neck_twist: 0.0      # Rigid angular offset of T2's tube at the bridge attachment
-    neck_length: 0.5     # Extra gap relative to natural catenoid length; 0 = compact (catenoid just fits), negative = tori closer (compressed bridge), positive = tori further apart
-    s_blend: 0.2         # Half-width (radians) of quintic blend zone at each junction (T1↔bridge, bridge↔T2)
+    neck_length: 0.1     # Extra gap relative to natural catenoid length; 0 = compact (catenoid just fits), positive = tori further apart; small positive value starts away from the catenoid existence boundary
+    s_blend: 0.4         # Half-width (radians) of quintic blend zone at each junction (T1↔bridge, bridge↔T2)
     # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 2π² × 2 = 4π² ≈ 39.48
 
 # Model Architecture
@@ -98,7 +98,7 @@ training:
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
   scheduler: "cosine"  # Single cosine decay — restarts are disruptive on a slowly annealing loss landscape
   scheduler_params:
-    T_max: 500  # Full cosine cycle over the training run
+    T_max: 1000  # Full cosine half-cycle over the entire training run (T_max = num_epochs avoids LR restart)
     eta_min: 0.0000005  # Low floor enables fine-tuning in final epochs
   gradient_clip: 0.5
   log_frequency: 10   # Log metrics and save checkpoints every N epochs
@@ -140,9 +140,9 @@ sampling:
 
 # Loss Function Parameters
 loss:
-  willmore_weight: 0.3  # Willmore loss weight (constant throughout training)
-  max_willmore_weight: 0.3  # Set equal to willmore_weight to disable annealing
-  regularity_weight: 2.0  # Surface stays smooth (reg≈0) after pretraining; lower weight lets Willmore dominate
+  willmore_weight: 1.0  # Willmore loss weight (constant throughout training)
+  max_willmore_weight: 1.0  # Set equal to willmore_weight to disable annealing
+  regularity_weight: 0.5  # Surface stays smooth (reg≈0) after pretraining; lower weight lets Willmore dominate
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
   h2_clip: 50  # Huber threshold for H² in the training integrand. Below √h2_clip: exact Willmore
@@ -164,7 +164,7 @@ loss:
   # gradient signal that protects handles and the bridge from collapsing regardless
   # of the main sampling distribution.
   # Probe v values: π (T1 mid), 2.5π (bridge mid), 4π (T2 mid).
-  topology_guard_weight: 2.0    # Matched to regularity_weight
+  topology_guard_weight: 1.0    # Higher than regularity_weight: specifically probes bridge midpoint (v=2.5π) to prevent neck collapse
   topology_guard_num_probes: 64 # Random-u probe points per location per forward pass
 
   # Disabled losses (moved to end of losses.py):

@@ -14,7 +14,9 @@ Supported topologies:
 import torch
 import torch.nn as nn
 import numpy as np
+import functools
 from typing import List, Optional, Tuple, Dict
+print = functools.partial(print, flush=True)
 
 
 class PeriodicEmbedding(nn.Module):

@@ -14,7 +14,9 @@ Supports different topologies:
 import torch
 import torch.nn as nn
 import numpy as np
+import functools
 from typing import Optional
+print = functools.partial(print, flush=True)
 
 
 class EmbeddingWillmoreLoss(nn.Module):

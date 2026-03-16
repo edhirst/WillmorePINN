@@ -29,6 +29,8 @@ from sampling import (
     get_domain_for_genus, get_theoretical_minimum_willmore
 )
 from utils import plot_loss_curves
+import functools
+print = functools.partial(print, flush=True)
 
 
 def parse_tau(tau_value) -> complex:

@@ -17,6 +17,8 @@ import re
 
 from model import create_embedding_model
 from sampling import sample_parameters, compute_reference_willmore_energy
+import functools
+print = functools.partial(print, flush=True)
 
 
 def hsv_to_rgb_colors(values: np.ndarray, period: float = 2 * np.pi) -> np.ndarray:

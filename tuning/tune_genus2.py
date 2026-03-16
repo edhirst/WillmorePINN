@@ -25,15 +25,16 @@ unstable runs that happen to briefly dip low.
 
 import sys
 import os
-import io
+import glob
 import json
 import copy
-import contextlib
 import argparse
 import random
+import functools
 
 import numpy as np
 import yaml
+print = functools.partial(print, flush=True)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -167,10 +168,7 @@ def run_trial(base_config: dict, params: dict, trial_dir: str, trial_epochs: int
     # Reduce checkpoint frequency to save I/O during short trials
     cfg['training']['log_frequency'] = 50
 
-    # Suppress verbose per-epoch stdout
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        history = train(config_dict=cfg)
+    history = train(config_dict=cfg)
 
     return history
 
@@ -178,6 +176,33 @@ def run_trial(base_config: dict, params: dict, trial_dir: str, trial_epochs: int
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
+
+def _merge_results(output_path: str) -> None:
+    """Merge per-trial tune_results_trial_NNN.json files into output_path.
+
+    Each parallel PBS job writes its own file to avoid concurrent write races.
+    This function combines them into the single results JSON used by _print_report.
+    """
+    results_dir = os.path.dirname(os.path.abspath(output_path))
+    pattern = os.path.join(results_dir, 'tune_results_trial_*.json')
+    files = sorted(glob.glob(pattern))
+    if not files:
+        print(f"No per-trial result files found matching {pattern}")
+        return
+    results = []
+    for fpath in files:
+        with open(fpath) as fh:
+            data = json.load(fh)
+        if isinstance(data, list):
+            results.extend(data)
+        else:
+            results.append(data)
+    results.sort(key=lambda r: r.get('trial_idx', 0))
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, 'w') as fh:
+        json.dump(results, fh, indent=2)
+    print(f"Merged {len(results)} trial(s) from {len(files)} file(s) → {output_path}")
+
 
 def _print_report(results_path: str) -> None:
     """Print a human-readable summary table of completed trial results."""
@@ -295,7 +320,24 @@ def main():
         '--report', action='store_true',
         help='Print report from existing results file without running new trials'
     )
+    parser.add_argument(
+        '--merge', action='store_true',
+        help='Merge per-trial result files (tune_results_trial_NNN.json) then print report'
+    )
     args = parser.parse_args()
+
+    # When running a single PBS array job, write to a per-trial file to avoid
+    # concurrent write races between parallel jobs.
+    _DEFAULT_OUTPUT = os.path.join(ROOT, 'tuning', 'tune_results.json')
+    if args.trial_idx is not None and args.output == _DEFAULT_OUTPUT:
+        args.output = os.path.join(
+            ROOT, 'tuning', f'tune_results_trial_{args.trial_idx:03d}.json'
+        )
+
+    if args.merge:
+        _merge_results(_DEFAULT_OUTPUT)
+        _print_report(_DEFAULT_OUTPUT)
+        return
 
     if args.report:
         _print_report(args.output)

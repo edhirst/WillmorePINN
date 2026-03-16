@@ -92,7 +92,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 300
+  num_epochs: 100
   batch_size: 2048         # Larger batches reduce per-step gradient variance
   learning_rate: 0.00005  # Lower LR; genus-2 landscape is steeper than genus 0/1
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
@@ -123,7 +123,7 @@ training:
 # - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
 # - genus 2: double_torus domain with custom parametrization
 sampling:
-  num_points: 20000        # More points reduce variance of the Monte-Carlo curvature integral
+  num_points: 10000        # More points reduce variance of the Monte-Carlo curvature integral
   bridge_oversample_factor: 1.0  # Uniform sampling; IS correction not implemented so factor>1 biases MC estimator
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch

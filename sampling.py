@@ -12,7 +12,9 @@ Supported topologies:
 
 import torch
 import numpy as np
+import functools
 from typing import Tuple, Optional, Dict
+print = functools.partial(print, flush=True)
 
 # Track which tau values have been warned about for self-intersection
 _warned_tau_values = set()

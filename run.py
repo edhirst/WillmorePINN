@@ -467,7 +467,25 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             loss_fn.update_weights(epoch, num_epochs, current_regularity, adaptive_config)
         else:
             loss_fn.update_weights(epoch, num_epochs)
-        
+
+        # Frequency curriculum (NeRF-style coarse-to-fine).
+        # Progressively activates higher Fourier bands so the network first
+        # learns the global shape before fitting high-curvature details at
+        # the bridge junction.  Only meaningful when use_spectral_features=True
+        # and the periodic_layer supports set_active_frequencies (PeriodicEmbedding).
+        freq_curriculum = config.get('model', {}).get('freq_curriculum', {})
+        freq_warmup_epochs = freq_curriculum.get('warmup_epochs', 0)
+        _pl = getattr(model, 'periodic_layer', None)
+        if freq_warmup_epochs > 0 and _pl is not None and hasattr(_pl, 'set_active_frequencies'):
+            total_freqs = _pl.num_frequencies
+            freq_start = freq_curriculum.get('start_freqs', 1)
+            if epoch <= freq_warmup_epochs:
+                t = (epoch - 1) / max(freq_warmup_epochs - 1, 1)  # 0 at e=1, 1 at e=warmup
+                num_active = freq_start + round((total_freqs - freq_start) * t)
+                _pl.set_active_frequencies(num_active)
+            else:
+                _pl.set_active_frequencies(total_freqs)
+
         # Train one epoch
         use_rotation_aug = config["sampling"].get("use_rotation_augmentation", True)
         bridge_oversample_factor = config["sampling"].get("bridge_oversample_factor", 1.0)
@@ -641,10 +659,39 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             print(f"  Willmore Energy (train sample): {epoch_losses['willmore']:.6f}")
             print(f"  Regularity: {epoch_losses['regularity']:.6f}")
 
+            # Gradient-norm balance diagnostic (GradNorm-inspired, Chen et al. 2018).
+            # Computes the L2 norm of gradients contributed by each loss component.
+            # Large imbalance (one term >> others) indicates that component dominates
+            # the update and may be destabilising.  Logged here at diagnostic frequency;
+            # does not affect the training loss.
+            try:
+                model.zero_grad(set_to_none=True)
+                _diag_uv = sample_parameters(min(1000, num_points), domain, device, dtype, genus=genus)
+                _w_tensor, _ = loss_fn.willmore_loss(model, _diag_uv)
+                _w_tensor = loss_fn.willmore_weight * _w_tensor
+                _w_tensor.backward()
+                _gnorm_w = sum(p.grad.detach().norm(2).item() ** 2
+                               for p in model.parameters() if p.grad is not None) ** 0.5
+                model.zero_grad(set_to_none=True)
+                _r_tensor = loss_fn.regularity_weight * loss_fn.regularity_loss(model, _diag_uv)
+                _r_tensor.backward()
+                _gnorm_r = sum(p.grad.detach().norm(2).item() ** 2
+                               for p in model.parameters() if p.grad is not None) ** 0.5
+                model.zero_grad(set_to_none=True)
+                print(f"  Grad norms — Willmore: {_gnorm_w:.3e}  Regularity: {_gnorm_r:.3e}  "
+                      f"ratio W/R: {(_gnorm_w / (_gnorm_r + 1e-12)):.1f}")
+            except Exception:
+                pass  # diagnostics must never abort training
+
             # Print topology-specific info
             if theoretical_min:
                 ratio_to_optimal = eval_willmore / theoretical_min
                 print(f"  Ratio to theoretical minimum: {ratio_to_optimal:.4f}x")
+
+            # Report active frequencies for frequency curriculum
+            if freq_warmup_epochs > 0 and _pl is not None and hasattr(_pl, 'set_active_frequencies'):
+                n_active = int(_pl.freq_alphas.sum().item())
+                print(f"  Active Fourier bands: {n_active}/{_pl.num_frequencies}")
 
         # Save checkpoint at log frequency and when a new best is found
         should_save_regular = (epoch % log_frequency == 0)
@@ -700,6 +747,8 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     print(f"  Total Loss: {epoch_losses['total']:.6f}")
     print(f"  Willmore: {epoch_losses['willmore']:.6f}")
     print(f"  Regularity: {epoch_losses['regularity']:.6f}")
+
+    return history
 
 
 def main():

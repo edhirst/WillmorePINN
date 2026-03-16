@@ -1,0 +1,174 @@
+# Hyperparameters for Willmore Energy Minimization
+
+# Topology Parameters
+# The genus defines the topology of the surface being optimized
+topology:
+  genus: 2  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus (genus > 2 not implemented)
+  
+  # Genus 0 (sphere/ellipsoid) initialization parameters
+  # Uses polar coordinates on [0, π] × [0, 2π]
+  ellipsoid:
+    a: 5.0  # Semi-axis along x
+    b: 1.0  # Semi-axis along y  
+    c: 0.2  # Semi-axis along z
+    # For a sphere, set a = b = c
+    # Willmore energy of a sphere is 4π ≈ 12.566 (the minimum for genus 0)
+  
+  # Genus 1 (torus) initialization parameters
+  # Uses doubly-periodic coordinates on [0, 2π] × [0, 2π]
+  torus:
+    tau: "0.1+0.1j"  # Complex modulus for torus (as string: "1j", "0.5+0.866j", "2j")
+               # Clifford torus has tau ≈ 0.707j (1/√2), start slightly higher for visible convergence
+               # Can also use dict format: {real: 0.5, imag: 0.866}
+    max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
+    # Clifford torus (R = √2, r = 1) has minimum Willmore energy 2π² ≈ 19.74
+  
+  # Genus 2 (double torus) initialization parameters
+  # Two independent tori connected by a catenoid (capillary bridge)
+  #
+  # GEOMETRY:
+  # - Two tori with major radius axes parallel to z-axis (standard orientation)
+  # - Centers at y=0, z=0, separated along x-axis
+  # - Catenoid bridge parallel to x-axis, centered at y=0, z=0
+  #
+  # SEPARATION:
+  # x_separation = r1 + R1 + R2 + r2 + neck_length
+  # (outer edges of tori are neck_length apart)
+  #
+  # THREE FUNDAMENTAL DOMAINS:
+  # 1. Torus 1 parallelogram (with gluing disk excluded)
+  # 2. Catenoid rectangle
+  # 3. Torus 2 parallelogram (with gluing disk excluded)
+  #
+  # Parameters:
+  #   τ₁, τ₂ ∈ ℂ: modular parameters for each torus
+  #     - Im(τ) > 0: controls tube thickness (larger = thinner)
+  #     - Re(τ): shear of the fundamental domain
+  #   neck_length: physical length of the catenoid bridge
+  #   neck_twist: twist at the bridge (placeholder, not yet implemented)
+  #
+  double_torus:
+    # Torus 1 modular parameter (same string format as genus 1 tau)
+    tau1: "0.5j"  # Im(τ₁) controls tube thickness; Re(τ₁)/Im(τ₁) is the helical twist rate
+    
+    # Torus 2 modular parameter
+    tau2: "0.5j"  # Im(τ₂) controls tube thickness; Re(τ₂)/Im(τ₂) is the helical twist rate
+    
+    # Catenoid bridge parameters
+    # bridge_radius: minimum radius at the catenoid neck
+    # The catenoid length is computed automatically to match tube radii
+    # r(s) = a * cosh(s/a), where a = bridge_radius
+    bridge_radius: 0.3   # Neck radius (must be < tube radii)
+    neck_twist: 0.0      # Rigid angular offset of T2's tube at the bridge attachment
+    s_blend: 0.4         # Half-width (in v units) of the quintic smooth-step transition at each
+                         # T1↔bridge and bridge↔T2 seam; blend goes 0→1 over [junction−s_blend, junction+s_blend].
+                         # Quintic has f'=f''=0 at both endpoints → H is not spiked by the blending kernel.
+
+# Model Architecture
+model:
+  # Base network structure
+  input_dim: 2  # Dimension of parameter space (u, v coordinates)
+  output_dim: 3  # Dimension of embedding space (x, y, z coordinates)
+  hidden_dims: [128, 256, 512, 256, 128]  # Hidden layer dimensions
+  activation: "tanh"  # Activation function: relu, tanh, elu, silu
+  dropout: 0.0  # Dropout rate
+  use_spectral_features: true  # Use spectral features: spherical harmonics (genus 0) or Fourier features (genus 1/2)
+  num_frequencies: 4  # More frequencies for richer bridge representation
+  initialization: "xavier_uniform"  # Weight initialization: xavier_uniform, xavier_normal, kaiming_uniform, kaiming_normal
+  
+  # Residual learning (learning corrections to reference embedding)
+  use_residual: false   # Learn residuals from reference embedding; keeps bridge geometry anchored
+  residual_scale: 0.5  # Scale factor for residual corrections; 0.5 gives enough reach for large corrections
+  
+  # Supervised pretraining (initialize network to match reference embedding)
+  supervised_pretraining:
+    enabled: true  # Whether to pretrain network on reference embedding
+    num_epochs: 60
+    learning_rate: 0.001
+    batch_size: 1024
+    num_points_per_epoch: 16384  # More points for better coverage of the 5× longer domain
+    position_weight: 1.0  # Weight for position matching loss
+    derivative_weight: 2.0  # Higher weight: Jacobian accuracy at bridge junctions is critical
+
+# Training Parameters
+training:
+  num_epochs: 300
+  batch_size: 2048         # Larger batches reduce per-step gradient variance
+  learning_rate: 0.00005  # Lower LR; genus-2 landscape is steeper than genus 0/1
+  weight_decay: 0.000001  # Lighter weight decay to preserve learned features
+  scheduler: "cosine_warm_restarts"  # Warm restarts escape local minima
+  scheduler_params:
+    T_0: 50               # Length of the first cosine cycle
+    T_mult: 2              # Each successive cycle doubles in length (50, 100, 200, …)
+    eta_min: 0.0000001     # Minimum LR at each cycle trough
+  gradient_clip: 0.3       # Conservative clipping to prevent collapse-inducing large steps
+  save_frequency: 10       # Every 10 epochs for a 500-epoch run
+  log_frequency: 1
+  
+  # Adaptive safeguards to prevent regularity collapse (applies to all genus types)
+  adaptive_training:
+    enabled: true  # Enable adaptive weight adjustment based on regularity health
+    regularity_threshold: 0.3  # Lower threshold for earlier intervention
+    regularity_boost_factor: 2.0  # Multiply regularity weight by this when threshold exceeded
+    checkpoint_rollback: false  # Disabled: regularity (~1e-9) fluctuates 3-30x from Monte Carlo
+                                 # sampling noise alone, causing spurious rollbacks that compound
+                                 # LR reductions to ~0 within 50 epochs
+    severe_degradation_threshold: 50.0  # Safety net only; real geometric collapse is >>10x
+    max_rollbacks: 6                   # More budget before permanent LR cut
+    early_stopping_patience: 150  # 30% of total epochs
+
+# Sampling Parameters
+# Note: Domain is now automatically determined from topology.genus
+# - genus 0: sphere/ellipsoid domain with polar coordinates [0, π] × [0, 2π]
+# - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
+# - genus 2: double_torus domain with custom parametrization
+sampling:
+  num_points: 20000        # More points reduce variance of the Monte-Carlo curvature integral
+  bridge_oversample_factor: 1.0  # Uniform sampling; IS correction not implemented so factor>1 biases MC estimator
+  noise_level: 0.0  # Add Gaussian noise to coordinates
+  resample_each_epoch: true  # Whether to resample points each epoch
+  use_rotation_augmentation: false  # Apply random z-axis rotations for symmetry enforcement
+
+# Loss Function Parameters
+loss:
+  willmore_weight: 0.05    # Initial Willmore weight; anneals up to max_willmore_weight over training
+  max_willmore_weight: 0.5 # Low ceiling: without residual anchoring, strong Willmore drives topology collapse
+  h2_clip: 50.0            # Per-point H² ceiling before averaging the integrand H²√(EG−F²).
+                           # Clips junction artefacts (|H|>10) without biasing the minimum
+                           # (the Willmore minimiser has |H|≲3 everywhere for this geometry).
+  regularity_weight: 12.0  # Strong regularisation to compensate for the lack of residual anchoring
+  target_area: null  # Target surface area (null for adaptive constraint with bounds)
+  epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
+  
+  # Regularity loss sub-components (normalized internally to sum to 1.0)
+  regularity_area_element_weight: 2.0  # Extra weight: primary defence against topology collapse
+  regularity_orientation_weight: 1.0  # Maintain consistent orientation
+  regularity_metric_positivity_weight: 1.0  # Prevent metric degeneration (important near catenoid bridge)
+  regularity_smoothness_weight: 0.5  # Penalise derivatives that exceed the threshold (ReLU gate)
+  regularity_max_metric_value: 10.0  # Upper threshold for E = |φ_u|² and G = |φ_v|²; excess beyond this is penalised
+  regularity_min_area_element: 0.05  # √(EG−F²) below this triggers penalty; guards against local collapse
+  # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
+
+  # Disabled losses (moved to end of losses.py):
+  # - area_weight: 0.0
+  # - symmetry_weight: 0.0
+
+# Optimization
+optimizer:
+  type: "adam"  # adam, sgd, adamw, rmsprop
+  betas: [0.9, 0.999]  # For Adam - higher beta1 for smoother momentum
+  momentum: 0.9  # For SGD
+
+# Output and Logging
+output:
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  save_best_only: false  # Save checkpoints at regular intervals (not just best)
+  metric_to_monitor: "willmore_energy"  # Metric to monitor for best model
+  
+# Computation
+device: "auto"  # auto, cpu, cuda, mps
+               # Note: auto defaults to CPU (MPS has incomplete linalg support)
+               # For MPS, set device: "mps" and run with PYTORCH_ENABLE_MPS_FALLBACK=1
+seed: 42  # Random seed for reproducibility
+dtype: "float32"  # float32 or float64

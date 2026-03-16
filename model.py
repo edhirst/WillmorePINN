@@ -52,6 +52,12 @@ class PeriodicEmbedding(nn.Module):
         self.domain = domain.lower()
         # Output dimension: 2 * num_frequencies * input_dim
         self.output_dim = 2 * num_frequencies * 2  # 2 input dims (u,v)
+        # Frequency curriculum weights (coarse-to-fine, NeRF-style).
+        # Shape (num_frequencies,) — one scalar per frequency band.
+        # All ones by default (all bands active).  Call set_active_frequencies()
+        # from the training loop to implement a coarse-to-fine schedule:
+        # low frequencies encode global topology; higher ones add fine detail.
+        self.register_buffer('freq_alphas', torch.ones(num_frequencies))
     
     def forward(self, uv: torch.Tensor) -> torch.Tensor:
         """
@@ -108,7 +114,30 @@ class PeriodicEmbedding(nn.Module):
                 features.append(torch.sin(freq * uv[:, 1:2]))
                 features.append(torch.cos(freq * uv[:, 1:2]))
         
-        return torch.cat(features, dim=1)
+        result = torch.cat(features, dim=1)  # (batch, 4 * num_frequencies)
+        # Apply frequency curriculum: each alpha controls one frequency band
+        # (all 4 sin/cos features for that band).  Ones by default = all active.
+        alpha = self.freq_alphas.repeat_interleave(4).unsqueeze(0)  # (1, 4*N)
+        return result * alpha
+
+    def set_active_frequencies(self, num_active: int) -> None:
+        """Activate the lowest num_active frequency bands; zero out the rest.
+
+        Implements a coarse-to-fine frequency curriculum analogous to NeRF's
+        positional encoding schedule.  Low Fourier frequencies encode smooth
+        global shape; higher ones capture fine surface detail.  Progressive
+        activation stabilises early Willmore training for surfaces with large
+        curvature variation (e.g. the genus-2 bridge junction).
+
+        Args:
+            num_active: Number of bands to activate, clamped to [1, num_frequencies].
+        """
+        n = max(1, min(int(num_active), self.num_frequencies))
+        alphas = torch.zeros(self.num_frequencies,
+                             device=self.freq_alphas.device,
+                             dtype=self.freq_alphas.dtype)
+        alphas[:n] = 1.0
+        self.freq_alphas.copy_(alphas)
 
 
 class DoubleToriEmbedding(nn.Module):

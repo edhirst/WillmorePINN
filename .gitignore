@@ -60,6 +60,10 @@ checkpoints/
 # Scratch/experimental scripts
 scratch/
 
+# Tuning trial outputs (generated; scripts are tracked)
+tuning/tune_output/
+tuning/tune_results.json
+
 # Copilot workspace instructions
 .github/copilot-instructions.md
 

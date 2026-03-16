@@ -152,7 +152,8 @@ class RegularityLoss(nn.Module):
         orientation_weight: float = 1.0,
         metric_positivity_weight: float = 1.0,
         smoothness_weight: float = 1.0,
-        max_metric_value: float = 10.0
+        max_metric_value: float = 10.0,
+        conformal_weight: float = 0.0
     ):
         """
         Args:
@@ -163,6 +164,8 @@ class RegularityLoss(nn.Module):
             metric_positivity_weight: Weight for metric positivity term
             smoothness_weight: Weight for smoothness term
             max_metric_value: Upper threshold for E and G; only excess beyond this is penalised
+            conformal_weight: Weight for Dirichlet excess (E+G)/(2√(EG−F²)) − 1; fires
+                continuously, penalising metric anisotropy even for smooth surfaces
         """
         super().__init__()
         self.epsilon = epsilon
@@ -174,6 +177,7 @@ class RegularityLoss(nn.Module):
         self.orientation_weight = orientation_weight
         self.metric_positivity_weight = metric_positivity_weight
         self.smoothness_weight = smoothness_weight
+        self.conformal_weight = conformal_weight
     
     def forward(self, model: nn.Module, uv: torch.Tensor) -> torch.Tensor:
         """
@@ -229,6 +233,16 @@ class RegularityLoss(nn.Module):
             total_loss += self.smoothness_weight * smoothness_loss
             weight_sum += self.smoothness_weight
         
+        # Conformal energy (Dirichlet excess): (E+G)/(2√(EG−F²)) − 1 ≥ 0, equals 0
+        # iff the map is conformal (E=G, F=0).  Unlike the ReLU-gated terms above,
+        # this fires continuously, providing gradient signal before collapse.
+        if self.conformal_weight > 0:
+            det = torch.clamp(E * G - F * F, min=self.epsilon)
+            area_el = torch.sqrt(det)
+            conformal_defect = torch.mean((E + G) / (2.0 * area_el + self.epsilon) - 1.0)
+            total_loss += self.conformal_weight * conformal_defect
+            weight_sum += self.conformal_weight
+
         # Normalize by weight sum if any components are active
         if weight_sum > 0:
             total_loss = total_loss / weight_sum
@@ -328,6 +342,7 @@ class CombinedEmbeddingLoss(nn.Module):
         regularity_smoothness_weight: float = 1.0,
         regularity_max_metric_value: float = 10.0,
         regularity_min_area_element: float = 0.01,
+        regularity_conformal_weight: float = 0.0,
         genus: Optional[int] = None,
         domain: str = "torus",
         max_willmore_weight: float = 0.5,
@@ -351,6 +366,7 @@ class CombinedEmbeddingLoss(nn.Module):
             regularity_smoothness_weight: Weight for smoothness term within regularity loss
             regularity_max_metric_value: Upper threshold for E and G in the smoothness term
             regularity_min_area_element: Minimum allowed area element √(EG−F²); collapse below this is penalised
+            regularity_conformal_weight: Weight for the conformal energy term within RegularityLoss
             genus: Surface genus (0, 1, or 2)
             domain: Surface domain type
             max_willmore_weight: Ceiling for willmore_weight annealing schedule
@@ -396,7 +412,8 @@ class CombinedEmbeddingLoss(nn.Module):
             orientation_weight=regularity_orientation_weight,
             metric_positivity_weight=regularity_metric_positivity_weight,
             smoothness_weight=regularity_smoothness_weight,
-            max_metric_value=regularity_max_metric_value
+            max_metric_value=regularity_max_metric_value,
+            conformal_weight=regularity_conformal_weight
         )
         
         # Store initial weights for reference
@@ -423,9 +440,21 @@ class CombinedEmbeddingLoss(nn.Module):
         """
         adaptive_enabled = adaptive_config and adaptive_config.get('enabled', False)
 
+        # Willmore warmup: ramp willmore_weight from a small fraction to the full configured
+        # value over willmore_warmup_epochs epochs, reducing gradient shocks from
+        # high-curvature bridge regions immediately after supervised pretraining.
+        in_warmup = False
+        if adaptive_config:
+            warmup_epochs = adaptive_config.get('willmore_warmup_epochs', 0)
+            warmup_start = adaptive_config.get('willmore_warmup_start', 1.0)
+            if warmup_epochs > 0 and epoch <= warmup_epochs:
+                t = (epoch - 1) / warmup_epochs  # 0 at epoch 1, 1 at epoch warmup_epochs
+                self.willmore_weight = self.initial_willmore_weight * (warmup_start + (1.0 - warmup_start) * t)
+                in_warmup = True
+
         if not adaptive_enabled:
-            # Freeze weights at initial values; no scheduling
-            self.willmore_weight = self.initial_willmore_weight
+            if not in_warmup:
+                self.willmore_weight = self.initial_willmore_weight
             self.regularity_weight = self.initial_regularity_weight
             return
 
@@ -451,9 +480,10 @@ class CombinedEmbeddingLoss(nn.Module):
             self.regularity_weight = base_regularity * regularity_multiplier
         else:
             self.regularity_weight = base_regularity
-        
-        self.willmore_weight = base_willmore
-    
+
+        if not in_warmup:
+            self.willmore_weight = base_willmore
+
     def forward(self, model: nn.Module, uv: torch.Tensor) -> dict:
         """
         Compute combined loss.
@@ -558,6 +588,7 @@ def create_embedding_loss(config: dict) -> nn.Module:
         regularity_smoothness_weight=loss_config.get("regularity_smoothness_weight", 1.0),
         regularity_max_metric_value=loss_config.get("regularity_max_metric_value", 10.0),
         regularity_min_area_element=loss_config.get("regularity_min_area_element", 0.01),
+        regularity_conformal_weight=loss_config.get("regularity_conformal_weight", 0.0),
         genus=genus,
         domain=domain,
         max_willmore_weight=loss_config.get("max_willmore_weight", 0.5),

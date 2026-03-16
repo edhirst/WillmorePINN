@@ -79,6 +79,15 @@ model:
   # Residual learning (learning corrections to reference embedding)
   use_residual: false  # Learn residuals from reference (true) or full embedding (false)
   residual_scale: 0.5  # Scale factor for residual corrections (only if use_residual=true)
+
+  # Coarse-to-fine Fourier frequency curriculum (NeRF-style, Mildenhall et al. 2020).
+  # Progressively activates higher Fourier bands so the network first learns the global
+  # shape, then refines high-curvature detail (e.g. bridge junctions).
+  # Bands 1..start_freqs are active at epoch 1; remaining bands unlock linearly over
+  # warmup_epochs.  Set warmup_epochs: 0 to disable (all bands active throughout).
+  freq_curriculum:
+    warmup_epochs: 150  # Number of Willmore-training epochs over which all bands are unlocked
+    start_freqs: 2      # Number of low Fourier bands active at epoch 1 of Willmore training
   
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
@@ -115,6 +124,8 @@ training:
     willmore_ema_alpha: 0.3        # Slightly faster EMA for W tracking
     max_rollbacks: 30  # Maximum number of rollbacks per training run
     early_stopping_patience: 100
+    willmore_warmup_epochs: 100  # Ramp willmore_weight from willmore_warmup_start × initial value to the full value over this many epochs
+    willmore_warmup_start: 0.05  # Willmore weight as a fraction of its configured value at epoch 1 of warmup
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus
@@ -156,6 +167,7 @@ loss:
   regularity_orientation_weight: 1.0  # Maintain consistent orientation
   regularity_metric_positivity_weight: 0.5  # Prevent metric degeneration (enable for stability)
   regularity_smoothness_weight: 0.5  # Penalise derivatives that exceed the threshold (ReLU gate)
+  regularity_conformal_weight: 2.0   # Weight for Dirichlet excess (E+G)/(2√(EG−F²)) − 1 within the regularity loss; non-zero even for smooth surfaces
   regularity_max_metric_value: 10.0  # Upper threshold for E = |φ_u|² and G = |φ_v|²; excess beyond this is penalised
   # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
 
@@ -167,9 +179,13 @@ loss:
   topology_guard_weight: 1.0    # Higher than regularity_weight: specifically probes bridge midpoint (v=2.5π) to prevent neck collapse
   topology_guard_num_probes: 64 # Random-u probe points per location per forward pass
 
-  # Disabled losses (moved to end of losses.py):
-  # - area_weight: 0.0
-  # - symmetry_weight: 0.0
+  # Self-avoidance: penalise pairs of parameter-space points that are far apart
+  # (topologically non-adjacent) but close in 3-D.  The only loss that can directly
+  # detect and discourage self-intersection.  See _self_avoidance_penalty in losses.py.
+  self_avoidance_weight: 0.05          # Non-zero: actively discourage self-intersection
+  self_avoidance_d_avoid: 0.2          # Target minimum 3-D separation for distant pairs
+  self_avoidance_d_param_min: 2.5      # Parameter-space L2 threshold for pairing (T1–T2 min ≈ π)
+  self_avoidance_num_pairs: 1000       # Random pairs per forward call
 
 # Optimization
 optimizer:

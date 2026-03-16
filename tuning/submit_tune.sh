@@ -44,6 +44,7 @@ ARRAY_JOB_ID=$(qsub - << EOF
 #PBS -m abe
 #PBS -k oe
 #PBS -j oe
+#PBS -r y
 #PBS -J 0-${LAST_IDX}
 
 cd "\$PBS_O_WORKDIR" || exit 1
@@ -81,6 +82,7 @@ MERGE_JOB_ID=$(qsub - << EOF
 #PBS -m abe
 #PBS -k oe
 #PBS -j oe
+#PBS -r y
 #PBS -W depend=afterokarray:${ARRAY_JOB_ID}
 
 cd "\$PBS_O_WORKDIR" || exit 1

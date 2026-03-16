@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # ---- Configuration (edit these) ---------------------------------------------
-N_TRIALS=30
+N_TRIALS=20
 EPOCHS=100
 SEED=42
 
@@ -58,14 +58,10 @@ echo "=== Trial \${PBS_ARRAY_INDEX}/${LAST_IDX} starting on \$(hostname) at \$(d
 echo "Job: \${PBS_JOBID}"
 echo ""
 
-python -u tuning/tune_genus2.py \\
-    --trial-idx "\${PBS_ARRAY_INDEX}" \\
-    --n-trials ${N_TRIALS} \\
-    --epochs ${EPOCHS} \\
-    --seed ${SEED}
+python -u tuning/tune_genus2.py --trial-idx "${PBS_ARRAY_INDEX}" --n-trials ${N_TRIALS} --epochs ${EPOCHS} --seed ${SEED}
 
 echo ""
-echo "=== Trial \${PBS_ARRAY_INDEX} finished at \$(date) ==="
+echo "=== Trial ${PBS_ARRAY_INDEX} finished at $(date) ==="
 EOF
 )
 
@@ -96,10 +92,7 @@ cd github || exit 1
 echo "=== Merging results at \$(date) ==="
 echo ""
 
-python -u tuning/tune_genus2.py \\
-    --n-trials ${N_TRIALS} \\
-    --seed ${SEED} \\
-    --merge
+python -u tuning/tune_genus2.py --n-trials ${N_TRIALS} --seed ${SEED} --merge
 
 echo ""
 echo "=== Report complete at \$(date) ==="
@@ -107,8 +100,4 @@ EOF
 )
 
 echo "Report job submitted: ${MERGE_JOB_ID}  (depends on ${ARRAY_JOB_ID})"
-echo ""
-echo "Useful commands:"
-echo "  Monitor array : qstat -J ${BARE_ID}"
-echo "  Monitor all   : qstat -u \$USER"
 echo "  Early report  : cd github && python -u tuning/tune_genus2.py --merge --n-trials ${N_TRIALS} --seed ${SEED}"

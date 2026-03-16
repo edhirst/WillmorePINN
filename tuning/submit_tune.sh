@@ -71,9 +71,10 @@ EOF
 
 echo "Array job submitted: ${ARRAY_JOB_ID}"
 
+# Strip [].hostname suffix to get the bare numeric ID for the dependency
+BARE_ID="${ARRAY_JOB_ID%%\[*}"
+
 # ---- Submit merge+report job (runs after all array elements finish) ----------
-# Use 'afterokarray' so it only runs if all trials succeeded.
-# Change to 'afterarray' if you want the report even when some trials fail.
 MERGE_JOB_ID=$(qsub - << EOF
 #!/bin/bash
 #PBS -q ${QUEUE}
@@ -83,7 +84,7 @@ MERGE_JOB_ID=$(qsub - << EOF
 #PBS -k oe
 #PBS -j oe
 #PBS -r y
-#PBS -W depend=afterokarray:${ARRAY_JOB_ID}
+#PBS -W depend=afterok:${BARE_ID}
 
 cd "\$PBS_O_WORKDIR" || exit 1
 
@@ -108,7 +109,6 @@ EOF
 echo "Report job submitted: ${MERGE_JOB_ID}  (depends on ${ARRAY_JOB_ID})"
 echo ""
 echo "Useful commands:"
-BARE_ID="${ARRAY_JOB_ID%%\[*}"
 echo "  Monitor array : qstat -J ${BARE_ID}"
 echo "  Monitor all   : qstat -u \$USER"
 echo "  Early report  : cd github && python -u tuning/tune_genus2.py --merge --n-trials ${N_TRIALS} --seed ${SEED}"

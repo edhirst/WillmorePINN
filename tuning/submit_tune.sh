@@ -67,8 +67,9 @@ EOF
 
 echo "Array job submitted: ${ARRAY_JOB_ID}"
 
-# Strip [].hostname suffix to get the bare numeric ID for the dependency
+# Keep [] but strip .hostname suffix — PBS needs JOBID[] to reference a whole array
 BARE_ID="${ARRAY_JOB_ID%%\[*}"
+ARRAY_DEP="${BARE_ID}[]"
 
 # ---- Submit merge+report job (runs after all array elements finish) ----------
 MERGE_JOB_ID=$(qsub - << EOF
@@ -80,7 +81,7 @@ MERGE_JOB_ID=$(qsub - << EOF
 #PBS -k oe
 #PBS -j oe
 #PBS -r y
-#PBS -W depend=afterok:${BARE_ID}
+#PBS -W depend=afterok:${ARRAY_DEP}
 
 cd "\$PBS_O_WORKDIR" || exit 1
 

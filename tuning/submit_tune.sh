@@ -58,10 +58,10 @@ echo "=== Trial \${PBS_ARRAY_INDEX}/${LAST_IDX} starting on \$(hostname) at \$(d
 echo "Job: \${PBS_JOBID}"
 echo ""
 
-python -u tuning/tune_genus2.py --trial-idx "${PBS_ARRAY_INDEX}" --n-trials ${N_TRIALS} --epochs ${EPOCHS} --seed ${SEED}
+python -u tuning/tune_genus2.py --trial-idx "\${PBS_ARRAY_INDEX}" --n-trials ${N_TRIALS} --epochs ${EPOCHS} --seed ${SEED}
 
 echo ""
-echo "=== Trial ${PBS_ARRAY_INDEX} finished at $(date) ==="
+echo "=== Trial \${PBS_ARRAY_INDEX} finished at \$(date) ==="
 EOF
 )
 

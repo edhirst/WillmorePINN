@@ -86,8 +86,8 @@ model:
   # Bands 1..start_freqs are active at epoch 1; remaining bands unlock linearly over
   # warmup_epochs.  Set warmup_epochs: 0 to disable (all bands active throughout).
   freq_curriculum:
-    warmup_epochs: 150  # Number of Willmore-training epochs over which all bands are unlocked
-    start_freqs: 2      # Number of low Fourier bands active at epoch 1 of Willmore training
+    warmup_epochs: 0    # All Fourier bands active from epoch 1 (tuning showed no benefit from ramp)
+    start_freqs: 1      # Number of low Fourier bands active at epoch 1 of Willmore training
   
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
@@ -103,13 +103,13 @@ model:
 training:
   num_epochs: 1000
   batch_size: 2000  # Larger batches for more stable gradients
-  learning_rate: 0.0001
+  learning_rate: 0.0002
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
   scheduler: "cosine"  # Single cosine decay — restarts are disruptive on a slowly annealing loss landscape
   scheduler_params:
     T_max: 1000  # Full cosine half-cycle over the entire training run (T_max = num_epochs avoids LR restart)
     eta_min: 0.0000005  # Low floor enables fine-tuning in final epochs
-  gradient_clip: 0.5
+  gradient_clip: 1.0
   log_frequency: 10   # Log metrics and save checkpoints every N epochs
   
   # Adaptive safeguards to prevent regularity collapse (applies to all genus types)
@@ -125,7 +125,7 @@ training:
     max_rollbacks: 30  # Maximum number of rollbacks per training run
     early_stopping_patience: 100
     willmore_warmup_epochs: 100  # Ramp willmore_weight from willmore_warmup_start × initial value to the full value over this many epochs
-    willmore_warmup_start: 0.05  # Willmore weight as a fraction of its configured value at epoch 1 of warmup
+    willmore_warmup_start: 0.02  # Willmore weight as a fraction of its configured value at epoch 1 of warmup
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus
@@ -153,7 +153,7 @@ sampling:
 loss:
   willmore_weight: 1.0  # Willmore loss weight (constant throughout training)
   max_willmore_weight: 1.0  # Set equal to willmore_weight to disable annealing
-  regularity_weight: 0.5  # Surface stays smooth (reg≈0) after pretraining; lower weight lets Willmore dominate
+  regularity_weight: 2.0  # Maintains well-conditioned metric throughout; best mean score in tuning
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
   h2_clip: 50  # Huber threshold for H² in the training integrand. Below √h2_clip: exact Willmore
@@ -182,7 +182,7 @@ loss:
   # Self-avoidance: penalise pairs of parameter-space points that are far apart
   # (topologically non-adjacent) but close in 3-D.  The only loss that can directly
   # detect and discourage self-intersection.  See _self_avoidance_penalty in losses.py.
-  self_avoidance_weight: 0.05          # Non-zero: actively discourage self-intersection
+  self_avoidance_weight: 0.2           # Strongest topology protection; best mean score in tuning
   self_avoidance_d_avoid: 0.2          # Target minimum 3-D separation for distant pairs
   self_avoidance_d_param_min: 2.5      # Parameter-space L2 threshold for pairing (T1–T2 min ≈ π)
   self_avoidance_num_pairs: 1000       # Random pairs per forward call

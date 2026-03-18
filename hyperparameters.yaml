@@ -164,7 +164,7 @@ loss:
                 # never zero, always pushing the junction toward lower curvature.
                 # h2_clip=5 caps |H|=2.24; bridge mean |H|≈0.3 so typical points use exact Willmore.
                 # Reported willmore_energy is always the true uncapped ∫H²dA.
-  regularity_min_area_element: 0.05  # Minimum allowed area element √(EG−F²); 5× higher than default to prevent bridge neck collapse
+  regularity_min_area_element: 0.01  # Minimum allowed area element √(EG−F²); only prevents literal Jacobian collapse, not hole shrinkage
   
   # Regularity loss sub-components (normalized internally to sum to 1.0)
   regularity_area_element_weight: 1.0  # Prevent area element collapse
@@ -180,14 +180,14 @@ loss:
   # gradient signal that protects handles and the bridge from collapsing regardless
   # of the main sampling distribution.
   # Probe v values: π (T1 mid), 2.5π (bridge mid), 4π (T2 mid).
-  topology_guard_weight: 1.0    # Higher than regularity_weight: specifically probes bridge midpoint (v=2.5π) to prevent neck collapse
-  topology_guard_num_probes: 64 # Random-u probe points per location per forward pass
+  topology_guard_weight: 3.0    # Probes regularity at v=π (T1 body), v=2.5π (bridge), v=4π (T2 body) on every forward pass
+  topology_guard_num_probes: 128 # Random-u probe points per location per forward pass; more probes reduce gradient noise
 
   # Self-avoidance: penalise pairs of parameter-space points that are far apart
   # (topologically non-adjacent) but close in 3-D.  The only loss that can directly
   # detect and discourage self-intersection.  See _self_avoidance_penalty in losses.py.
-  self_avoidance_weight: 5.0           # Diagnostic showed SA grad norm 272,000× weaker than W; raised to compete
-  self_avoidance_d_avoid: 0.5          # Reference geometry T1–T2 min separation ≈ 0.66; target 0.5 gives margin
+  self_avoidance_weight: 30.0          # Must be large: SA gradient is ≪ Willmore gradient per pair; higher weight compensates for small d_avoid
+  self_avoidance_d_avoid: 0.1          # Fires only when topologically distant sheets are within ~0.1 of touching in 3D — a geometric condition independent of initial hole size
   self_avoidance_d_param_min: 2.5      # Parameter-space L2 threshold for pairing (T1–T2 min ≈ π)
   self_avoidance_num_pairs: 2000       # More pairs per call for less-noisy self-intersection gradient
 

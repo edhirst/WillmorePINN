@@ -453,6 +453,9 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     rollback_count = 0
     max_rollbacks = config['training'].get('adaptive_training', {}).get('max_rollbacks', 3)
 
+    # Counter for consecutive log epochs where T1-T2 self-intersection is detected
+    si_bad_epochs = 0
+
     # EMA of uncapped Willmore energy for rollback decisions.
     # Raw single-epoch MC estimates have high variance when sampling is junction-focused,
     # causing false-positive rollbacks.  The EMA smooths over ~5 epochs so only genuine
@@ -694,6 +697,46 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             if freq_warmup_epochs > 0 and _pl is not None and hasattr(_pl, 'set_active_frequencies'):
                 n_active = int(_pl.freq_alphas.sum().item())
                 print(f"  Active Fourier bands: {n_active}/{_pl.num_frequencies}")
+
+        # Self-intersection early-stop check (genus 2 only)
+        stop_training = False
+        if epoch % log_frequency == 0 and genus == 2:
+            _si_cfg = config['training'].get('adaptive_training', {})
+            if _si_cfg.get('self_intersection_early_stop', False):
+                _n_check = _si_cfg.get('self_intersection_check_n', 400)
+                _si_thr = _si_cfg.get('self_intersection_threshold', 0.3)
+                _si_patience = _si_cfg.get('self_intersection_patience', 3)
+                _u_si = torch.rand(_n_check, device=device, dtype=dtype) * 2 * np.pi
+                _v_T1_si = torch.rand(_n_check, device=device, dtype=dtype) * 2 * np.pi
+                _v_T2_si = torch.rand(_n_check, device=device, dtype=dtype) * 2 * np.pi + 3 * np.pi
+                with torch.no_grad():
+                    model.eval()
+                    _xyz_T1 = model(torch.stack([_u_si, _v_T1_si], dim=1)).cpu().numpy()
+                    _xyz_T2 = model(torch.stack([_u_si, _v_T2_si], dim=1)).cpu().numpy()
+                    model.train()
+                _ns = min(200, _n_check)
+                _idx = np.random.choice(_n_check, _ns, replace=False)
+                _diff = _xyz_T1[_idx, None, :] - _xyz_T2[None, _idx, :]
+                _d_nn = np.sqrt((_diff ** 2).sum(-1)).min(axis=1)
+                _min_sep = float(_d_nn.min())
+                if _min_sep < _si_thr:
+                    si_bad_epochs += 1
+                    print(f"  WARNING: Self-intersection detected: T1-T2 min_sep={_min_sep:.4f} < {_si_thr:.2f}  [{si_bad_epochs}/{_si_patience}]")
+                    if si_bad_epochs >= _si_patience:
+                        print(f"\nEARLY STOP: T1-T2 self-intersection for {_si_patience} consecutive log epochs. Stopping.")
+                        stop_training = True
+                else:
+                    si_bad_epochs = 0
+                    print(f"  Self-intersection OK: T1-T2 min_sep={_min_sep:.4f}")
+
+        if stop_training:
+            # Save current state before exiting
+            save_checkpoint(
+                model, optimizer, epoch,
+                eval_willmore, config,
+                checkpoint_dir, is_best=False, scheduler=scheduler
+            )
+            break
 
         # Save checkpoint at log frequency and when a new best is found
         should_save_regular = (epoch % log_frequency == 0)

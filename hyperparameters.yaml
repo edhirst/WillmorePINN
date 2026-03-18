@@ -115,17 +115,20 @@ training:
   # Adaptive safeguards to prevent regularity collapse (applies to all genus types)
   adaptive_training:
     enabled: true  # Enable adaptive weight adjustment based on regularity health
-    regularity_threshold: 0.3  # Lower threshold for earlier intervention
-    regularity_boost_factor: 2.0  # Multiply regularity weight by this when threshold exceeded
+    regularity_threshold: 0.1  # Intervene early, before geometry is already distorted
+    regularity_boost_factor: 3.0  # Multiply regularity weight by this when threshold exceeded
     checkpoint_rollback: false  # Rollbacks trigger on MC variance of regularity, not genuine degradation
     severe_degradation_threshold: 4.0  # Rollback if regularity increases by this factor
     regularity_abs_threshold: 0.000001  # Minimum absolute regularity value before rollback can fire (guards against near-zero noise)
     willmore_spike_threshold: 0.0  # Disabled: uncapped W has high MC variance from spiky bridge H²; false rollbacks outweigh benefit
     willmore_ema_alpha: 0.3        # Slightly faster EMA for W tracking
     max_rollbacks: 30  # Maximum number of rollbacks per training run
-    early_stopping_patience: 100
-    willmore_warmup_epochs: 100  # Ramp willmore_weight from willmore_warmup_start × initial value to the full value over this many epochs
-    willmore_warmup_start: 0.02  # Willmore weight as a fraction of its configured value at epoch 1 of warmup
+    willmore_warmup_epochs: 300  # Slow ramp over 300 epochs so regularity can stabilise geometry before W dominates
+    willmore_warmup_start: 0.001  # W gets 0.1% weight at epoch 1; prevents massive gradient shocks when W is O(10⁵)
+    self_intersection_early_stop: true  # genus 2: abort if T1-T2 interpenetration persists
+    self_intersection_threshold: 0.3    # minimum T1-T2 nearest-neighbour 3D distance; below this counts as overlap
+    self_intersection_patience: 3       # consecutive log epochs below threshold before stopping
+    self_intersection_check_n: 400      # random T1-region and T2-region points used for NN distance check
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus
@@ -153,13 +156,14 @@ sampling:
 loss:
   willmore_weight: 1.0  # Willmore loss weight (constant throughout training)
   max_willmore_weight: 1.0  # Set equal to willmore_weight to disable annealing
-  regularity_weight: 2.0  # Maintains well-conditioned metric throughout; best mean score in tuning
+  regularity_weight: 5.0  # Raised to close the W/R gradient ratio (diagnostic: W grad ~29× R at weight 2.0)
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
-  h2_clip: 50  # Huber threshold for H² in the training integrand. Below √h2_clip: exact Willmore
-               # gradient (2H). Above: linear in |H| with constant gradient magnitude 2√h2_clip —
-               # never zero, always pushing the junction toward lower curvature.
-               # Reported willmore_energy is always the true uncapped ∫H²dA.
+  h2_clip: 5.0  # Huber threshold for H² in the training integrand. Below √h2_clip: exact Willmore
+                # gradient (2H). Above: linear in |H| with constant gradient magnitude 2√h2_clip —
+                # never zero, always pushing the junction toward lower curvature.
+                # h2_clip=5 caps |H|=2.24; bridge mean |H|≈0.3 so typical points use exact Willmore.
+                # Reported willmore_energy is always the true uncapped ∫H²dA.
   regularity_min_area_element: 0.05  # Minimum allowed area element √(EG−F²); 5× higher than default to prevent bridge neck collapse
   
   # Regularity loss sub-components (normalized internally to sum to 1.0)
@@ -168,7 +172,7 @@ loss:
   regularity_metric_positivity_weight: 0.5  # Prevent metric degeneration (enable for stability)
   regularity_smoothness_weight: 0.5  # Penalise derivatives that exceed the threshold (ReLU gate)
   regularity_conformal_weight: 2.0   # Weight for Dirichlet excess (E+G)/(2√(EG−F²)) − 1 within the regularity loss; non-zero even for smooth surfaces
-  regularity_max_metric_value: 10.0  # Upper threshold for E = |φ_u|² and G = |φ_v|²; excess beyond this is penalised
+  regularity_max_metric_value: 5.0   # Upper threshold for E = |φ_u|² and G = |φ_v|²; diagnostic showed G p99≈10–11 so this fires earlier
   # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
 
   # Topology guard (genus 2 only): evaluates regularity at fixed probe locations
@@ -182,10 +186,10 @@ loss:
   # Self-avoidance: penalise pairs of parameter-space points that are far apart
   # (topologically non-adjacent) but close in 3-D.  The only loss that can directly
   # detect and discourage self-intersection.  See _self_avoidance_penalty in losses.py.
-  self_avoidance_weight: 0.2           # Strongest topology protection; best mean score in tuning
-  self_avoidance_d_avoid: 0.2          # Target minimum 3-D separation for distant pairs
+  self_avoidance_weight: 5.0           # Diagnostic showed SA grad norm 272,000× weaker than W; raised to compete
+  self_avoidance_d_avoid: 0.5          # Reference geometry T1–T2 min separation ≈ 0.66; target 0.5 gives margin
   self_avoidance_d_param_min: 2.5      # Parameter-space L2 threshold for pairing (T1–T2 min ≈ π)
-  self_avoidance_num_pairs: 1000       # Random pairs per forward call
+  self_avoidance_num_pairs: 2000       # More pairs per call for less-noisy self-intersection gradient
 
 # Optimization
 optimizer:

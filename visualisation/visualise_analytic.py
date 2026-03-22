@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import yaml
 
-from sampling import get_reference_embedding, sample_parameters, get_domain_for_genus
-from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors, plot_surface_3d
+from sampling import get_reference_embedding, sample_parameters, get_domain_for_genus, sample_torus_excluding_disk, sample_bridge_domain
+from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors, plot_surface_3d, make_genus2_colors
 
 
 def visualise_analytic_genus0(output_dir: str, num_points: int = 10000, config_path: str = None):
@@ -141,85 +141,86 @@ def visualise_analytic_genus1(output_dir: str, num_points: int = 10000, config_p
 
 
 def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_path: str = None):
-    """Visualize analytic double torus embeddings (genus 2).
-    
-    Two independent tori connected by a catenoid bridge.
-    
-    Parameters:
-    - τ₁, τ₂ ∈ ℂ: modular parameters of each torus
-    - neck_length > 0: length of catenoid bridge
-    - neck_twist ∈ ℝ: twist at bridge (placeholder)
-    
-    Three fundamental domains: T1 parallelogram, catenoid rectangle, T2 parallelogram.
+    """Visualize analytic double torus reference embeddings (genus 2).
+
+    Two independent tori connected by a catenoid bridge, each with a disk
+    excised.  Reference embeddings come from model.reference_torus1/bridge/torus2.
     """
+    from model import create_embedding_model
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float32
-    
-    # Different configurations showing parameter variations
-    # Use distinct parameters to show visible differences:
-    # - Im(τ) controls tube thickness (larger → thinner tube, r ~ exp(-k*Im(τ)))
-    # - Re(τ) controls helical twist (shear of fundamental domain)
-    # - bridge_radius controls the catenoid neck narrowness
+
     dt_configs = [
-        # Config 1: Standard symmetric double torus
+        # T2 disk at (π,0) faces T1's disk at (0,0) so the bridge goes right→left
+        # torus2_offset = (R+r1) + (R+r2) + gap  (R=1, r=Im(τ), gap=1.0)
         {'tau1': '1j', 'tau2': '1j',
-         'bridge_radius': 0.25, 'neck_twist': 0.0,
+         'disk_radius': 0.3,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [5.0, 0.0, 0.0],
          'label': 'τ₁=τ₂=i (symmetric)'},
-        # Config 2: Asymmetric tube thicknesses (T1 thicker, T2 thinner)
-        {'tau1': '0.5j', 'tau2': '2j',
-         'bridge_radius': 0.25, 'neck_twist': 0.0,
-         'label': 'τ₁=0.5i (thick), τ₂=2i (thin)'},
-        # Config 3: Opposite twists on each torus
+        {'tau1': '0.5j', 'tau2': '0.7j',
+         'disk_radius': 0.3,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [4.2, 0.0, 0.0],
+         'label': 'τ₁=0.5i, τ₂=0.7i (asymmetric)'},
         {'tau1': '1.0+0.5j', 'tau2': '-1.0+0.5j',
-         'bridge_radius': 0.25, 'neck_twist': 0.0,
+         'disk_radius': 0.3,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [4.0, 0.0, 0.0],
          'label': 'τ₁=1+0.5i, τ₂=-1+0.5i (twisted)'},
-        # Config 4: Strong twist on T1 only
-        {'tau1': '1+0.2j', 'tau2': '1j',
-         'bridge_radius': 0.25, 'neck_twist': 0.0,
-         'label': 'τ₁=1+0.2i (strong twist)'},
-        # Config 5: Narrow neck catenoid
+        {'tau1': '0.5+0.3j', 'tau2': '0.5j',
+         'disk_radius': 0.3,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [3.8, 0.0, 0.0],
+         'label': 'τ₁=0.5+0.3i (twist+thin)'},
         {'tau1': '0.7j', 'tau2': '0.7j',
-         'bridge_radius': 0.12, 'neck_twist': 0.0,
-         'label': 'bridge_radius=0.12 (narrow)'},
+         'disk_radius': 0.12,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [4.4, 0.0, 0.0],
+         'label': 'disk_radius=0.12 (narrow neck)'},
     ]
-    
+
     n_configs = len(dt_configs)
-    n_plots = n_configs + 1  # +1 for domain plot
+    n_plots = n_configs + 1
     n_rows = int(np.ceil(n_plots / 2))
     fig = plt.figure(figsize=(12, 5 * n_rows))
-    
-    # Use first config for the fundamental domain plot
+
     first_cfg = dt_configs[0]
-    tau1 = complex(first_cfg['tau1'].replace('i', 'j'))
-    tau2 = complex(first_cfg['tau2'].replace('i', 'j'))
-    
+    tau1_plot = complex(first_cfg['tau1'].replace('i', 'j'))
+    tau2_plot = complex(first_cfg['tau2'].replace('i', 'j'))
     ax_domain = fig.add_subplot(n_rows, 2, 1)
-    plot_fundamental_domain_coloring(ax_domain, genus=2, 
-                                     tau1=tau1, tau2=tau2,
-                                     neck_radius=0.3)  # Legacy param name for domain plot
-    
+    plot_fundamental_domain_coloring(
+        ax_domain, genus=2, tau1=tau1_plot, tau2=tau2_plot,
+        neck_radius=first_cfg['disk_radius'],
+        disk_center_T1=tuple(first_cfg['disk_center_T1']),
+        disk_center_T2=tuple(first_cfg['disk_center_T2']),
+    )
+
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
 
-    # First pass: collect xyz for all surfaces
     _surfaces = []
     for idx, cfg in enumerate(dt_configs):
-        genus = 2
-        domain = "double_torus"
-        label = cfg.pop('label')
-        print(f"Visualizing analytic surface {idx+1} for genus {genus} ({genus_names.get(genus, 'unknown')})")
-        print(f"  Domain: {domain}")
-        dummy_config = {'topology': {'genus': genus, 'double_torus': cfg}, 'model': {}}
-        from model import create_embedding_model
-        model = create_embedding_model(dummy_config, device, skip_init=True)
+        label = cfg['label']
+        dt_params = {k: v for k, v in cfg.items() if k != 'label'}
+        print(f"Visualizing analytic surface {idx+1} for genus 2 ({genus_names[2]})")
+        config = {'topology': {'genus': 2, 'double_torus': dt_params}, 'model': {}}
+        model = create_embedding_model(config, device, skip_init=True)
         print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
-        topology_params = {'double_torus': cfg}
-        uv = sample_parameters(num_points, domain=domain, device=device, dtype=dtype)
+        n_each = num_points // 3
+        delta = float(dt_params['disk_radius'])
+        c_T1 = model.disk_center_T1
+        c_T2 = model.disk_center_T2
         with torch.no_grad():
-            xyz = get_reference_embedding(uv, genus=genus, topology_params=topology_params)
-        cfg['label'] = label  # Restore for summary
-        _surfaces.append((label, uv, xyz))
+            uv_t1 = sample_torus_excluding_disk(n_each, disk_center=c_T1, disk_radius=delta, device=device, dtype=dtype)
+            ut_br = sample_bridge_domain(n_each, device=device, dtype=dtype)
+            uv_t2 = sample_torus_excluding_disk(n_each, disk_center=c_T2, disk_radius=delta, device=device, dtype=dtype)
+            xyz = torch.cat([model.reference_torus1(uv_t1),
+                             model.reference_bridge(ut_br),
+                             model.reference_torus2(uv_t2)], dim=0)
+            uv  = torch.cat([uv_t1, ut_br, uv_t2], dim=0)
+        _surfaces.append((label, uv, xyz, c_T1, c_T2, uv_t1, ut_br, uv_t2))
 
-    # Shared scale across all subplots
     _all_xyz = np.concatenate([s[2].cpu().numpy() for s in _surfaces])
     _global_range = np.array([
         _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
@@ -227,10 +228,13 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
         _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
     ]).max() / 2.0
 
-    for idx, (label, uv, xyz) in enumerate(_surfaces):
+    for idx, (label, uv, xyz, c_T1, c_T2, uv_t1, ut_br, uv_t2) in enumerate(_surfaces):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz, uv, label, genus=2, global_range=_global_range)
-    
+        colors = make_genus2_colors(uv_t1, ut_br, uv_t2,
+                                    disk_center_T1=c_T1, disk_center_T2=c_T2)
+        plot_surface_3d(ax, xyz, uv, label, genus=2, global_range=_global_range,
+                        color_values=colors)
+
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'analytic_genus2.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')

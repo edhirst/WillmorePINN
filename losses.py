@@ -252,84 +252,394 @@ class RegularityLoss(nn.Module):
         return total_loss
 
 
-def _self_avoidance_penalty(
-    xyz: torch.Tensor,
-    uv: torch.Tensor,
-    d_avoid: float = 0.2,
-    d_param_min: float = 2.5,
-    num_pairs: int = 1000,
-) -> torch.Tensor:
+# ============================================================================
+# GENUS 2 MULTI-CHART LOSSES
+# ============================================================================
+
+
+class BoundaryMatchingLoss(nn.Module):
     """
-    Soft self-avoidance penalty: penalise pairs of points that are far in
-    parameter space but close in 3-D.  This is the only loss component that
-    can directly detect and discourage self-intersection, because all other
-    terms are purely pointwise (they measure local immersion quality at each
-    individual (u,v) sample and cannot see that two distant parameter points
-    have collided in ℝ³).
+    Boundary matching loss for the multi-chart genus-2 parametrisation.
 
-    Draws `num_pairs` random index pairs (i, j) from the batch, discards pairs
-    whose parameter-space L2 distance is ≤ d_param_min (topologically adjacent),
-    and penalises the remaining pairs if their 3-D distance is < d_avoid:
+    Enforces C⁰ (position), C¹ (first normal derivative) and C² (second normal
+    derivative) matching between torus chart disk boundaries and bridge endpoints.
 
-        penalty = mean over far pairs of relu(d_avoid - ||φ_i - φ_j||)²
+    C² matching is essential: the Willmore integrand H² depends on second
+    derivatives of φ, so without it each chart optimises curvature independently
+    and a non-physical curvature seam forms at the junction.
 
-    Gradients flow through xyz = model(uv) and push the two colliding sheets
-    apart along the line joining them.
-
-    Args:
-        xyz:          Surface positions (N, 3) — must be the model's output tensor
-                      so that gradients can flow back to model parameters.
-        uv:           Parameter coords (N, 2), treated as constants (detached).
-                      u ∈ [0, 2π] is periodic; v ∈ [0, 5π] is not.
-        d_avoid:      Desired minimum 3-D separation between topologically
-                      distant points.  Should be ≲ the minimum separation in
-                      the reference geometry.
-        d_param_min:  L2 threshold in parameter space above which a pair is
-                      considered topologically distant.  For genus 2, any pair
-                      with one point in T1 (v ∈ [0, 2π]) and one in T2
-                      (v ∈ [3π, 5π]) has |Δv| ≥ π ≈ 3.14, so d_param_min=2.5
-                      catches all T1-T2 pairs without false-positives from
-                      adjacent regions.
-        num_pairs:    Number of random pairs sampled per call.
-
-    Returns:
-        Scalar penalty tensor.
+    Derivatives are computed via autograd (exact) in the *crossing direction*:
+      - Torus side: toward the disk centre, direction (-cos s, -sin s)
+      - Bridge side at t=0: +t direction (0, 1)
+      - Bridge side at t=1: −t direction (0, −1)
     """
-    N = xyz.shape[0]
-    if N < 2:
-        return xyz.new_zeros(())
 
-    device = xyz.device
-    idx_a = torch.randint(0, N, (num_pairs,), device=device)
-    idx_b = torch.randint(0, N, (num_pairs,), device=device)
-    # Avoid self-pairs
-    same = idx_a == idx_b
-    idx_b = torch.where(same, (idx_b + 1) % N, idx_b)
+    def __init__(self, num_boundary_points: int = 64,
+                 derivative_weight: float = 0.5,
+                 second_derivative_weight: float = 0.3):
+        super().__init__()
+        self.num_boundary_points = num_boundary_points
+        self.derivative_weight = derivative_weight
+        self.second_derivative_weight = second_derivative_weight
 
-    # Parameter-space distance (u is 2π-periodic, v is not periodic)
-    uv_d = uv.detach()
-    du = (uv_d[idx_a, 0] - uv_d[idx_b, 0]).abs()
-    du = torch.min(du, 2.0 * float(np.pi) - du)
-    dv = (uv_d[idx_a, 1] - uv_d[idx_b, 1]).abs()
-    d_param = (du.pow(2) + dv.pow(2)).sqrt()
+    @staticmethod
+    def _directional_derivs(
+        model_fn,
+        uv: torch.Tensor,
+        direction: torch.Tensor,
+        order: int = 2,
+    ) -> tuple:
+        """Compute exact directional derivatives via autograd.
 
-    # 3-D distance
-    d3d = (xyz[idx_a] - xyz[idx_b]).norm(dim=1)
+        Args:
+            model_fn: maps (N, 2) → (N, 3).
+            uv: (N, 2) parameter coordinates (detached; re-attached internally).
+            direction: (N, 2) unit direction for the directional derivative.
+            order: 1 for C¹ only, 2 for C¹+C².
 
-    # Only penalise topologically distant pairs
-    far = (d_param > d_param_min).float().detach()
-    penalty = torch.nn.functional.relu(d_avoid - d3d).pow(2)
-    return (far * penalty).mean()
+        Returns:
+            (xyz, d1, d2) where d2 is None when order < 2.
+        """
+        uv = uv.detach().requires_grad_(True)
+        xyz = model_fn(uv)                      # (N, 3)
+
+        d1_comps, d2_comps = [], []
+        for i in range(3):
+            grad1 = torch.autograd.grad(
+                xyz[:, i], uv, torch.ones_like(xyz[:, i]),
+                create_graph=True, retain_graph=True,
+            )[0]                                  # (N, 2)
+            d1_i = (grad1 * direction).sum(dim=1) # (N,) — first directional deriv
+
+            if order >= 2:
+                grad2 = torch.autograd.grad(
+                    d1_i, uv, torch.ones_like(d1_i),
+                    create_graph=True, retain_graph=True,
+                )[0]                              # (N, 2)
+                d2_i = (grad2 * direction).sum(dim=1)
+                d2_comps.append(d2_i)
+
+            d1_comps.append(d1_i)
+
+        d1 = torch.stack(d1_comps, dim=1)        # (N, 3)
+        d2 = torch.stack(d2_comps, dim=1) if d2_comps else None
+        return xyz, d1, d2
+
+    def forward(self, model) -> torch.Tensor:
+        """
+        Compute boundary matching loss for a Genus2MultiChartNetwork.
+
+        Args:
+            model: Genus2MultiChartNetwork instance.
+
+        Returns:
+            Scalar boundary matching loss.
+        """
+        n = self.num_boundary_points
+        device = next(model.parameters()).device
+        dtype = next(model.parameters()).dtype
+
+        s = torch.linspace(0, 2 * np.pi, n + 1, device=device, dtype=dtype)[:-1]
+
+        # Crossing directions on torus charts: inward toward disk centre.
+        # T₁ boundary: (δcos s, δsin s) + center_T1  ⇒ inward = (−cos s, −sin s)
+        # T₂ boundary: (−δcos s, δsin s) + center_T2  ⇒ inward = (+cos s, −sin s)
+        # (T₂ u-component is reversed in disk_boundary_T2 for consistent orientation.)
+        torus_dir_T1 = torch.stack([-torch.cos(s), -torch.sin(s)], dim=1)  # (n, 2)
+        torus_dir_T2 = torch.stack([ torch.cos(s), -torch.sin(s)], dim=1)  # (n, 2)
+        # Bridge crossing directions
+        bridge_dir_j1 = torch.zeros(n, 2, device=device, dtype=dtype)
+        bridge_dir_j1[:, 1] = 1.0          # +t at t = 0
+        bridge_dir_j2 = torch.zeros(n, 2, device=device, dtype=dtype)
+        bridge_dir_j2[:, 1] = -1.0         # −t at t = 1
+
+        need_c1 = self.derivative_weight > 0
+        need_c2 = self.second_derivative_weight > 0
+        order = 2 if need_c2 else (1 if need_c1 else 0)
+
+        # --- Boundary coordinates ---
+        uv_d1 = model.disk_boundary_T1(s)                               # (n, 2)
+        ut_br0 = torch.stack([s, torch.zeros_like(s)], dim=1)           # (n, 2)
+        uv_d2 = model.disk_boundary_T2(s)
+        ut_br1 = torch.stack([s, torch.ones_like(s)], dim=1)
+
+        if order >= 1:
+            xyz_T1, d1_T1, d2_T1 = self._directional_derivs(
+                model.forward_torus1, uv_d1, torus_dir_T1, order)
+            xyz_br0, d1_br0, d2_br0 = self._directional_derivs(
+                model.forward_bridge, ut_br0, bridge_dir_j1, order)
+            xyz_T2, d1_T2, d2_T2 = self._directional_derivs(
+                model.forward_torus2, uv_d2, torus_dir_T2, order)
+            xyz_br1, d1_br1, d2_br1 = self._directional_derivs(
+                model.forward_bridge, ut_br1, bridge_dir_j2, order)
+        else:
+            xyz_T1 = model.forward_torus1(uv_d1)
+            xyz_br0 = model.forward_bridge(ut_br0)
+            xyz_T2 = model.forward_torus2(uv_d2)
+            xyz_br1 = model.forward_bridge(ut_br1)
+
+        # C⁰ — position matching
+        pos_loss = ((xyz_T1 - xyz_br0) ** 2).sum(1).mean() \
+                 + ((xyz_T2 - xyz_br1) ** 2).sum(1).mean()
+        total = pos_loss
+
+        # C¹ — first normal-derivative matching
+        # Both directions already point "into the bridge" so d1 values should agree.
+        if need_c1:
+            c1_loss = ((d1_T1 - d1_br0) ** 2).sum(1).mean() \
+                    + ((d1_T2 - d1_br1) ** 2).sum(1).mean()
+            total = total + self.derivative_weight * c1_loss
+
+        # C² — second normal-derivative matching (curvature continuity)
+        if need_c2:
+            c2_loss = ((d2_T1 - d2_br0) ** 2).sum(1).mean() \
+                    + ((d2_T2 - d2_br1) ** 2).sum(1).mean()
+            total = total + self.second_derivative_weight * c2_loss
+
+        return total
+
+
+class MultiChartCombinedLoss(nn.Module):
+    """
+    Combined loss for the genus-2 multi-chart architecture.
+
+    Aggregates Willmore + regularity over three charts (T₁, bridge, T₂)
+    plus gluing loss at the two chart junctions.
+    """
+
+    def __init__(
+        self,
+        willmore_weight: float = 1.0,
+        regularity_weight: float = 5.0,
+        gluing_weight: float = 10.0,
+        epsilon: float = 1e-6,
+        h2_clip: Optional[float] = None,
+        regularity_area_element_weight: float = 1.0,
+        regularity_orientation_weight: float = 1.0,
+        regularity_metric_positivity_weight: float = 0.5,
+        regularity_smoothness_weight: float = 0.5,
+        regularity_max_metric_value: float = 10.0,
+        regularity_min_area_element: float = 0.01,
+        regularity_conformal_weight: float = 0.0,
+        max_willmore_weight: float = 1.0,
+        gluing_num_boundary_points: int = 64,
+        gluing_derivative_weight: float = 0.5,
+        gluing_second_derivative_weight: float = 0.3,
+        disk_radius: float = 0.3,
+    ):
+        super().__init__()
+        self.willmore_weight = willmore_weight
+        self.initial_willmore_weight = willmore_weight
+        self.regularity_weight = regularity_weight
+        self.initial_regularity_weight = regularity_weight
+        self.gluing_weight = gluing_weight
+        self.max_willmore_weight = max_willmore_weight
+        self.initial_weight_sum = willmore_weight + regularity_weight
+
+        # One Willmore loss per chart.  The torus charts integrate over [0,2π]²
+        # minus the excluded disk D of parameter-space area πδ².
+        # The bridge chart uses domain_area = 2π × 1 = 2π.
+        punctured_torus_area = (2.0 * np.pi) ** 2 - np.pi * disk_radius ** 2
+        self.willmore_T = EmbeddingWillmoreLoss(epsilon=epsilon, domain="torus", genus=1,
+                                                 h2_clip=h2_clip)
+        self.willmore_T.domain_area = punctured_torus_area
+        self.willmore_bridge = EmbeddingWillmoreLoss(epsilon=epsilon, domain="torus", genus=None,
+                                                      h2_clip=h2_clip)
+        # Bridge domain: [0, 2π] × [0, 1] → area = 2π
+        self.willmore_bridge.domain_area = 2.0 * np.pi
+
+        self.regularity_loss = RegularityLoss(
+            epsilon=epsilon,
+            min_area_element=regularity_min_area_element,
+            area_element_weight=regularity_area_element_weight,
+            orientation_weight=regularity_orientation_weight,
+            metric_positivity_weight=regularity_metric_positivity_weight,
+            smoothness_weight=regularity_smoothness_weight,
+            max_metric_value=regularity_max_metric_value,
+            conformal_weight=regularity_conformal_weight,
+        )
+        self.gluing_loss = BoundaryMatchingLoss(
+            num_boundary_points=gluing_num_boundary_points,
+            derivative_weight=gluing_derivative_weight,
+            second_derivative_weight=gluing_second_derivative_weight,
+        )
+        self.genus = 2
+
+    def update_weights(self, epoch: int, total_epochs: int,
+                       regularity_value: Optional[float] = None,
+                       adaptive_config: Optional[dict] = None):
+        """Update loss weights with Willmore warmup and adaptive safeguards."""
+        adaptive_enabled = adaptive_config and adaptive_config.get('enabled', False)
+
+        # Willmore warmup: ramp from willmore_warmup_start to 1.0 over
+        # willmore_warmup_epochs so that gluing + regularity stabilise
+        # before high-curvature Willmore gradients kick in.
+        in_warmup = False
+        if adaptive_config:
+            warmup_epochs = adaptive_config.get('willmore_warmup_epochs', 0)
+            warmup_start = adaptive_config.get('willmore_warmup_start', 1.0)
+            if warmup_epochs > 0 and epoch <= warmup_epochs:
+                t = (epoch - 1) / warmup_epochs
+                self.willmore_weight = self.initial_willmore_weight * (warmup_start + (1.0 - warmup_start) * t)
+                in_warmup = True
+
+        if not adaptive_enabled:
+            if not in_warmup:
+                self.willmore_weight = self.initial_willmore_weight
+            self.regularity_weight = self.initial_regularity_weight
+            return
+
+        progress = min(1.0, (epoch - 1) / max(1, total_epochs))
+        base_w = self.initial_willmore_weight + (self.max_willmore_weight - self.initial_willmore_weight) * progress
+        base_r = self.initial_regularity_weight * (1.0 - 0.5 * progress)
+        if not in_warmup:
+            self.willmore_weight = base_w
+        if adaptive_enabled and regularity_value is not None:
+            threshold = adaptive_config.get('regularity_threshold', 0.5)
+            boost = adaptive_config.get('regularity_boost_factor', 2.0)
+            if regularity_value > threshold:
+                base_r *= boost
+        self.regularity_weight = base_r
+
+    def forward(self, model, uv_T1: torch.Tensor, uv_bridge: torch.Tensor,
+                uv_T2: torch.Tensor) -> dict:
+        """
+        Compute combined multi-chart loss.
+
+        Args:
+            model: Genus2MultiChartNetwork
+            uv_T1:     (N₁, 2) samples on T₁ chart (excluding disk D₁)
+            uv_bridge: (N_b, 2) samples on bridge chart (u, t)
+            uv_T2:     (N₂, 2) samples on T₂ chart (excluding disk D₂)
+
+        Returns:
+            Dict with 'total', 'willmore', 'regularity', 'gluing' keys.
+        """
+        total = torch.tensor(0.0, device=uv_T1.device)
+        w_total = 0.0
+
+        # --- Willmore on each chart ---
+        w_T1, w_T1_val = self.willmore_T(model.torus1, uv_T1)
+        w_br, w_br_val = self._willmore_bridge(model, uv_bridge)
+        w_T2, w_T2_val = self.willmore_T(model.torus2, uv_T2)
+
+        willmore_train = w_T1 + w_br + w_T2
+        willmore_value = w_T1_val + w_br_val + w_T2_val
+        total = total + self.willmore_weight * willmore_train
+
+        # --- Regularity on each chart ---
+        r_T1 = self.regularity_loss(model.torus1, uv_T1)
+        r_br = self._regularity_bridge(model, uv_bridge)
+        r_T2 = self.regularity_loss(model.torus2, uv_T2)
+        regularity = r_T1 + r_br + r_T2
+        regularity_value = regularity.detach().item()
+        total = total + self.regularity_weight * regularity
+
+        # --- Gluing loss (C⁰+C¹+C² boundary matching at chart junctions) ---
+        gluing_loss_val = self.gluing_loss(model)
+        total = total + self.gluing_weight * gluing_loss_val
+
+        # Normalise
+        if self.initial_weight_sum > 0:
+            total = total / self.initial_weight_sum
+
+        return {
+            'total': total,
+            'willmore': willmore_value,
+            'regularity': regularity_value,
+            'gluing': gluing_loss_val.detach().item(),
+        }
+
+    # ------ helpers for bridge chart ----------------------------------------
+
+    def _willmore_bridge(self, model, ut: torch.Tensor):
+        """Compute Willmore energy on the bridge chart via autodiff."""
+        ut = ut.requires_grad_(True)
+        xyz = model.forward_bridge(ut)
+
+        # φ_u, φ_t via autograd
+        phi_u, phi_t = [], []
+        for i in range(3):
+            g = torch.zeros_like(xyz); g[:, i] = 1.0
+            grads = torch.autograd.grad(xyz, ut, g, create_graph=True, retain_graph=True)[0]
+            phi_u.append(grads[:, 0:1])
+            phi_t.append(grads[:, 1:2])
+        phi_u = torch.cat(phi_u, dim=1)
+        phi_t = torch.cat(phi_t, dim=1)
+
+        E = (phi_u * phi_u).sum(1)
+        F = (phi_u * phi_t).sum(1)
+        G = (phi_t * phi_t).sum(1)
+
+        eps = self.willmore_bridge.epsilon
+        det = torch.clamp(E * G - F * F, min=eps)
+        area_element = torch.sqrt(det)
+
+        # Second fundamental form
+        normal_un = torch.cross(phi_u, phi_t, dim=1)
+        normal = normal_un / (torch.norm(normal_un, dim=1, keepdim=True) + 1e-8)
+
+        phi_uu, phi_ut, phi_tt = [], [], []
+        for i in range(3):
+            g = torch.zeros_like(phi_u); g[:, i] = 1.0
+            grads_u = torch.autograd.grad(phi_u, ut, g, create_graph=True, retain_graph=True)[0]
+            phi_uu.append(grads_u[:, 0:1])
+            phi_ut.append(grads_u[:, 1:2])
+            g2 = torch.zeros_like(phi_t); g2[:, i] = 1.0
+            grads_t = torch.autograd.grad(phi_t, ut, g2, create_graph=True, retain_graph=True)[0]
+            phi_tt.append(grads_t[:, 1:2])
+        phi_uu = torch.cat(phi_uu, dim=1)
+        phi_ut = torch.cat(phi_ut, dim=1)
+        phi_tt = torch.cat(phi_tt, dim=1)
+
+        L = (phi_uu * normal).sum(1)
+        M = (phi_ut * normal).sum(1)
+        N = (phi_tt * normal).sum(1)
+        H = (E * N - 2 * F * M + G * L) / (2 * det + eps)
+
+        integrand = H * H * area_element
+        uncapped = (integrand.detach().mean() * self.willmore_bridge.domain_area).item()
+
+        h2_clip = self.willmore_bridge.h2_clip
+        if h2_clip is not None:
+            sqrt_c = h2_clip ** 0.5
+            h2 = H * H
+            h2_hub = torch.where(h2 <= h2_clip, h2, 2.0 * sqrt_c * H.abs() - h2_clip)
+            integrand = h2_hub * area_element
+
+        train_energy = integrand.mean() * self.willmore_bridge.domain_area
+        return train_energy, uncapped
+
+    def _regularity_bridge(self, model, ut: torch.Tensor) -> torch.Tensor:
+        """Compute regularity on the bridge chart."""
+        ut = ut.requires_grad_(True)
+        xyz = model.forward_bridge(ut)
+        phi_u, phi_t = [], []
+        for i in range(3):
+            g = torch.zeros_like(xyz); g[:, i] = 1.0
+            grads = torch.autograd.grad(xyz, ut, g, create_graph=True, retain_graph=True)[0]
+            phi_u.append(grads[:, 0:1])
+            phi_t.append(grads[:, 1:2])
+        phi_u = torch.cat(phi_u, dim=1)
+        phi_t = torch.cat(phi_t, dim=1)
+        E = (phi_u * phi_u).sum(1)
+        G = (phi_t * phi_t).sum(1)
+        F = (phi_u * phi_t).sum(1)
+        det = torch.clamp(E * G - F * F, min=1e-8)
+        area_element = torch.sqrt(det)
+        cross_mag = torch.norm(torch.cross(phi_u, phi_t, dim=1), dim=1)
+        min_ae = self.regularity_loss.min_area_element
+        area_loss = torch.mean(torch.nn.functional.relu(min_ae - area_element) ** 2)
+        orient_loss = torch.mean(torch.nn.functional.relu(min_ae - cross_mag) ** 2)
+        return (area_loss + orient_loss) / 2.0
 
 
 class CombinedEmbeddingLoss(nn.Module):
     """
     Combined loss function for embedding-based Willmore minimization.
     
-    Supports different topologies with appropriate constraints:
-    - Genus 0: Willmore + regularity
-    - Genus 1: Willmore + regularity
-    - Genus 2: Willmore + regularity
+    Used for genus 0 (sphere/ellipsoid) and genus 1 (torus).
+    Genus 2 uses MultiChartCombinedLoss instead.
     """
     
     def __init__(
@@ -349,12 +659,6 @@ class CombinedEmbeddingLoss(nn.Module):
         domain: str = "torus",
         max_willmore_weight: float = 0.5,
         h2_clip: Optional[float] = None,
-        topology_guard_weight: float = 0.0,
-        topology_guard_num_probes: int = 64,
-        self_avoidance_weight: float = 0.0,
-        self_avoidance_d_avoid: float = 0.2,
-        self_avoidance_d_param_min: float = 2.5,
-        self_avoidance_num_pairs: int = 1000
     ):
         """
         Args:
@@ -369,23 +673,10 @@ class CombinedEmbeddingLoss(nn.Module):
             regularity_max_metric_value: Upper threshold for E and G in the smoothness term
             regularity_min_area_element: Minimum allowed area element √(EG−F²); collapse below this is penalised
             regularity_conformal_weight: Weight for the conformal energy term within RegularityLoss
-            genus: Surface genus (0, 1, or 2)
+            genus: Surface genus (0 or 1)
             domain: Surface domain type
             max_willmore_weight: Ceiling for willmore_weight annealing schedule
             h2_clip: Per-point H² ceiling passed to EmbeddingWillmoreLoss (None = no clipping)
-            topology_guard_weight: Weight for the topology guard loss (genus 2 only). Evaluates
-                regularity at fixed probe locations deep in each torus body, guaranteeing gradient
-                signal that prevents handle collapse regardless of main sampling distribution.
-            topology_guard_num_probes: Number of random-u probe points per torus body per forward pass.
-            self_avoidance_weight: Weight for the self-avoidance penalty.  Penalises pairs of
-                parameter-space points that are far apart (> self_avoidance_d_param_min) but
-                close in 3-D (< self_avoidance_d_avoid).  This is the only non-local loss
-                and directly discourages self-intersection.  Effective for all genera.
-            self_avoidance_d_avoid: Target minimum 3-D separation for topologically distant pairs.
-            self_avoidance_d_param_min: Parameter-space L2 distance threshold above which a
-                pair is considered topologically distant.  For genus 2, 2.5 catches all T1-T2
-                pairs (min |Δv| ≈ π) without false-positives from adjacent regions.
-            self_avoidance_num_pairs: Random pairs drawn per forward call.
         """
         super().__init__()
         
@@ -393,17 +684,6 @@ class CombinedEmbeddingLoss(nn.Module):
         self.regularity_weight = regularity_weight
         self.genus = genus
         self.domain = domain
-        self.topology_guard_weight = topology_guard_weight
-        self.topology_guard_num_probes = topology_guard_num_probes
-        self.self_avoidance_weight = self_avoidance_weight
-        self.self_avoidance_d_avoid = self_avoidance_d_avoid
-        self.self_avoidance_d_param_min = self_avoidance_d_param_min
-        self.self_avoidance_num_pairs = self_avoidance_num_pairs
-        # Fixed v₀ values for genus 2 topology guard probes:
-        #   T1 body midpoint  : v = π    (T1 occupies v ∈ [0, 2π))
-        #   Bridge midpoint   : v = 2.5π (bridge occupies v ∈ [2π, 3π))
-        #   T2 body midpoint  : v = 4π   (T2 occupies v ∈ [3π, 5π])
-        self._topology_guard_v_values = [np.pi, 2.5 * np.pi, 4 * np.pi]
         
         self.willmore_loss = EmbeddingWillmoreLoss(epsilon=epsilon, domain=domain, genus=genus,
                                                    h2_clip=h2_clip)
@@ -515,33 +795,6 @@ class CombinedEmbeddingLoss(nn.Module):
             regularity_value = regularity.item()
             total_loss += self.regularity_weight * regularity
 
-        # Topology guard (genus 2 only): evaluate regularity at fixed probe locations
-        # deep in each torus body (v = π for T1, v = 4π for T2), using randomly sampled u.
-        # This fires regardless of the main sampling distribution, preventing handle collapse.
-        if self.genus == 2 and self.topology_guard_weight > 0:
-            guard_loss = torch.tensor(0.0, device=uv.device)
-            n = self.topology_guard_num_probes
-            for v0 in self._topology_guard_v_values:
-                u_probe = torch.rand(n, device=uv.device, dtype=uv.dtype) * 2 * np.pi
-                v_probe = torch.full((n,), v0, device=uv.device, dtype=uv.dtype)
-                probe_uv = torch.stack([u_probe, v_probe], dim=1)
-                guard_loss = guard_loss + self.regularity_loss(model, probe_uv)
-            guard_loss = guard_loss / len(self._topology_guard_v_values)
-            total_loss = total_loss + self.topology_guard_weight * guard_loss
-
-        # Self-avoidance: penalise topologically distant pairs that collide in 3-D.
-        # Requires a model forward pass, but the MLP call is cheap compared to
-        # the autograd computation in willmore_loss / regularity_loss.
-        if self.self_avoidance_weight > 0:
-            xyz = model(uv)
-            sa_loss = _self_avoidance_penalty(
-                xyz, uv,
-                d_avoid=self.self_avoidance_d_avoid,
-                d_param_min=self.self_avoidance_d_param_min,
-                num_pairs=self.self_avoidance_num_pairs,
-            )
-            total_loss = total_loss + self.self_avoidance_weight * sa_loss
-
         # Normalise by fixed initial weight sum so scale is stable as weights anneal
         if self.initial_weight_sum > 0:
             total_loss = total_loss / self.initial_weight_sum
@@ -561,7 +814,8 @@ def create_embedding_loss(config: dict) -> nn.Module:
         config: Configuration dictionary
     
     Returns:
-        Combined loss function
+        Combined loss function (CombinedEmbeddingLoss for genus 0/1,
+        MultiChartCombinedLoss for genus 2)
     """
     loss_config = config.get("loss", {})
     topology_config = config.get("topology", {})
@@ -575,7 +829,30 @@ def create_embedding_loss(config: dict) -> nn.Module:
     if genus > 2:
         raise NotImplementedError(f"Genus {genus} is not supported. Only genus 0, 1, 2 are implemented.")
     
-    # Determine domain from genus
+    # --- Genus 2: multi-chart loss ---
+    if genus == 2:
+        dt_params = topology_config.get('double_torus', {})
+        return MultiChartCombinedLoss(
+            willmore_weight=loss_config.get("willmore_weight", 1.0),
+            regularity_weight=loss_config.get("regularity_weight", 5.0),
+            gluing_weight=loss_config.get("gluing_weight", 50.0),
+            epsilon=loss_config.get("epsilon", 1e-6),
+            h2_clip=loss_config.get("h2_clip", None),
+            regularity_area_element_weight=loss_config.get("regularity_area_element_weight", 1.0),
+            regularity_orientation_weight=loss_config.get("regularity_orientation_weight", 1.0),
+            regularity_metric_positivity_weight=loss_config.get("regularity_metric_positivity_weight", 0.5),
+            regularity_smoothness_weight=loss_config.get("regularity_smoothness_weight", 0.5),
+            regularity_max_metric_value=loss_config.get("regularity_max_metric_value", 10.0),
+            regularity_min_area_element=loss_config.get("regularity_min_area_element", 0.01),
+            regularity_conformal_weight=loss_config.get("regularity_conformal_weight", 0.0),
+            max_willmore_weight=loss_config.get("max_willmore_weight", 1.0),
+            gluing_num_boundary_points=loss_config.get("gluing_num_boundary_points", 64),
+            gluing_derivative_weight=loss_config.get("gluing_derivative_weight", 0.5),
+            gluing_second_derivative_weight=loss_config.get("gluing_second_derivative_weight", 0.3),
+            disk_radius=float(dt_params.get('disk_radius', 0.3)),
+        )
+    
+    # --- Genus 0 or 1: single-chart loss ---
     from sampling import get_domain_for_genus
     domain = get_domain_for_genus(genus)
     
@@ -595,12 +872,6 @@ def create_embedding_loss(config: dict) -> nn.Module:
         domain=domain,
         max_willmore_weight=loss_config.get("max_willmore_weight", 0.5),
         h2_clip=loss_config.get("h2_clip", None),
-        topology_guard_weight=loss_config.get("topology_guard_weight", 0.0),
-        topology_guard_num_probes=loss_config.get("topology_guard_num_probes", 64),
-        self_avoidance_weight=loss_config.get("self_avoidance_weight", 0.0),
-        self_avoidance_d_avoid=loss_config.get("self_avoidance_d_avoid", 0.2),
-        self_avoidance_d_param_min=loss_config.get("self_avoidance_d_param_min", 2.5),
-        self_avoidance_num_pairs=loss_config.get("self_avoidance_num_pairs", 1000),
     )
 
 

@@ -23,46 +23,27 @@ topology:
     max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
     # Clifford torus (R = √2, r = 1) has minimum Willmore energy 2π² ≈ 19.74
   
-  # Genus 2 (double torus) initialization parameters
-  # Two independent tori connected by a catenoid (capillary bridge)
-  #
-  # GEOMETRY:
-  # - Two tori with major radius axes parallel to z-axis (standard orientation)
-  # - Centers at y=0, z=0, separated along x-axis
-  # - Catenoid bridge parallel to x-axis, centered at y=0, z=0
-  #
-  # SEPARATION:
-  # min x-span = R1 + r1 + R2 + r2 + L1 + L2  where L = a·arccosh(r/a) is the catenoid half-length
-  # neck_length adds an extra gap on top of this; 0 = most compact valid geometry
-  #
-  # THREE FUNDAMENTAL DOMAINS:
-  # 1. Torus 1 parallelogram (with gluing disk excluded)
-  # 2. Catenoid rectangle
-  # 3. Torus 2 parallelogram (with gluing disk excluded)
+  # Genus 2 (double torus) — multi-chart architecture
+  # Two punctured tori (T₁, T₂) connected by a catenoid bridge chart.
+  # Each torus has a parametric disk D_i excluded from the Willmore integral.
+  # The bridge connects ∂D₁ → ∂D₂ with C⁰/C¹/C² matching enforced by a loss.
   #
   # Parameters:
   #   τ₁, τ₂ ∈ ℂ: modular parameters for each torus
   #     - Im(τ) > 0: controls tube thickness (larger = thinner)
   #     - Re(τ): shear of the fundamental domain
-  #   neck_length: physical length of the catenoid bridge
-  #   neck_twist: twist at the bridge (placeholder, not yet implemented)
+  #   disk_radius: parameter-space radius δ of excluded disks on each torus
+  #   disk_center_T1: (u₀, v₀) centre of excluded disk on T₁ (default (0,0) is always optimal)
+  #   disk_center_T2: auto-derived from τ₂ — always the closest point of T₂ to T₁
   #
   double_torus:
-    # Torus 1 modular parameter (same string format as genus 1 tau)
     tau1: "0.7j"   # Im(τ₁) controls tube thickness; Re(τ₁)/Im(τ₁) is the helical twist rate
-    
-    # Torus 2 modular parameter
     tau2: "0.7j"   # Im(τ₂) controls tube thickness; Re(τ₂)/Im(τ₂) is the helical twist rate
-    
-    # Catenoid bridge parameters
-    # bridge_radius: minimum radius at the catenoid neck
-    # The catenoid length is computed automatically to match tube radii
-    # r(s) = a * cosh(s/a), where a = bridge_radius
-    bridge_radius: 0.33  # Waist radius of catenoid neck; 0.33 ≈ 0.84·r for τ=0.7j, giving a wide initial neck
-    neck_twist: 0.0      # Rigid angular offset of T2's tube at the bridge attachment
-    neck_length: 0.1     # Extra gap relative to natural catenoid length; 0 = compact (catenoid just fits), positive = tori further apart; small positive value starts away from the catenoid existence boundary
-    s_blend: 0.4         # Half-width (radians) of quintic blend zone at each junction (T1↔bridge, bridge↔T2)
-    # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 2π² × 2 = 4π² ≈ 39.48
+    disk_radius: 0.3             # Parameter-space radius of excluded disk on each torus chart
+    disk_center_T1: [0.0, 0.0]  # (u₀, v₀) maps to the T₂-facing side of T₁ for any τ₁
+    # disk_center_T2 is auto-computed from τ₂ in code: v₀ = (−Re(τ₂)π/Im(τ₂)) mod 2π, u₀ = (π − v₀·Re(τ₂)) mod 2π
+    torus2_offset: [4.4, 0.0, 0.0]    # ℝ³ translation applied to T₂; must satisfy d > (R+r₁)+(R+r₂) so bridge connects externally (R=1, r=Im(τ))
+    # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 4π² ≈ 39.48
 
 # Model Architecture
 model:
@@ -92,22 +73,22 @@ model:
   # Supervised pretraining (initialize network to match reference embedding)
   supervised_pretraining:
     enabled: true  # Whether to pretrain network on reference embedding
-    num_epochs: 150
+    num_epochs: 200  # Thorough pretraining for genus 2 bridge initialisation
     learning_rate: 0.003  # Lower LR for careful pretraining
     batch_size: 512  # Larger batches for stable pretraining
     num_points_per_epoch: 4096  # More points for better coverage
-    position_weight: 1.0  # Weight for position matching loss
+    position_weight: 1.0  # Weight for position continuity loss
     derivative_weight: 1.0  # Match first-order geometry (∂φ/∂u, ∂φ/∂v) during pretraining
 
 # Training Parameters
 training:
-  num_epochs: 1000
+  num_epochs: 1000 #3000
   batch_size: 2000  # Larger batches for more stable gradients
-  learning_rate: 0.0002
+  learning_rate: 0.0001  # Conservative LR for multi-chart stability
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
   scheduler: "cosine"  # Single cosine decay — restarts are disruptive on a slowly annealing loss landscape
   scheduler_params:
-    T_max: 1000  # Full cosine half-cycle over the entire training run (T_max = num_epochs avoids LR restart)
+    T_max: 1000 #3000 # Full cosine half-cycle over the entire training run (T_max = num_epochs avoids LR restart)
     eta_min: 0.0000005  # Low floor enables fine-tuning in final epochs
   gradient_clip: 1.0
   log_frequency: 10   # Log metrics and save checkpoints every N epochs
@@ -123,12 +104,8 @@ training:
     willmore_spike_threshold: 0.0  # Disabled: uncapped W has high MC variance from spiky bridge H²; false rollbacks outweigh benefit
     willmore_ema_alpha: 0.3        # Slightly faster EMA for W tracking
     max_rollbacks: 30  # Maximum number of rollbacks per training run
-    willmore_warmup_epochs: 300  # Slow ramp over 300 epochs so regularity can stabilise geometry before W dominates
-    willmore_warmup_start: 0.001  # W gets 0.1% weight at epoch 1; prevents massive gradient shocks when W is O(10⁵)
-    self_intersection_early_stop: true  # genus 2: abort if T1-T2 interpenetration persists
-    self_intersection_threshold: 0.3    # minimum T1-T2 nearest-neighbour 3D distance; below this counts as overlap
-    self_intersection_patience: 3       # consecutive log epochs below threshold before stopping
-    self_intersection_check_n: 400      # random T1-region and T2-region points used for NN distance check
+    willmore_warmup_epochs: 500 ###1000 # Ramp W weight over 1000 epochs so gluing + regularity stabilise the junction first
+    willmore_warmup_start: 0.001  # W gets 0.1% weight at epoch 1; prevents massive gradient shocks from high-curvature bridge
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus
@@ -136,21 +113,12 @@ training:
 # - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
 # - genus 2: double_torus domain with custom parametrization
 sampling:
-  num_points: 20000
-  eval_num_points: 20000  # Larger uniform eval sample to reduce MC variance in logged W (bridge H² is spiky)
+  num_points: 10000
+  eval_num_points: 10000  # Uniform eval sample to reduce MC variance in logged W
   print_eval: false        # If true, full eval runs every epoch. If false, only runs on log/save epochs (faster).
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
-  bridge_oversample_factor: 4.0  # Bridge receives ~4× more samples than its area fraction; targets the dominant W contributor
   use_rotation_augmentation: false  # Apply random z-axis rotations for symmetry enforcement
-  # Junction-focus curriculum (genus 2 only):
-  # Phase 1 samples junction_focus_start fraction of points from Gaussians around v=2π
-  # and v=3π (the T1/bridge and bridge/T2 junctions).  The fraction cosine-anneals
-  # to zero over junction_focus_epochs, after which sampling is fully uniform.
-  junction_focus_start: 0.6   # Start with heavy junction focus to fix the high-curvature blend zones quickly
-  junction_focus_floor: 0.0   # Anneal to fully uniform; once junctions are learned, shift focus to bridge interior
-  junction_focus_epochs: 80   # Junctions converge in ~50–80 epochs; anneal over that window
-  junction_sigma: 1.0         # Gaussian std dev (radians) around each junction centre; ±3σ = ±3 rad covers full blend zone and bridge interior
 
 # Loss Function Parameters
 loss:
@@ -172,24 +140,13 @@ loss:
   regularity_metric_positivity_weight: 0.5  # Prevent metric degeneration (enable for stability)
   regularity_smoothness_weight: 0.5  # Penalise derivatives that exceed the threshold (ReLU gate)
   regularity_conformal_weight: 2.0   # Weight for Dirichlet excess (E+G)/(2√(EG−F²)) − 1 within the regularity loss; non-zero even for smooth surfaces
-  regularity_max_metric_value: 5.0   # Upper threshold for E = |φ_u|² and G = |φ_v|²; diagnostic showed G p99≈10–11 so this fires earlier
-  # Note: Regularity constraints weighted heavily initially to maintain well-conditioned metric, then can anneal Willmore up
+  regularity_max_metric_value: 5.0   # Upper threshold for E = |φ_u|² and G = |φ_v|²
 
-  # Topology guard (genus 2 only): evaluates regularity at fixed probe locations
-  # in each torus body AND the bridge midpoint on every forward pass, guaranteeing
-  # gradient signal that protects handles and the bridge from collapsing regardless
-  # of the main sampling distribution.
-  # Probe v values: π (T1 mid), 2.5π (bridge mid), 4π (T2 mid).
-  topology_guard_weight: 3.0    # Probes regularity at v=π (T1 body), v=2.5π (bridge), v=4π (T2 body) on every forward pass
-  topology_guard_num_probes: 128 # Random-u probe points per location per forward pass; more probes reduce gradient noise
-
-  # Self-avoidance: penalise pairs of parameter-space points that are far apart
-  # (topologically non-adjacent) but close in 3-D.  The only loss that can directly
-  # detect and discourage self-intersection.  See _self_avoidance_penalty in losses.py.
-  self_avoidance_weight: 30.0          # Must be large: SA gradient is ≪ Willmore gradient per pair; higher weight compensates for small d_avoid
-  self_avoidance_d_avoid: 0.1          # Fires only when topologically distant sheets are within ~0.1 of touching in 3D — a geometric condition independent of initial hole size
-  self_avoidance_d_param_min: 2.5      # Parameter-space L2 threshold for pairing (T1–T2 min ≈ π)
-  self_avoidance_num_pairs: 2000       # More pairs per call for less-noisy self-intersection gradient
+  # Multi-chart gluing (genus 2 only)
+  gluing_weight: 50.0                    # Weight for C⁰+C¹+C² gluing loss at chart junctions
+  gluing_num_boundary_points: 128         # Number of boundary samples per junction
+  gluing_derivative_weight: 0.5          # Weight for C¹ (first derivative) continuity relative to C⁰
+  gluing_second_derivative_weight: 0.3   # Weight for C² (second derivative) continuity relative to C⁰
 
 # Optimization
 optimizer:

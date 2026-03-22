@@ -28,8 +28,8 @@ import copy
 from pathlib import Path
 from mpl_toolkits.mplot3d import Axes3D
 from model import create_embedding_model
-from sampling import sample_parameters, get_domain_for_genus, get_reference_embedding
-from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors, plot_surface_3d
+from sampling import sample_parameters, get_domain_for_genus, get_reference_embedding, sample_torus_excluding_disk, sample_bridge_domain
+from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors, plot_surface_3d, make_genus2_colors
 
 def train_surface(model, optimizer, uv, xyz_target, num_epochs):
     """Train model(uv) to xyz_target for num_epochs."""
@@ -48,11 +48,12 @@ def load_model_from_checkpoint(checkpoint_path: str, device: torch.device):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     config = checkpoint['config']
     label = checkpoint.get('label', os.path.basename(checkpoint_path))
-    
+
     model = create_embedding_model(config, device, skip_init=True)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    state_dict = checkpoint.get('model', checkpoint.get('model_state_dict'))
+    model.load_state_dict(state_dict)
     model.eval()
-    
+
     return model, config, label
 
 
@@ -220,88 +221,101 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
 
 
 def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: str, device: torch.device):
-    """Train and visualize supervised double torus embeddings (genus 2).
-    
-    Uses Fenchel-Nielsen coordinates:
-    - l₁, l₂, l₃ > 0: lengths of the 3 gluing geodesics
-    - τ₁, τ₂, τ₃ ∈ ℝ: twist parameters
-    
-    The fundamental domain is 4 right-angled hexagons (2 per pair of pants).
+    """Pretrain and visualize double torus embeddings (genus 2).
+
+    create_embedding_model with skip_init=False calls model.pretrain() internally,
+    fitting T₁, bridge, and T₂ sub-networks to their reference embeddings.
     """
-    # Use the same configs as analytic for demonstration
-    # Use the same configs as analytic script
+    with open(config_path, 'r') as f:
+        base_config = yaml.safe_load(f)
+
     dt_configs = [
-        # Config 1: Standard symmetric double torus
+        # T2 disk at (π,0) faces T1's disk at (0,0) so the bridge goes right→left
+        # torus2_offset = (R+r1) + (R+r2) + gap  (R=1, r=Im(τ), gap=1.0)
         {'tau1': '1j', 'tau2': '1j',
-         'bridge_radius': 0.25, 'neck_twist': 0.0,
+         'disk_radius': 0.3,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [5.0, 0.0, 0.0],
          'label': 'τ₁=τ₂=i (symmetric)'},
-        # Config 2: Asymmetric tube thicknesses (T1 thicker, T2 thinner)
-        {'tau1': '0.5j', 'tau2': '2j',
-         'bridge_radius': 0.25, 'neck_twist': 0.0,
-         'label': 'τ₁=0.5i (thick), τ₂=2i (thin)'},
-        # Config 3: Opposite twists on each torus
+        {'tau1': '0.5j', 'tau2': '0.7j',
+         'disk_radius': 0.3,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [4.2, 0.0, 0.0],
+         'label': 'τ₁=0.5i, τ₂=0.7i (asymmetric)'},
         {'tau1': '1.0+0.5j', 'tau2': '-1.0+0.5j',
-         'bridge_radius': 0.25, 'neck_twist': 0.0,
+         'disk_radius': 0.3,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [4.0, 0.0, 0.0],
          'label': 'τ₁=1+0.5i, τ₂=-1+0.5i (twisted)'},
-        # Config 4: Strong twist on T1 only
-        {'tau1': '1+0.2j', 'tau2': '1j',
-         'bridge_radius': 0.25, 'neck_twist': 0.0,
-         'label': 'τ₁=1+0.2i (strong twist)'},
-        # Config 5: Narrow neck catenoid
+        {'tau1': '0.5+0.3j', 'tau2': '0.5j',
+         'disk_radius': 0.3,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [3.8, 0.0, 0.0],
+         'label': 'τ₁=0.5+0.3i (twist+thin)'},
         {'tau1': '0.7j', 'tau2': '0.7j',
-         'bridge_radius': 0.12, 'neck_twist': 0.0,
-         'label': 'bridge_radius=0.12 (narrow)'},
+         'disk_radius': 0.12,
+         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
+         'torus2_offset': [4.4, 0.0, 0.0],
+         'label': 'disk_radius=0.12 (narrow neck)'},
     ]
-    
+
     model_paths = []
     for cfg in dt_configs:
         label = cfg['label']
-        topology_params = {'double_torus': {k: v for k, v in cfg.items() if k != 'label'}}
-        uv = sample_parameters(num_points, domain="double_torus", device=device, dtype=torch.float32)
-        with torch.no_grad():
-            xyz_target = get_reference_embedding(uv, genus=2, topology_params=topology_params)
-        config = yaml.safe_load(open(config_path, 'r'))
+        dt_params = {k: v for k, v in cfg.items() if k != 'label'}
+        config = copy.deepcopy(base_config)
         config['topology'] = config.get('topology', {})
         config['topology']['genus'] = 2
-        config['topology']['double_torus'] = {k: v for k, v in cfg.items() if k != 'label'}
+        config['topology']['double_torus'] = dt_params
         config['model']['supervised_pretraining']['num_epochs'] = DEFAULT_NUM_EPOCHS
         config['model']['supervised_pretraining']['num_points_per_epoch'] = DEFAULT_NUM_POINTS_PER_EPOCH
         config['model']['supervised_pretraining']['batch_size'] = DEFAULT_BATCH_SIZE
+        # create_embedding_model calls model.pretrain() internally when skip_init=False
         model = create_embedding_model(config, device, skip_init=False)
-        optimizer = torch.optim.Adam(model.parameters(), lr=DEFAULT_LEARNING_RATE)
-        model = train_surface(model, optimizer, uv, xyz_target, DEFAULT_NUM_EPOCHS)
         safe_label = label.replace(" ", "_").replace("=", "_").replace("+", "_").replace(".", "_").replace(",", "_")
         model_path = os.path.join(output_dir, f'model_genus2_{safe_label}.pt')
-        torch.save({'model_state_dict': model.state_dict(), 'config': config, 'label': label}, model_path)
-        model_paths.append((model_path, label, uv))
-    # Visualize with fundamental domain
+        torch.save({'model': model.state_dict(), 'config': config, 'label': label}, model_path)
+        model_paths.append((model_path, label, dt_params))
+
     n_models = len(model_paths)
-    n_plots = n_models + 1  # +1 for domain plot
+    n_plots = n_models + 1
     n_rows = int(np.ceil(n_plots / 2))
     fig = plt.figure(figsize=(12, 5 * n_rows))
-    # Add fundamental domain coloring first
+
     ax_domain = fig.add_subplot(n_rows, 2, 1)
     first_cfg = dt_configs[0]
     tau1 = complex(first_cfg['tau1'].replace('i', 'j'))
     tau2 = complex(first_cfg['tau2'].replace('i', 'j'))
-    plot_fundamental_domain_coloring(ax_domain, genus=2, tau1=tau1, tau2=tau2, neck_radius=0.3)
+    plot_fundamental_domain_coloring(
+        ax_domain, genus=2, tau1=tau1, tau2=tau2,
+        neck_radius=first_cfg['disk_radius'],
+        disk_center_T1=tuple(first_cfg['disk_center_T1']),
+        disk_center_T2=tuple(first_cfg['disk_center_T2']),
+    )
+
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
 
-    # First pass: collect xyz and metadata
     _plot_data = []
-    for model_path, label, uv in model_paths:
+    for model_path, label, dt_params in model_paths:
         model, config, _ = load_model_from_checkpoint(model_path, device)
         genus = config['topology']['genus']
-        domain = get_domain_for_genus(genus)
         print(f"Visualizing model from {model_path}")
-        print(f"Embedding model created for genus {genus} ({genus_names.get(genus, 'unknown')})")
-        print(f"  Domain: {domain}")
+        print(f"  Genus {genus} ({genus_names.get(genus, 'unknown')})")
         print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
+        n_each = num_points // 3
+        delta = float(dt_params.get('disk_radius', 0.3))
+        c_T1 = model.disk_center_T1
+        c_T2 = model.disk_center_T2
         with torch.no_grad():
-            xyz_pred = model(uv).cpu()
-        _plot_data.append((xyz_pred, uv, label, genus))
+            uv_t1 = sample_torus_excluding_disk(n_each, disk_center=c_T1, disk_radius=delta, device=device)
+            ut_br = sample_bridge_domain(n_each, device=device)
+            uv_t2 = sample_torus_excluding_disk(n_each, disk_center=c_T2, disk_radius=delta, device=device)
+            xyz = torch.cat([model.forward_torus1(uv_t1),
+                             model.forward_bridge(ut_br),
+                             model.forward_torus2(uv_t2)], dim=0).cpu()
+            uv = torch.cat([uv_t1, ut_br, uv_t2], dim=0).cpu()
+        _plot_data.append((xyz, uv, label, genus, c_T1, c_T2, uv_t1, ut_br, uv_t2))
 
-    # Shared scale across all subplots
     _all_xyz = np.concatenate([d[0].numpy() for d in _plot_data])
     _global_range = np.array([
         _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
@@ -309,10 +323,17 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
     ]).max() / 2.0
 
-    for idx, (xyz_pred, uv, label, genus) in enumerate(_plot_data):
+    for idx, (xyz, uv, label, genus, c_T1, c_T2, uv_t1, ut_br, uv_t2) in enumerate(_plot_data):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        plot_surface_3d(ax, xyz_pred, uv, label, genus=genus, global_range=_global_range)
+        if genus == 2:
+            colors = make_genus2_colors(uv_t1, ut_br, uv_t2,
+                                        disk_center_T1=c_T1, disk_center_T2=c_T2)
+            plot_surface_3d(ax, xyz, uv, label, genus=genus, global_range=_global_range,
+                            color_values=colors)
+        else:
+            plot_surface_3d(ax, xyz, uv, label, genus=genus, global_range=_global_range)
         ax.view_init(elev=30, azim=-60)
+
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'supervised_genus2.png')
     plt.savefig(output_path, dpi=150, bbox_inches='tight')

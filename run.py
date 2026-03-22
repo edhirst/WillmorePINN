@@ -26,7 +26,8 @@ from model import create_embedding_model
 from losses import create_embedding_loss
 from sampling import (
     sample_parameters, compute_reference_willmore_energy,
-    get_domain_for_genus, get_theoretical_minimum_willmore
+    get_domain_for_genus, get_theoretical_minimum_willmore,
+    sample_torus_excluding_disk, sample_bridge_domain,
 )
 from utils import plot_loss_curves
 import functools
@@ -156,25 +157,24 @@ def train_epoch(
     gradient_clip: Optional[float] = None,
     use_rotation_augmentation: bool = True,
     genus: Optional[int] = None,
-    bridge_oversample_factor: float = 1.0,
-    junction_focus: float = 0.0,
-    junction_sigma: float = 1.0
 ) -> Dict[str, float]:
     """Train for one epoch."""
     model.train()
 
+    # --- Genus 2: multi-chart sampling & loss ---
+    if genus == 2:
+        return _train_epoch_genus2(
+            model, loss_fn, optimizer, num_points, batch_size,
+            device, dtype, gradient_clip,
+        )
+
+    # --- Genus 0 / 1: single-domain path ---
     # Sample parameter space points according to the topology
-    uv = sample_parameters(
-        num_points, domain, device, dtype,
-        genus=genus,
-        bridge_oversample_factor=bridge_oversample_factor,
-        junction_focus=junction_focus,
-        junction_sigma=junction_sigma
-    )
+    uv = sample_parameters(num_points, domain, device, dtype, genus=genus)
     
     # Apply random z-axis rotation augmentation if enabled
-    # Only applicable for torus and double_torus (not ellipsoid due to poles)
-    if use_rotation_augmentation and domain in ['torus', 'double_torus']:
+    # Only applicable for torus (not ellipsoid due to poles)
+    if use_rotation_augmentation and domain in ['torus']:
         # Random rotation angle in [0, 2π)
         theta = torch.rand(1, device=device, dtype=dtype).item() * 2 * 3.14159265359
         # Shift u coordinate by theta (rotates around z-axis)
@@ -226,6 +226,69 @@ def train_epoch(
     return epoch_losses
 
 
+def _train_epoch_genus2(
+    model: nn.Module,
+    loss_fn: nn.Module,
+    optimizer: optim.Optimizer,
+    num_points: int,
+    batch_size: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    gradient_clip: Optional[float] = None,
+) -> Dict[str, float]:
+    """Train one epoch for genus 2 (multi-chart)."""
+    # Distribute points: ~40% T1, ~40% T2, ~20% bridge (bridge domain is smaller)
+    n_T1 = int(num_points * 0.4)
+    n_br = int(num_points * 0.2)
+    n_T2 = num_points - n_T1 - n_br
+
+    uv_T1 = sample_torus_excluding_disk(
+        n_T1,
+        disk_center=model.disk_center_T1,
+        disk_radius=model.disk_radius,
+        device=device, dtype=dtype,
+    )
+    uv_br = sample_bridge_domain(n_br, device=device, dtype=dtype)
+    uv_T2 = sample_torus_excluding_disk(
+        n_T2,
+        disk_center=model.disk_center_T2,
+        disk_radius=model.disk_radius,
+        device=device, dtype=dtype,
+    )
+
+    # The multi-chart loss already handles all three charts in one forward call.
+    # Batch by splitting each chart proportionally.
+    num_batches = max(1, (num_points + batch_size - 1) // batch_size)
+    b_T1 = max(1, n_T1 // num_batches)
+    b_br = max(1, n_br // num_batches)
+    b_T2 = max(1, n_T2 // num_batches)
+
+    epoch_losses = {'total': 0.0, 'willmore': 0.0, 'regularity': 0.0, 'gluing': 0.0}
+
+    for batch_idx in range(num_batches):
+        s1, e1 = batch_idx * b_T1, min((batch_idx + 1) * b_T1, n_T1)
+        sb, eb = batch_idx * b_br, min((batch_idx + 1) * b_br, n_br)
+        s2, e2 = batch_idx * b_T2, min((batch_idx + 1) * b_T2, n_T2)
+
+        optimizer.zero_grad(set_to_none=True)
+        loss_dict = loss_fn.forward(model, uv_T1[s1:e1], uv_br[sb:eb], uv_T2[s2:e2])
+        loss = loss_dict['total']
+        loss.backward()
+
+        if gradient_clip is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
+        optimizer.step()
+
+        for key in epoch_losses:
+            val = loss_dict.get(key, 0.0)
+            epoch_losses[key] += val.item() if hasattr(val, 'item') else float(val)
+
+    for key in epoch_losses:
+        epoch_losses[key] /= num_batches
+
+    return epoch_losses
+
+
 def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] = None, config_dict: Optional[dict] = None):
     """Main training loop."""
     # Load configuration
@@ -267,7 +330,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     print(f"Willmore Energy Minimization - Genus {genus} ({genus_names.get(genus, 'unknown')})")
     print(f"{'='*60}")
 
-    # Create model
+    # Create model (pretraining runs inside create_embedding_model)
     model = create_embedding_model(config, device)
 
     # Create loss function
@@ -382,30 +445,36 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     use_residual = config['model'].get('use_residual', True)
     ref_willmore = None
     
-    try:
-        # Get topology-specific parameters for reference computation
-        tau = None
-        if genus == 1:
-            torus_params = topology_config.get('torus', {})
-            tau = parse_tau(torus_params.get('tau', '1j'))
-        
-        uv_ref = sample_parameters(100, domain, device, dtype, genus=genus)
-        ref_willmore = compute_reference_willmore_energy(
-            uv_ref, domain, tau=tau if tau else 1j, 
-            genus=genus, topology_params=topology_config
-        )
-        
-        if use_residual:
-            print(f"\nReference surface Willmore energy: {ref_willmore:.6f}")
-            print(f"Mode: Learning residual corrections from reference")
-        else:
-            print(f"\nMode: Learning full embedding from scratch")
-            print(f"Initial reference geometry Willmore energy: {ref_willmore:.6f}")
-        
-        if genus == 1 and tau:
-            print(f"Torus modulus τ = {tau:.4f}")
-    except Exception as e:
-        print(f"Warning: Could not compute reference Willmore energy: {e}")
+    if genus == 2:
+        # Multi-chart: no single-domain reference embedding
+        print(f"\nMode: Multi-chart genus-2 embedding (full embedding, no residual)")
+        ref_willmore = 4 * np.pi**2
+        print(f"Reference Willmore energy (Lawson ξ_{{2,1}}): {ref_willmore:.6f}")
+    else:
+        try:
+            # Get topology-specific parameters for reference computation
+            tau = None
+            if genus == 1:
+                torus_params = topology_config.get('torus', {})
+                tau = parse_tau(torus_params.get('tau', '1j'))
+            
+            uv_ref = sample_parameters(100, domain, device, dtype, genus=genus)
+            ref_willmore = compute_reference_willmore_energy(
+                uv_ref, domain, tau=tau if tau else 1j, 
+                genus=genus, topology_params=topology_config
+            )
+            
+            if use_residual:
+                print(f"\nReference surface Willmore energy: {ref_willmore:.6f}")
+                print(f"Mode: Learning residual corrections from reference")
+            else:
+                print(f"\nMode: Learning full embedding from scratch")
+                print(f"Initial reference geometry Willmore energy: {ref_willmore:.6f}")
+            
+            if genus == 1 and tau:
+                print(f"Torus modulus τ = {tau:.4f}")
+        except Exception as e:
+            print(f"Warning: Could not compute reference Willmore energy: {e}")
     
     # Compute theoretical minimum for comparison
     try:
@@ -424,7 +493,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     domain_ranges = {
         "ellipsoid": "[0, 2π] × [0, π]",
         "torus": "[0, 2π] × [0, 2π]",
-        "double_torus": "[0, 2π] × [0, 5π]"
+        "double_torus": "multi-chart (T₁ + bridge + T₂)"
     }
     print(f"\nStarting training for {num_epochs} epochs...")
     print(f"Batch size: {batch_size}, Number of points: {num_points}")
@@ -438,6 +507,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         'total_loss': [],
         'willmore_energy': [],
         'regularity': [],
+        'gluing': [],  # gluing loss (genus 2 only; 0.0 for genus 0/1)
         'learning_rate': [],
         'genus': genus
     }
@@ -452,9 +522,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     # Track rollbacks to prevent infinite loops
     rollback_count = 0
     max_rollbacks = config['training'].get('adaptive_training', {}).get('max_rollbacks', 3)
-
-    # Counter for consecutive log epochs where T1-T2 self-intersection is detected
-    si_bad_epochs = 0
 
     # EMA of uncapped Willmore energy for rollback decisions.
     # Raw single-epoch MC estimates have high variance when sampling is junction-focused,
@@ -471,7 +538,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             current_regularity = history['regularity'][-1]
             loss_fn.update_weights(epoch, num_epochs, current_regularity, adaptive_config)
         else:
-            loss_fn.update_weights(epoch, num_epochs)
+            loss_fn.update_weights(epoch, num_epochs, adaptive_config=adaptive_config)
 
         # Frequency curriculum (NeRF-style coarse-to-fine).
         # Progressively activates higher Fourier bands so the network first
@@ -493,25 +560,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
 
         # Train one epoch
         use_rotation_aug = config["sampling"].get("use_rotation_augmentation", True)
-        bridge_oversample_factor = config["sampling"].get("bridge_oversample_factor", 1.0)
-
-        # Junction-focus curriculum: concentrate samples near high-curvature junctions
-        # early in training, then cosine-anneal to zero for uniform coverage.
-        # Only active for genus 2 (double torus).
-        junction_focus = 0.0
-        if genus == 2:
-            jf_start = config["sampling"].get("junction_focus_start", 0.0)
-            jf_floor = config["sampling"].get("junction_focus_floor", 0.0)
-            jf_epochs = config["sampling"].get("junction_focus_epochs", 1)
-            junction_sigma = config["sampling"].get("junction_sigma", 1.0)
-            if jf_start > 0.0 and jf_epochs > 0:
-                t = min(epoch - 1, jf_epochs) / jf_epochs  # 0 → 1
-                # Cosine anneal from jf_start down to jf_floor, then hold at floor
-                junction_focus = jf_floor + (jf_start - jf_floor) * 0.5 * (1.0 + np.cos(np.pi * t))
-            else:
-                junction_focus = jf_floor
-        else:
-            junction_sigma = 1.0
 
         epoch_losses = train_epoch(
             model, loss_fn, optimizer,
@@ -519,9 +567,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             device, dtype, gradient_clip,
             use_rotation_augmentation=use_rotation_aug,
             genus=genus,
-            bridge_oversample_factor=bridge_oversample_factor,
-            junction_focus=junction_focus,
-            junction_sigma=junction_sigma
         )
 
         # --- Unbiased Willmore evaluation ---
@@ -537,16 +582,35 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         should_eval = print_eval or (epoch % log_frequency == 0)
 
         if should_eval:
-            eval_uv = sample_parameters(eval_num_points, domain, device, dtype, genus=genus)
-            model.eval()
-            # Evaluate in 10 chunks to reduce peak autograd graph size
-            chunk = (eval_num_points + 9) // 10
-            total_weighted = 0.0
-            for _start in range(0, eval_num_points, chunk):
-                _end = min(_start + chunk, eval_num_points)
-                total_weighted += loss_fn.willmore_loss(model, eval_uv[_start:_end])[1] * (_end - _start)
-            eval_willmore = total_weighted / eval_num_points
-            model.train()
+            if genus == 2:
+                # Multi-chart eval: sample each chart uniformly, sum Willmore energies
+                n_eval_T = int(eval_num_points * 0.4)
+                n_eval_br = int(eval_num_points * 0.2)
+                n_eval_T2 = eval_num_points - n_eval_T - n_eval_br
+                eval_uv_T1 = sample_torus_excluding_disk(
+                    n_eval_T, disk_center=model.disk_center_T1,
+                    disk_radius=model.disk_radius, device=device, dtype=dtype)
+                eval_uv_br = sample_bridge_domain(n_eval_br, device=device, dtype=dtype)
+                eval_uv_T2 = sample_torus_excluding_disk(
+                    n_eval_T2, disk_center=model.disk_center_T2,
+                    disk_radius=model.disk_radius, device=device, dtype=dtype)
+                model.eval()
+                # Cannot use torch.no_grad(): Willmore computation needs autograd
+                # for fundamental forms.  Values are detached inside the loss.
+                eval_dict = loss_fn.forward(model, eval_uv_T1, eval_uv_br, eval_uv_T2)
+                eval_willmore = eval_dict['willmore']
+                model.train()
+            else:
+                eval_uv = sample_parameters(eval_num_points, domain, device, dtype, genus=genus)
+                model.eval()
+                # Evaluate in 10 chunks to reduce peak autograd graph size
+                chunk = (eval_num_points + 9) // 10
+                total_weighted = 0.0
+                for _start in range(0, eval_num_points, chunk):
+                    _end = min(_start + chunk, eval_num_points)
+                    total_weighted += loss_fn.willmore_loss(model, eval_uv[_start:_end])[1] * (_end - _start)
+                eval_willmore = total_weighted / eval_num_points
+                model.train()
         else:
             eval_willmore = epoch_losses['willmore']
 
@@ -645,6 +709,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         history['total_loss'].append(epoch_losses['total'])
         history['willmore_energy'].append(eval_willmore)
         history['regularity'].append(epoch_losses['regularity'])
+        history['gluing'].append(epoch_losses.get('gluing', 0.0))
         history['learning_rate'].append(current_lr)
 
         # Best-model check: only update on epochs where a proper eval was run
@@ -654,39 +719,36 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         
         # Log progress
         if epoch % log_frequency == 0:
-            print(f"Epoch [{epoch}/{num_epochs}] - LR: {current_lr:.6f}", end="")
-            if genus == 2 and junction_focus > 0.001:
-                print(f"  junction_focus: {junction_focus:.3f}", end="")
-            print()
+            print(f"Epoch [{epoch}/{num_epochs}] - LR: {current_lr:.6f}")
             print(f"  Loss Weights - Willmore:{loss_fn.willmore_weight:.3f} Regularity:{loss_fn.regularity_weight:.3f}")
             print(f"  Total Loss: {epoch_losses['total']:.6f}")
             print(f"  Willmore Energy (eval): {eval_willmore:.6f}")
             print(f"  Willmore Energy (train sample): {epoch_losses['willmore']:.6f}")
             print(f"  Regularity: {epoch_losses['regularity']:.6f}")
+            if genus == 2:
+                print(f"  Gluing loss: {epoch_losses.get('gluing', 0.0):.6f}")
 
             # Gradient-norm balance diagnostic (GradNorm-inspired, Chen et al. 2018).
-            # Computes the L2 norm of gradients contributed by each loss component.
-            # Large imbalance (one term >> others) indicates that component dominates
-            # the update and may be destabilising.  Logged here at diagnostic frequency;
-            # does not affect the training loss.
-            try:
-                model.zero_grad(set_to_none=True)
-                _diag_uv = sample_parameters(min(1000, num_points), domain, device, dtype, genus=genus)
-                _w_tensor, _ = loss_fn.willmore_loss(model, _diag_uv)
-                _w_tensor = loss_fn.willmore_weight * _w_tensor
-                _w_tensor.backward()
-                _gnorm_w = sum(p.grad.detach().norm(2).item() ** 2
-                               for p in model.parameters() if p.grad is not None) ** 0.5
-                model.zero_grad(set_to_none=True)
-                _r_tensor = loss_fn.regularity_weight * loss_fn.regularity_loss(model, _diag_uv)
-                _r_tensor.backward()
-                _gnorm_r = sum(p.grad.detach().norm(2).item() ** 2
-                               for p in model.parameters() if p.grad is not None) ** 0.5
-                model.zero_grad(set_to_none=True)
-                print(f"  Grad norms — Willmore: {_gnorm_w:.3e}  Regularity: {_gnorm_r:.3e}  "
-                      f"ratio W/R: {(_gnorm_w / (_gnorm_r + 1e-12)):.1f}")
-            except Exception:
-                pass  # diagnostics must never abort training
+            # Only for genus 0/1 (single-chart); genus 2 uses multi-chart loss.
+            if genus != 2:
+                try:
+                    model.zero_grad(set_to_none=True)
+                    _diag_uv = sample_parameters(min(1000, num_points), domain, device, dtype, genus=genus)
+                    _w_tensor, _ = loss_fn.willmore_loss(model, _diag_uv)
+                    _w_tensor = loss_fn.willmore_weight * _w_tensor
+                    _w_tensor.backward()
+                    _gnorm_w = sum(p.grad.detach().norm(2).item() ** 2
+                                   for p in model.parameters() if p.grad is not None) ** 0.5
+                    model.zero_grad(set_to_none=True)
+                    _r_tensor = loss_fn.regularity_weight * loss_fn.regularity_loss(model, _diag_uv)
+                    _r_tensor.backward()
+                    _gnorm_r = sum(p.grad.detach().norm(2).item() ** 2
+                                   for p in model.parameters() if p.grad is not None) ** 0.5
+                    model.zero_grad(set_to_none=True)
+                    print(f"  Grad norms — Willmore: {_gnorm_w:.3e}  Regularity: {_gnorm_r:.3e}  "
+                          f"ratio W/R: {(_gnorm_w / (_gnorm_r + 1e-12)):.1f}")
+                except Exception:
+                    pass  # diagnostics must never abort training
 
             # Print topology-specific info
             if theoretical_min:
@@ -697,46 +759,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             if freq_warmup_epochs > 0 and _pl is not None and hasattr(_pl, 'set_active_frequencies'):
                 n_active = int(_pl.freq_alphas.sum().item())
                 print(f"  Active Fourier bands: {n_active}/{_pl.num_frequencies}")
-
-        # Self-intersection early-stop check (genus 2 only)
-        stop_training = False
-        if epoch % log_frequency == 0 and genus == 2:
-            _si_cfg = config['training'].get('adaptive_training', {})
-            if _si_cfg.get('self_intersection_early_stop', False):
-                _n_check = _si_cfg.get('self_intersection_check_n', 400)
-                _si_thr = _si_cfg.get('self_intersection_threshold', 0.3)
-                _si_patience = _si_cfg.get('self_intersection_patience', 3)
-                _u_si = torch.rand(_n_check, device=device, dtype=dtype) * 2 * np.pi
-                _v_T1_si = torch.rand(_n_check, device=device, dtype=dtype) * 2 * np.pi
-                _v_T2_si = torch.rand(_n_check, device=device, dtype=dtype) * 2 * np.pi + 3 * np.pi
-                with torch.no_grad():
-                    model.eval()
-                    _xyz_T1 = model(torch.stack([_u_si, _v_T1_si], dim=1)).cpu().numpy()
-                    _xyz_T2 = model(torch.stack([_u_si, _v_T2_si], dim=1)).cpu().numpy()
-                    model.train()
-                _ns = min(200, _n_check)
-                _idx = np.random.choice(_n_check, _ns, replace=False)
-                _diff = _xyz_T1[_idx, None, :] - _xyz_T2[None, _idx, :]
-                _d_nn = np.sqrt((_diff ** 2).sum(-1)).min(axis=1)
-                _min_sep = float(_d_nn.min())
-                if _min_sep < _si_thr:
-                    si_bad_epochs += 1
-                    print(f"  WARNING: Self-intersection detected: T1-T2 min_sep={_min_sep:.4f} < {_si_thr:.2f}  [{si_bad_epochs}/{_si_patience}]")
-                    if si_bad_epochs >= _si_patience:
-                        print(f"\nEARLY STOP: T1-T2 self-intersection for {_si_patience} consecutive log epochs. Stopping.")
-                        stop_training = True
-                else:
-                    si_bad_epochs = 0
-                    print(f"  Self-intersection OK: T1-T2 min_sep={_min_sep:.4f}")
-
-        if stop_training:
-            # Save current state before exiting
-            save_checkpoint(
-                model, optimizer, epoch,
-                eval_willmore, config,
-                checkpoint_dir, is_best=False, scheduler=scheduler
-            )
-            break
 
         # Save checkpoint at log frequency and when a new best is found
         should_save_regular = (epoch % log_frequency == 0)

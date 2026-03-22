@@ -446,7 +446,7 @@ def load_checkpoint(checkpoint_path: str, config: dict, device: torch.device):
         Loaded model, epoch, loss
     """
     model = create_embedding_model(config, device)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     

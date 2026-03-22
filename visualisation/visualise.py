@@ -27,7 +27,7 @@ def load_checkpoint_model(checkpoint_path, config, device):
     """Load model from checkpoint."""
     # Skip reference initialization when loading from checkpoint
     model = create_embedding_model(config, device, skip_init=True)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model'])
     model.eval()
     return model, checkpoint.get('epoch', 0), checkpoint.get('loss', 0)
@@ -187,7 +187,7 @@ def visualise_training_evolution(
     
     # Always use genus from checkpoint config for correct sampling
     # (Assume all checkpoints in a run have the same genus)
-    first_checkpoint = torch.load(selected_checkpoints[0], map_location='cpu')
+    first_checkpoint = torch.load(selected_checkpoints[0], map_location='cpu', weights_only=False)
     config_ckpt = first_checkpoint.get('config', config)
     genus_ckpt = config_ckpt['topology']['genus']
     domain_ckpt = get_domain_for_genus(genus_ckpt)
@@ -207,7 +207,7 @@ def visualise_training_evolution(
     for checkpoint_path in selected_checkpoints:
         checkpoint_name = Path(checkpoint_path).name
         print(f"  Loading {checkpoint_name}...")
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
         config_ckpt = checkpoint.get('config', config)
         genus_ckpt = config_ckpt['topology']['genus']
         domain_ckpt = get_domain_for_genus(genus_ckpt)
@@ -270,7 +270,7 @@ def visualise_single_model(
     if not os.path.exists(checkpoint_path):
         print(f"Checkpoint not found: {checkpoint_path}")
         return
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     config = checkpoint.get('config', None)
     if config is None:
         with open(config_path, 'r') as f:
@@ -367,7 +367,7 @@ def main():
         checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
         if os.path.exists(checkpoint_path):
             try:
-                checkpoint = torch.load(checkpoint_path, map_location='cpu')
+                checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
                 genus_from_checkpoint = checkpoint.get('config', {}).get('topology', {}).get('genus')
                 if genus_from_checkpoint is not None:
                     break
@@ -379,7 +379,7 @@ def main():
         checkpoint_files = sorted(glob.glob(os.path.join(checkpoint_dir, 'checkpoint_epoch_*.pt')))
         if checkpoint_files:
             try:
-                checkpoint = torch.load(checkpoint_files[0], map_location='cpu')
+                checkpoint = torch.load(checkpoint_files[0], map_location='cpu', weights_only=False)
                 genus_from_checkpoint = checkpoint.get('config', {}).get('topology', {}).get('genus')
             except Exception:
                 pass

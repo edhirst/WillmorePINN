@@ -633,6 +633,48 @@ class MultiChartCombinedLoss(nn.Module):
         orient_loss = torch.mean(torch.nn.functional.relu(min_ae - cross_mag) ** 2)
         return (area_loss + orient_loss) / 2.0
 
+    def eval_willmore_batched(
+        self, model, uv_T1: torch.Tensor, uv_bridge: torch.Tensor,
+        uv_T2: torch.Tensor, chunk_size: int = 1000,
+    ) -> float:
+        """Evaluate total Willmore energy across all charts in batches.
+
+        Computes only Willmore (no regularity or gluing) so that each
+        chart can be processed in small chunks, keeping peak autodiff
+        graph memory proportional to chunk_size rather than eval_num_points.
+
+        Args:
+            model: Genus2MultiChartNetwork
+            uv_T1:     (N₁, 2) eval samples on T₁ chart
+            uv_bridge: (N_b, 2) eval samples on bridge chart
+            uv_T2:     (N₂, 2) eval samples on T₂ chart
+            chunk_size: Number of points per autodiff pass.
+
+        Returns:
+            Total Willmore energy (float).
+        """
+        def _torus_chart(model_fn, uv):
+            n = len(uv)
+            total = 0.0
+            for s in range(0, n, chunk_size):
+                e = min(s + chunk_size, n)
+                _, v = self.willmore_T(model_fn, uv[s:e])
+                total += v * (e - s)
+            return total / n
+
+        w_T1 = _torus_chart(model.torus1, uv_T1)
+        w_T2 = _torus_chart(model.torus2, uv_T2)
+
+        n_br = len(uv_bridge)
+        total_br = 0.0
+        for s in range(0, n_br, chunk_size):
+            e = min(s + chunk_size, n_br)
+            _, v = self._willmore_bridge(model, uv_bridge[s:e])
+            total_br += v * (e - s)
+        w_br = total_br / n_br
+
+        return w_T1 + w_br + w_T2
+
 
 class CombinedEmbeddingLoss(nn.Module):
     """

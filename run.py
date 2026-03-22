@@ -435,7 +435,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     
     if resume_from is not None and os.path.exists(resume_from):
         print(f"Resuming from checkpoint: {resume_from}")
-        checkpoint = torch.load(resume_from, map_location=device)
+        checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
@@ -595,10 +595,12 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
                     n_eval_T2, disk_center=model.disk_center_T2,
                     disk_radius=model.disk_radius, device=device, dtype=dtype)
                 model.eval()
-                # Cannot use torch.no_grad(): Willmore computation needs autograd
-                # for fundamental forms.  Values are detached inside the loss.
-                eval_dict = loss_fn.forward(model, eval_uv_T1, eval_uv_br, eval_uv_T2)
-                eval_willmore = eval_dict['willmore']
+                # Evaluate Willmore in chunks to avoid OOM from full-batch second-order
+                # autodiff. Regularity and gluing are excluded from eval.
+                eval_willmore = loss_fn.eval_willmore_batched(
+                    model, eval_uv_T1, eval_uv_br, eval_uv_T2,
+                    chunk_size=batch_size,
+                )
                 model.train()
             else:
                 eval_uv = sample_parameters(eval_num_points, domain, device, dtype, genus=genus)
@@ -619,7 +621,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
             """Load checkpoint, apply lr_scale to LR and scheduler base_lrs. Returns True on success."""
             if not os.path.exists(checkpoint_path):
                 return False
-            ckpt = torch.load(checkpoint_path, map_location=device)
+            ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
             model.load_state_dict(ckpt['model'])
             optimizer.load_state_dict(ckpt['optimizer'])
             if scheduler is not None and 'scheduler' in ckpt:

@@ -45,7 +45,7 @@ def train_surface(model, optimizer, uv, xyz_target, num_epochs):
 
 def load_model_from_checkpoint(checkpoint_path: str, device: torch.device):
     """Load a trained model from a checkpoint file."""
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     config = checkpoint['config']
     label = checkpoint.get('label', os.path.basename(checkpoint_path))
 

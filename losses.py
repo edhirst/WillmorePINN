@@ -456,6 +456,8 @@ class MultiChartCombinedLoss(nn.Module):
         gluing_derivative_weight: float = 0.5,
         gluing_second_derivative_weight: float = 0.3,
         disk_radius: float = 0.3,
+        junction_radius_weight: float = 0.0,
+        junction_min_radius: float = 0.1,
     ):
         super().__init__()
         self.willmore_weight = willmore_weight
@@ -465,6 +467,8 @@ class MultiChartCombinedLoss(nn.Module):
         self.gluing_weight = gluing_weight
         self.max_willmore_weight = max_willmore_weight
         self.initial_weight_sum = willmore_weight + regularity_weight
+        self.junction_radius_weight = junction_radius_weight
+        self.junction_min_radius = junction_min_radius
 
         # One Willmore loss per chart.  The torus charts integrate over [0,2π]²
         # minus the excluded disk D of parameter-space area πδ².
@@ -567,6 +571,31 @@ class MultiChartCombinedLoss(nn.Module):
         regularity_value = regularity.detach().item()
         total = total + self.regularity_weight * regularity
 
+        # --- Junction circle radius penalty ---
+        # Penalise when the gluing circle on either torus collapses in ℝ³.
+        # The bridge being fine does not prevent the tori from shrinking their
+        # handle to a point; this loss provides the missing topological barrier.
+        junction_r1 = junction_r2 = None
+        if self.junction_radius_weight > 0:
+            n_j = 64
+            s_j = torch.linspace(0, 2 * np.pi, n_j + 1,
+                                  device=uv_T1.device, dtype=uv_T1.dtype)[:-1]
+            uv_j1 = model.disk_boundary_T1(s_j)
+            xyz_j1 = model.forward_torus1(uv_j1)
+            ctr1 = xyz_j1.mean(0, keepdim=True).detach()  # detach so gradient acts only on radius
+            junction_r1 = ((xyz_j1 - ctr1) ** 2).sum(1).sqrt().mean()
+
+            uv_j2 = model.disk_boundary_T2(s_j)
+            xyz_j2 = model.forward_torus2(uv_j2)
+            ctr2 = xyz_j2.mean(0, keepdim=True).detach()
+            junction_r2 = ((xyz_j2 - ctr2) ** 2).sum(1).sqrt().mean()
+
+            junction_penalty = (
+                torch.nn.functional.relu(self.junction_min_radius - junction_r1) ** 2
+                + torch.nn.functional.relu(self.junction_min_radius - junction_r2) ** 2
+            )
+            total = total + self.junction_radius_weight * junction_penalty
+
         # --- Gluing loss (C⁰+C¹+C² boundary matching at chart junctions) ---
         gluing_loss_val = self.gluing_loss(model)
         total = total + self.gluing_weight * gluing_loss_val
@@ -580,6 +609,8 @@ class MultiChartCombinedLoss(nn.Module):
             'willmore': willmore_value,
             'regularity': regularity_value,
             'gluing': gluing_loss_val.detach().item(),
+            'junction_r1': junction_r1.detach().item() if junction_r1 is not None else None,
+            'junction_r2': junction_r2.detach().item() if junction_r2 is not None else None,
         }
 
     # ------ helpers for bridge chart ----------------------------------------
@@ -932,6 +963,8 @@ def create_embedding_loss(config: dict) -> nn.Module:
             gluing_derivative_weight=loss_config.get("gluing_derivative_weight", 0.5),
             gluing_second_derivative_weight=loss_config.get("gluing_second_derivative_weight", 0.3),
             disk_radius=float(dt_params.get('disk_radius', 0.3)),
+            junction_radius_weight=loss_config.get("junction_radius_weight", 0.0),
+            junction_min_radius=loss_config.get("junction_min_radius", 0.1),
         )
     
     # --- Genus 0 or 1: single-chart loss ---

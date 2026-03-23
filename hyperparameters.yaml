@@ -105,8 +105,8 @@ training:
     willmore_spike_threshold: 0.0  # Disabled: uncapped W has high MC variance from spiky bridge H²; false rollbacks outweigh benefit
     willmore_ema_alpha: 0.3        # Slightly faster EMA for W tracking
     max_rollbacks: 30  # Maximum number of rollbacks per training run
-    willmore_warmup_epochs: 150  # Ramp W weight over 150 epochs; long warmup allowed tori to collapse before W could resist
-    willmore_warmup_start: 0.05  # W gets 5% weight at epoch 1; near-zero start left optimization dominated by gluing alone
+    willmore_warmup_epochs: 0    # W at full weight from epoch 1; no warmup ramp
+    willmore_warmup_start: 0.05  # Inactive when willmore_warmup_epochs=0
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus
@@ -151,10 +151,17 @@ loss:
   regularity_mean_area_floor_weight: 5.0  # Strong barrier against global torus degeneration
 
   # Multi-chart gluing (genus 2 only)
-  gluing_weight: 15.0                    # Reduced from 50; dominant gluing gradient was forcing tori to collapse (disk boundaries shrink → gluing trivially satisfied)
+  gluing_weight: 3.0                     # Comparable order to willmore_weight and regularity_weight so no single loss dominates
   gluing_num_boundary_points: 128         # Number of boundary samples per junction
   gluing_derivative_weight: 0.5          # Weight for C¹ (first derivative) continuity relative to C⁰
   gluing_second_derivative_weight: 0.1   # Reduced from 0.3; C² matching creates extreme gradients at the junction
+
+  # Junction circle radius penalty (genus 2 only)
+  # Penalises when the gluing circle on either torus chart collapses in ℝ³.
+  # Fires a ReLU² penalty below junction_min_radius; gradient pushes the
+  # gluing circle outward, preventing handle degeneration in the excluded disk.
+  junction_radius_weight: 3.0   # Same order as other loss terms
+  junction_min_radius: 0.3      # ℝ³ radius floor for the gluing circle on each torus chart
 
 # Optimization
 optimizer:

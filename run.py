@@ -507,7 +507,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
         'total_loss': [],
         'willmore_energy': [],
         'regularity': [],
-        'gluing': [],  # gluing loss (genus 2 only; 0.0 for genus 0/1)
+        'gluing': [],          # gluing loss (genus 2 only; 0.0 for genus 0/1)
         'learning_rate': [],
         'genus': genus
     }

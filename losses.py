@@ -238,10 +238,15 @@ class RegularityLoss(nn.Module):
         # Conformal energy (Dirichlet excess): (E+G)/(2√(EG−F²)) − 1 ≥ 0, equals 0
         # iff the map is conformal (E=G, F=0).  Unlike the ReLU-gated terms above,
         # this fires continuously, providing gradient signal before collapse.
+        # Clamped to ≥ 0: in exact arithmetic (E+G)/(2√(EG-F²)) ≥ 1 by AM-GM, but
+        # when det is clamped at ε while E,G are also small the ratio can fall below
+        # 1 numerically, making the loss negative and incentivising further collapse.
         if self.conformal_weight > 0:
             det = torch.clamp(E * G - F * F, min=self.epsilon)
             area_el = torch.sqrt(det)
-            conformal_defect = torch.mean((E + G) / (2.0 * area_el + self.epsilon) - 1.0)
+            conformal_defect = torch.mean(
+                torch.clamp((E + G) / (2.0 * area_el + self.epsilon) - 1.0, min=0.0)
+            )
             total_loss += self.conformal_weight * conformal_defect
             weight_sum += self.conformal_weight
 

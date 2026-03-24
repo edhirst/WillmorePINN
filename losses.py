@@ -157,7 +157,8 @@ class RegularityLoss(nn.Module):
         max_metric_value: float = 10.0,
         conformal_weight: float = 0.0,
         mean_area_floor: float = 0.0,
-        mean_area_floor_weight: float = 0.0
+        mean_area_floor_weight: float = 0.0,
+        log_barrier_weight: float = 0.0
     ):
         """
         Args:
@@ -174,6 +175,10 @@ class RegularityLoss(nn.Module):
                 √(EG−F²) drops below this value, preventing global torus degeneration (e.g.
                 sphere-collapse where the hole closes and W→4π per chart)
             mean_area_floor_weight: Weight for the mean area floor loss term
+            log_barrier_weight: Weight for log-barrier −log(√(EG−F²)) on the area element.
+                Gradient −1/√(EG−F²) is continuous and non-zero everywhere (no ReLU gate),
+                diverging as the area element → 0. Motivated as −½ log det(g), the negative
+                log-density of the Riemannian volume form.
         """
         super().__init__()
         self.epsilon = epsilon
@@ -181,6 +186,7 @@ class RegularityLoss(nn.Module):
         self.max_metric_value = max_metric_value
         self.mean_area_floor = mean_area_floor
         self.mean_area_floor_weight = mean_area_floor_weight
+        self.log_barrier_weight = log_barrier_weight
         
         # Store initial weights
         self.area_element_weight = area_element_weight
@@ -272,6 +278,17 @@ class RegularityLoss(nn.Module):
             ) ** 2
             total_loss += self.mean_area_floor_weight * mean_area_floor_loss
             weight_sum += self.mean_area_floor_weight
+
+        # Log-barrier on area element: −log(√(EG−F²)) = −½ log det(g)
+        # Gradient −1/√(EG−F²) is continuous and non-zero for all finite area elements,
+        # diverging as area element → 0. Provides gradient signal before collapse occurs,
+        # unlike the ReLU-gated terms which are silent within their safe bands.
+        if self.log_barrier_weight > 0:
+            det_lb = torch.clamp(E * G - F * F, min=self.epsilon)
+            ae_lb = torch.sqrt(det_lb)
+            log_barrier = -torch.log(torch.clamp(ae_lb, min=self.epsilon)).mean()
+            total_loss += self.log_barrier_weight * log_barrier
+            weight_sum += self.log_barrier_weight
 
         # Normalize by weight sum if any components are active
         if weight_sum > 0:
@@ -451,6 +468,7 @@ class MultiChartCombinedLoss(nn.Module):
         regularity_conformal_weight: float = 0.0,
         regularity_mean_area_floor: float = 0.0,
         regularity_mean_area_floor_weight: float = 0.0,
+        regularity_log_barrier_weight: float = 0.0,
         max_willmore_weight: float = 1.0,
         gluing_num_boundary_points: int = 64,
         gluing_derivative_weight: float = 0.5,
@@ -493,6 +511,7 @@ class MultiChartCombinedLoss(nn.Module):
             conformal_weight=regularity_conformal_weight,
             mean_area_floor=regularity_mean_area_floor,
             mean_area_floor_weight=regularity_mean_area_floor_weight,
+            log_barrier_weight=regularity_log_barrier_weight,
         )
         self.gluing_loss = BoundaryMatchingLoss(
             num_boundary_points=gluing_num_boundary_points,
@@ -762,6 +781,7 @@ class CombinedEmbeddingLoss(nn.Module):
         regularity_conformal_weight: float = 0.0,
         regularity_mean_area_floor: float = 0.0,
         regularity_mean_area_floor_weight: float = 0.0,
+        regularity_log_barrier_weight: float = 0.0,
         genus: Optional[int] = None,
         domain: str = "torus",
         max_willmore_weight: float = 0.5,
@@ -958,6 +978,7 @@ def create_embedding_loss(config: dict) -> nn.Module:
             regularity_conformal_weight=loss_config.get("regularity_conformal_weight", 0.0),
             regularity_mean_area_floor=loss_config.get("regularity_mean_area_floor", 0.0),
             regularity_mean_area_floor_weight=loss_config.get("regularity_mean_area_floor_weight", 0.0),
+            regularity_log_barrier_weight=loss_config.get("regularity_log_barrier_weight", 0.0),
             max_willmore_weight=loss_config.get("max_willmore_weight", 1.0),
             gluing_num_boundary_points=loss_config.get("gluing_num_boundary_points", 64),
             gluing_derivative_weight=loss_config.get("gluing_derivative_weight", 0.5),
@@ -985,6 +1006,7 @@ def create_embedding_loss(config: dict) -> nn.Module:
         regularity_conformal_weight=loss_config.get("regularity_conformal_weight", 0.0),
         regularity_mean_area_floor=loss_config.get("regularity_mean_area_floor", 0.0),
         regularity_mean_area_floor_weight=loss_config.get("regularity_mean_area_floor_weight", 0.0),
+        regularity_log_barrier_weight=loss_config.get("regularity_log_barrier_weight", 0.0),
         genus=genus,
         domain=domain,
         max_willmore_weight=loss_config.get("max_willmore_weight", 0.5),

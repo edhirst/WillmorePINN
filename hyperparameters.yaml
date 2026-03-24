@@ -82,7 +82,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 1000 #3000
+  num_epochs: 600 #3000
   batch_size: 2000  # Larger batches for more stable gradients
   learning_rate: 0.0002  # Slightly higher to stay effective with warm restarts
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
@@ -99,13 +99,13 @@ training:
     enabled: true  # Enable adaptive weight adjustment based on regularity health
     regularity_threshold: 0.1  # Intervene early, before geometry is already distorted
     regularity_boost_factor: 3.0  # Multiply regularity weight by this when threshold exceeded
-    checkpoint_rollback: false  # Rollbacks trigger on MC variance of regularity, not genuine degradation
+    checkpoint_rollback: false   # Rollback to last checkpoint on severe regularity degradation
     severe_degradation_threshold: 4.0  # Rollback if regularity increases by this factor
     regularity_abs_threshold: 0.000001  # Minimum absolute regularity value before rollback can fire (guards against near-zero noise)
     willmore_spike_threshold: 0.0  # Disabled: uncapped W has high MC variance from spiky bridge H²; false rollbacks outweigh benefit
     willmore_ema_alpha: 0.3        # Slightly faster EMA for W tracking
     max_rollbacks: 30  # Maximum number of rollbacks per training run
-    willmore_warmup_epochs: 0    # W at full weight from epoch 1; no warmup ramp
+    willmore_warmup_epochs: 50   # Ramp Willmore from willmore_warmup_start to full weight over 50 epochs
     willmore_warmup_start: 0.05  # Inactive when willmore_warmup_epochs=0
 
 # Sampling Parameters
@@ -125,7 +125,7 @@ sampling:
 loss:
   willmore_weight: 1.0  # Willmore loss weight (constant throughout training)
   max_willmore_weight: 1.0  # Set equal to willmore_weight to disable annealing
-  regularity_weight: 2.5  # Lower than previous run; ratio R/W was ~5000:1 at warmup epoch 1 driving collapse
+  regularity_weight: 25.0  # High weight to prevent early metric collapse; W/Reg ratio was ~10,000:1 at 2.5
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
   h2_clip: 5.0  # Huber threshold for H² in the training integrand. Below √h2_clip: exact Willmore
@@ -140,7 +140,8 @@ loss:
   regularity_orientation_weight: 1.0  # Maintain consistent orientation
   regularity_metric_positivity_weight: 0.5  # Prevent metric degeneration (enable for stability)
   regularity_smoothness_weight: 0.5  # Penalise derivatives that exceed the threshold (ReLU gate)
-  regularity_conformal_weight: 0.0   # Weight for Dirichlet excess (E+G)/(2√(EG−F²)) − 1; disabled — Willmore energy is conformally invariant so there is no reason to prefer isotropic parametrisation
+  regularity_conformal_weight: 0.0   # Disabled — Willmore energy is conformally invariant so there is no reason to prefer isotropic parametrisation
+  regularity_log_barrier_weight: 2.0  # Log-barrier −log(√(EG−F²)) on area element; gradient −1/√(EG−F²) fires continuously (no ReLU gate), diverging as area element → 0
   regularity_max_metric_value: 5.0   # Upper threshold for E = |φ_u|² and G = |φ_v|²
 
   # Mean area element floor: prevents torus sphere-collapse (W→4π per chart).

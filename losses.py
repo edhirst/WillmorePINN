@@ -304,19 +304,19 @@ class RegularityLoss(nn.Module):
 
 class BoundaryMatchingLoss(nn.Module):
     """
-    Boundary matching loss for the multi-chart genus-2 parametrisation.
+    Boundary matching loss for the two-chart genus-2 parametrisation.
 
     Enforces C⁰ (position), C¹ (first normal derivative) and C² (second normal
-    derivative) matching between torus chart disk boundaries and bridge endpoints.
+    derivative) matching directly between φ₁(∂D₁) on T₁ and φ₂(∂D₂) on T₂.
 
     C² matching is essential: the Willmore integrand H² depends on second
     derivatives of φ, so without it each chart optimises curvature independently
-    and a non-physical curvature seam forms at the junction.
+    and a non-physical curvature seam forms at the identification.
 
     Derivatives are computed via autograd (exact) in the *crossing direction*:
-      - Torus side: toward the disk centre, direction (-cos s, -sin s)
-      - Bridge side at t=0: +t direction (0, 1)
-      - Bridge side at t=1: −t direction (0, −1)
+      - T₁ side: inward toward disk centre, direction (−cos s, −sin s)
+      - T₂ side: inward toward disk centre, direction (+cos s, −sin s)
+        (u-component reversed to match the reversed orientation of ∂D₂)
     """
 
     def __init__(self, num_boundary_points: int = 64,
@@ -386,59 +386,43 @@ class BoundaryMatchingLoss(nn.Module):
 
         s = torch.linspace(0, 2 * np.pi, n + 1, device=device, dtype=dtype)[:-1]
 
-        # Crossing directions on torus charts: inward toward disk centre.
-        # T₁ boundary: (δcos s, δsin s) + center_T1  ⇒ inward = (−cos s, −sin s)
-        # T₂ boundary: (−δcos s, δsin s) + center_T2  ⇒ inward = (+cos s, −sin s)
-        # (T₂ u-component is reversed in disk_boundary_T2 for consistent orientation.)
+        # Crossing directions: inward toward the respective disk centre.
+        # T₁ boundary circle: (u₀ + δcos s, v₀ + δsin s)  ⇒ inward = (−cos s, −sin s)
+        # T₂ boundary circle: (u₀ − δcos s, v₀ + δsin s)  ⇒ inward = (+cos s, −sin s)
+        # The sign flip on the T₂ u-component matches disk_boundary_T2's reversed
+        # orientation, so both directional derivatives point "into the handle".
         torus_dir_T1 = torch.stack([-torch.cos(s), -torch.sin(s)], dim=1)  # (n, 2)
         torus_dir_T2 = torch.stack([ torch.cos(s), -torch.sin(s)], dim=1)  # (n, 2)
-        # Bridge crossing directions
-        bridge_dir_j1 = torch.zeros(n, 2, device=device, dtype=dtype)
-        bridge_dir_j1[:, 1] = 1.0          # +t at t = 0
-        bridge_dir_j2 = torch.zeros(n, 2, device=device, dtype=dtype)
-        bridge_dir_j2[:, 1] = -1.0         # −t at t = 1
 
         need_c1 = self.derivative_weight > 0
         need_c2 = self.second_derivative_weight > 0
         order = 2 if need_c2 else (1 if need_c1 else 0)
 
-        # --- Boundary coordinates ---
-        uv_d1 = model.disk_boundary_T1(s)                               # (n, 2)
-        ut_br0 = torch.stack([s, torch.zeros_like(s)], dim=1)           # (n, 2)
-        uv_d2 = model.disk_boundary_T2(s)
-        ut_br1 = torch.stack([s, torch.ones_like(s)], dim=1)
+        # Boundary coordinates on each torus chart
+        uv_d1 = model.disk_boundary_T1(s)   # (n, 2)
+        uv_d2 = model.disk_boundary_T2(s)   # (n, 2)
 
         if order >= 1:
             xyz_T1, d1_T1, d2_T1 = self._directional_derivs(
                 model.forward_torus1, uv_d1, torus_dir_T1, order)
-            xyz_br0, d1_br0, d2_br0 = self._directional_derivs(
-                model.forward_bridge, ut_br0, bridge_dir_j1, order)
             xyz_T2, d1_T2, d2_T2 = self._directional_derivs(
                 model.forward_torus2, uv_d2, torus_dir_T2, order)
-            xyz_br1, d1_br1, d2_br1 = self._directional_derivs(
-                model.forward_bridge, ut_br1, bridge_dir_j2, order)
         else:
             xyz_T1 = model.forward_torus1(uv_d1)
-            xyz_br0 = model.forward_bridge(ut_br0)
             xyz_T2 = model.forward_torus2(uv_d2)
-            xyz_br1 = model.forward_bridge(ut_br1)
 
         # C⁰ — position matching
-        pos_loss = ((xyz_T1 - xyz_br0) ** 2).sum(1).mean() \
-                 + ((xyz_T2 - xyz_br1) ** 2).sum(1).mean()
-        total = pos_loss
+        total = ((xyz_T1 - xyz_T2) ** 2).sum(1).mean()
 
         # C¹ — first normal-derivative matching
-        # Both directions already point "into the bridge" so d1 values should agree.
+        # Both directions point "into the handle", so d1 values should agree.
         if need_c1:
-            c1_loss = ((d1_T1 - d1_br0) ** 2).sum(1).mean() \
-                    + ((d1_T2 - d1_br1) ** 2).sum(1).mean()
+            c1_loss = ((d1_T1 - d1_T2) ** 2).sum(1).mean()
             total = total + self.derivative_weight * c1_loss
 
         # C² — second normal-derivative matching (curvature continuity)
         if need_c2:
-            c2_loss = ((d2_T1 - d2_br0) ** 2).sum(1).mean() \
-                    + ((d2_T2 - d2_br1) ** 2).sum(1).mean()
+            c2_loss = ((d2_T1 - d2_T2) ** 2).sum(1).mean()
             total = total + self.second_derivative_weight * c2_loss
 
         return total
@@ -446,10 +430,10 @@ class BoundaryMatchingLoss(nn.Module):
 
 class MultiChartCombinedLoss(nn.Module):
     """
-    Combined loss for the genus-2 multi-chart architecture.
+    Combined loss for the genus-2 two-chart architecture.
 
-    Aggregates Willmore + regularity over three charts (T₁, bridge, T₂)
-    plus gluing loss at the two chart junctions.
+    Aggregates Willmore + regularity over two charts (T₁, T₂) plus a direct
+    gluing loss at the single φ₁(∂D₁) = φ₂(∂D₂) identification.
     """
 
     def __init__(
@@ -476,6 +460,9 @@ class MultiChartCombinedLoss(nn.Module):
         disk_radius: float = 0.3,
         junction_radius_weight: float = 0.0,
         junction_min_radius: float = 0.1,
+        junction_max_radius: Optional[float] = None,
+        topology_guard_weight: float = 0.0,
+        topology_guard_floor: float = 4.0 * np.pi ** 2,
     ):
         super().__init__()
         self.willmore_weight = willmore_weight
@@ -487,18 +474,16 @@ class MultiChartCombinedLoss(nn.Module):
         self.initial_weight_sum = willmore_weight + regularity_weight
         self.junction_radius_weight = junction_radius_weight
         self.junction_min_radius = junction_min_radius
+        self.junction_max_radius = junction_max_radius
+        self.topology_guard_weight = topology_guard_weight
+        self.topology_guard_floor = topology_guard_floor
 
-        # One Willmore loss per chart.  The torus charts integrate over [0,2π]²
-        # minus the excluded disk D of parameter-space area πδ².
-        # The bridge chart uses domain_area = 2π × 1 = 2π.
+        # Each torus chart integrates over [0, 2π]² minus the excluded disk D
+        # of parameter-space area πδ².
         punctured_torus_area = (2.0 * np.pi) ** 2 - np.pi * disk_radius ** 2
         self.willmore_T = EmbeddingWillmoreLoss(epsilon=epsilon, domain="torus", genus=1,
                                                  h2_clip=h2_clip)
         self.willmore_T.domain_area = punctured_torus_area
-        self.willmore_bridge = EmbeddingWillmoreLoss(epsilon=epsilon, domain="torus", genus=None,
-                                                      h2_clip=h2_clip)
-        # Bridge domain: [0, 2π] × [0, 1] → area = 2π
-        self.willmore_bridge.domain_area = 2.0 * np.pi
 
         self.regularity_loss = RegularityLoss(
             epsilon=epsilon,
@@ -556,37 +541,46 @@ class MultiChartCombinedLoss(nn.Module):
                 base_r *= boost
         self.regularity_weight = base_r
 
-    def forward(self, model, uv_T1: torch.Tensor, uv_bridge: torch.Tensor,
-                uv_T2: torch.Tensor) -> dict:
+    def forward(self, model, uv_T1: torch.Tensor, uv_T2: torch.Tensor) -> dict:
         """
-        Compute combined multi-chart loss.
+        Compute combined two-chart loss.
 
         Args:
             model: Genus2MultiChartNetwork
-            uv_T1:     (N₁, 2) samples on T₁ chart (excluding disk D₁)
-            uv_bridge: (N_b, 2) samples on bridge chart (u, t)
-            uv_T2:     (N₂, 2) samples on T₂ chart (excluding disk D₂)
+            uv_T1: (N₁, 2) samples on T₁ chart (excluding disk D₁)
+            uv_T2: (N₂, 2) samples on T₂ chart (excluding disk D₂)
 
         Returns:
             Dict with 'total', 'willmore', 'regularity', 'gluing' keys.
         """
         total = torch.tensor(0.0, device=uv_T1.device)
-        w_total = 0.0
 
         # --- Willmore on each chart ---
         w_T1, w_T1_val = self.willmore_T(model.torus1, uv_T1)
-        w_br, w_br_val = self._willmore_bridge(model, uv_bridge)
         w_T2, w_T2_val = self.willmore_T(model.torus2, uv_T2)
 
-        willmore_train = w_T1 + w_br + w_T2
-        willmore_value = w_T1_val + w_br_val + w_T2_val
+        willmore_train = w_T1 + w_T2
+        willmore_value = w_T1_val + w_T2_val
         total = total + self.willmore_weight * willmore_train
+
+        # --- Topology guard: penalise W < theoretical genus-2 minimum ---
+        # The Willmore conjecture (Marques–Neves 2012) proves W ≥ 4π² ≈ 39.48
+        # for embedded tori; for genus-2 surfaces the same floor is conjectured
+        # (Lawson's ξ_{2,1} saturates it).  Any measured W < 4π² is an
+        # infallible indicator that the surface is no longer an embedded genus-2
+        # surface.  The ReLU² penalty creates an energy floor at W_floor so the
+        # network is penalised for topology-changing deformations while remaining
+        # free to minimise Willmore within the genus-2 manifold (where W ≥ floor).
+        if self.topology_guard_weight > 0:
+            topo_penalty = torch.nn.functional.relu(
+                self.topology_guard_floor - willmore_train
+            ) ** 2
+            total = total + self.topology_guard_weight * topo_penalty
 
         # --- Regularity on each chart ---
         r_T1 = self.regularity_loss(model.torus1, uv_T1)
-        r_br = self._regularity_bridge(model, uv_bridge)
         r_T2 = self.regularity_loss(model.torus2, uv_T2)
-        regularity = r_T1 + r_br + r_T2
+        regularity = r_T1 + r_T2
         regularity_value = regularity.detach().item()
         total = total + self.regularity_weight * regularity
 
@@ -613,6 +607,13 @@ class MultiChartCombinedLoss(nn.Module):
                 torch.nn.functional.relu(self.junction_min_radius - junction_r1) ** 2
                 + torch.nn.functional.relu(self.junction_min_radius - junction_r2) ** 2
             )
+            # Optional upper bound: prevent the junction circle from growing so
+            # large that each torus chart degenerates to a sphere-like cap.
+            if self.junction_max_radius is not None:
+                junction_penalty = junction_penalty + (
+                    torch.nn.functional.relu(junction_r1 - self.junction_max_radius) ** 2
+                    + torch.nn.functional.relu(junction_r2 - self.junction_max_radius) ** 2
+                )
             total = total + self.junction_radius_weight * junction_penalty
 
         # --- Gluing loss (C⁰+C¹+C² boundary matching at chart junctions) ---
@@ -632,104 +633,20 @@ class MultiChartCombinedLoss(nn.Module):
             'junction_r2': junction_r2.detach().item() if junction_r2 is not None else None,
         }
 
-    # ------ helpers for bridge chart ----------------------------------------
-
-    def _willmore_bridge(self, model, ut: torch.Tensor):
-        """Compute Willmore energy on the bridge chart via autodiff."""
-        ut = ut.requires_grad_(True)
-        xyz = model.forward_bridge(ut)
-
-        # φ_u, φ_t via autograd
-        phi_u, phi_t = [], []
-        for i in range(3):
-            g = torch.zeros_like(xyz); g[:, i] = 1.0
-            grads = torch.autograd.grad(xyz, ut, g, create_graph=True, retain_graph=True)[0]
-            phi_u.append(grads[:, 0:1])
-            phi_t.append(grads[:, 1:2])
-        phi_u = torch.cat(phi_u, dim=1)
-        phi_t = torch.cat(phi_t, dim=1)
-
-        E = (phi_u * phi_u).sum(1)
-        F = (phi_u * phi_t).sum(1)
-        G = (phi_t * phi_t).sum(1)
-
-        eps = self.willmore_bridge.epsilon
-        det = torch.clamp(E * G - F * F, min=eps)
-        area_element = torch.sqrt(det)
-
-        # Second fundamental form
-        normal_un = torch.cross(phi_u, phi_t, dim=1)
-        normal = normal_un / (torch.norm(normal_un, dim=1, keepdim=True) + 1e-8)
-
-        phi_uu, phi_ut, phi_tt = [], [], []
-        for i in range(3):
-            g = torch.zeros_like(phi_u); g[:, i] = 1.0
-            grads_u = torch.autograd.grad(phi_u, ut, g, create_graph=True, retain_graph=True)[0]
-            phi_uu.append(grads_u[:, 0:1])
-            phi_ut.append(grads_u[:, 1:2])
-            g2 = torch.zeros_like(phi_t); g2[:, i] = 1.0
-            grads_t = torch.autograd.grad(phi_t, ut, g2, create_graph=True, retain_graph=True)[0]
-            phi_tt.append(grads_t[:, 1:2])
-        phi_uu = torch.cat(phi_uu, dim=1)
-        phi_ut = torch.cat(phi_ut, dim=1)
-        phi_tt = torch.cat(phi_tt, dim=1)
-
-        L = (phi_uu * normal).sum(1)
-        M = (phi_ut * normal).sum(1)
-        N = (phi_tt * normal).sum(1)
-        H = (E * N - 2 * F * M + G * L) / (2 * det + eps)
-
-        integrand = H * H * area_element
-        uncapped = (integrand.detach().mean() * self.willmore_bridge.domain_area).item()
-
-        h2_clip = self.willmore_bridge.h2_clip
-        if h2_clip is not None:
-            sqrt_c = h2_clip ** 0.5
-            h2 = H * H
-            h2_hub = torch.where(h2 <= h2_clip, h2, 2.0 * sqrt_c * H.abs() - h2_clip)
-            integrand = h2_hub * area_element
-
-        train_energy = integrand.mean() * self.willmore_bridge.domain_area
-        return train_energy, uncapped
-
-    def _regularity_bridge(self, model, ut: torch.Tensor) -> torch.Tensor:
-        """Compute regularity on the bridge chart."""
-        ut = ut.requires_grad_(True)
-        xyz = model.forward_bridge(ut)
-        phi_u, phi_t = [], []
-        for i in range(3):
-            g = torch.zeros_like(xyz); g[:, i] = 1.0
-            grads = torch.autograd.grad(xyz, ut, g, create_graph=True, retain_graph=True)[0]
-            phi_u.append(grads[:, 0:1])
-            phi_t.append(grads[:, 1:2])
-        phi_u = torch.cat(phi_u, dim=1)
-        phi_t = torch.cat(phi_t, dim=1)
-        E = (phi_u * phi_u).sum(1)
-        G = (phi_t * phi_t).sum(1)
-        F = (phi_u * phi_t).sum(1)
-        det = torch.clamp(E * G - F * F, min=1e-8)
-        area_element = torch.sqrt(det)
-        cross_mag = torch.norm(torch.cross(phi_u, phi_t, dim=1), dim=1)
-        min_ae = self.regularity_loss.min_area_element
-        area_loss = torch.mean(torch.nn.functional.relu(min_ae - area_element) ** 2)
-        orient_loss = torch.mean(torch.nn.functional.relu(min_ae - cross_mag) ** 2)
-        return (area_loss + orient_loss) / 2.0
-
     def eval_willmore_batched(
-        self, model, uv_T1: torch.Tensor, uv_bridge: torch.Tensor,
-        uv_T2: torch.Tensor, chunk_size: int = 1000,
+        self, model, uv_T1: torch.Tensor, uv_T2: torch.Tensor,
+        chunk_size: int = 1000,
     ) -> float:
-        """Evaluate total Willmore energy across all charts in batches.
+        """Evaluate total Willmore energy across both charts in batches.
 
-        Computes only Willmore (no regularity or gluing) so that each
-        chart can be processed in small chunks, keeping peak autodiff
-        graph memory proportional to chunk_size rather than eval_num_points.
+        Computes only Willmore (no regularity or gluing) so that each chart
+        can be processed in small chunks, keeping peak autodiff graph memory
+        proportional to chunk_size rather than eval_num_points.
 
         Args:
             model: Genus2MultiChartNetwork
-            uv_T1:     (N₁, 2) eval samples on T₁ chart
-            uv_bridge: (N_b, 2) eval samples on bridge chart
-            uv_T2:     (N₂, 2) eval samples on T₂ chart
+            uv_T1:  (N₁, 2) eval samples on T₁ chart
+            uv_T2:  (N₂, 2) eval samples on T₂ chart
             chunk_size: Number of points per autodiff pass.
 
         Returns:
@@ -744,18 +661,7 @@ class MultiChartCombinedLoss(nn.Module):
                 total += v * (e - s)
             return total / n
 
-        w_T1 = _torus_chart(model.torus1, uv_T1)
-        w_T2 = _torus_chart(model.torus2, uv_T2)
-
-        n_br = len(uv_bridge)
-        total_br = 0.0
-        for s in range(0, n_br, chunk_size):
-            e = min(s + chunk_size, n_br)
-            _, v = self._willmore_bridge(model, uv_bridge[s:e])
-            total_br += v * (e - s)
-        w_br = total_br / n_br
-
-        return w_T1 + w_br + w_T2
+        return _torus_chart(model.torus1, uv_T1) + _torus_chart(model.torus2, uv_T2)
 
 
 class CombinedEmbeddingLoss(nn.Module):
@@ -986,6 +892,9 @@ def create_embedding_loss(config: dict) -> nn.Module:
             disk_radius=float(dt_params.get('disk_radius', 0.3)),
             junction_radius_weight=loss_config.get("junction_radius_weight", 0.0),
             junction_min_radius=loss_config.get("junction_min_radius", 0.1),
+            junction_max_radius=loss_config.get("junction_max_radius", None),
+            topology_guard_weight=loss_config.get("topology_guard_weight", 0.0),
+            topology_guard_floor=loss_config.get("topology_guard_floor", 4.0 * np.pi ** 2),
         )
     
     # --- Genus 0 or 1: single-chart loss ---

@@ -8,7 +8,7 @@ computed from the first and second fundamental forms of this embedding.
 Supported topologies:
 - Genus 0 (sphere/ellipsoid): Uses polar coordinates [0, π] × [0, 2π]
 - Genus 1 (torus): Uses doubly-periodic coordinates [0, 2π] × [0, 2π]
-- Genus 2 (double torus): Multi-chart architecture (T₁ + bridge + T₂)
+- Genus 2 (double torus): Two-chart architecture (T₁ + T₂, direct gluing)
 """
 
 import torch
@@ -753,24 +753,19 @@ class EmbeddingNetwork(nn.Module):
 # ============================================================================
 #
 # A genus-2 surface is the connected sum T₁ # T₂: two tori, each with a small
-# disk removed, joined by a cylindrical bridge.
+# disk removed, identified along their boundary circles.
 #
-# Three charts:
-#   Chart T₁:     [0, 2π]² with u, v doubly-periodic (Fourier features)
-#                  A disk D₁ of radius δ centred at (u₀, v₀) is excluded from
-#                  the Willmore integral.  The network still maps D₁ (Fourier
-#                  features are smooth everywhere), but D₁ is "phantom" — it
-#                  contributes no gradient.  The bridge replaces D₁ geometrically.
+# Two charts:
+#   Chart T₁:  [0, 2π]² with u, v doubly-periodic (Fourier features).
+#               A disk D₁ of radius δ centred at (u₀, v₀) is excluded from
+#               the Willmore integral.
 #
-#   Chart Bridge:  [0, 2π] × [0, 1] with u periodic, t non-periodic.
-#                  A tube connecting ∂D₁ on T₁ to ∂D₂ on T₂.
+#   Chart T₂:  Same as T₁, with its own disk D₂ excluded.
 #
-#   Chart T₂:     Same as T₁, with its own disk D₂ excluded.
+# ∂D₁ and ∂D₂ are directly identified (no bridge chart).  A boundary-matching
+# loss enforces C⁰/C¹/C² continuity between φ₁(∂D₁) and φ₂(∂D₂).
 #
-# Euler characteristic:  χ(T₁\D₁) + χ(bridge) + χ(T₂\D₂)
-#                      = (-1)      + (0)       + (-1)       = -2  →  genus 2  ✓
-#
-# Boundary matching loss stitches the charts at ∂D₁ and ∂D₂.
+# Euler characteristic:  χ(T₁\D₁) + χ(T₂\D₂) = (-1) + (-1) = -2  →  genus 2  ✓
 # ============================================================================
 
 
@@ -803,57 +798,18 @@ def _compute_disk_center_T2(tau2: complex) -> Tuple[float, float]:
     return (u0, v0)
 
 
-class BridgeEmbedding(nn.Module):
-    """
-    Spectral embedding for the bridge (cylinder) chart.
-
-    u ∈ [0, 2π] periodic: standard Fourier basis sin(ku), cos(ku).
-    t ∈ [0, 1] non-periodic: sin(kπt), cos(kπt) for k=1..N, plus raw t.
-
-    At t=0: t-features = [0, 1, 0, 1, ...]  (bridge start — T₁ disk boundary)
-    At t=1: t-features = [0, -1, 0, 1, ...]  (bridge end — T₂ disk boundary)
-    Distinct → bridge does not self-close.
-
-    Output dim: 4·N + 1  (2N u-features + 2N t-features + 1 raw t).
-    """
-
-    def __init__(self, num_frequencies: int = 4):
-        super().__init__()
-        self.num_frequencies = num_frequencies
-        self.output_dim = 4 * num_frequencies + 1
-
-    def forward(self, ut: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            ut: (batch, 2) with ut[:,0]=u ∈ [0, 2π], ut[:,1]=t ∈ [0, 1]
-
-        Returns:
-            Features (batch, 4·N + 1).
-        """
-        u = ut[:, 0:1]
-        t = ut[:, 1:2]
-        features = []
-        for k in range(1, self.num_frequencies + 1):
-            features.append(torch.sin(k * u))
-            features.append(torch.cos(k * u))
-            features.append(torch.sin(k * np.pi * t))
-            features.append(torch.cos(k * np.pi * t))
-        features.append(t)  # raw position along bridge
-        return torch.cat(features, dim=1)
-
-
 class Genus2MultiChartNetwork(nn.Module):
     """
-    Multi-chart embedding network for genus-2 surfaces.
+    Two-chart embedding network for genus-2 surfaces.
 
-    Three sub-networks (one per chart):
-      T₁:     EmbeddingNetwork with genus=1 (doubly-periodic Fourier features)
-      Bridge:  Small MLP with BridgeEmbedding (u-periodic, t-non-periodic)
-      T₂:     EmbeddingNetwork with genus=1 (doubly-periodic Fourier features)
+    Two sub-networks (one per chart):
+      T₁:  EmbeddingNetwork with genus=1 (doubly-periodic Fourier features)
+      T₂:  EmbeddingNetwork with genus=1 (doubly-periodic Fourier features)
 
     Each torus has a parametric disk D_i excluded from the Willmore integral.
-    The bridge connects ∂D₁ → ∂D₂.  Boundary matching is enforced by a loss,
-    not by the features.
+    ∂D₁ and ∂D₂ are identified directly by a boundary-matching loss (no bridge
+    chart).  torus2_offset keeps T₂ spatially separated during pretraining;
+    the gluing loss pulls φ₁(∂D₁) and φ₂(∂D₂) together during Willmore training.
 
     Attributes:
         disk_center_T1: (u₀, v₀) centre of the excluded disk on T₁ (parameter space)
@@ -905,30 +861,6 @@ class Genus2MultiChartNetwork(nn.Module):
             topology_params=torus1_topo,
         )
 
-        # --- Chart Bridge (cylinder) ---
-        bridge_embed = BridgeEmbedding(num_frequencies)
-        bridge_input_dim = bridge_embed.output_dim
-        bridge_layers = []
-        prev = bridge_input_dim
-        for hd in hidden_dims:
-            bridge_layers.append(nn.Linear(prev, hd))
-            bridge_layers.append(self.torus1._get_activation(activation))
-            if dropout > 0:
-                bridge_layers.append(nn.Dropout(dropout))
-            prev = hd
-        bridge_layers.append(nn.Linear(prev, 3))
-        self.bridge_embed = bridge_embed
-        self.bridge_network = nn.Sequential(*bridge_layers)
-        # Initialise bridge weights
-        for m in self.bridge_network.modules():
-            if isinstance(m, nn.Linear):
-                if initialization == "xavier_uniform":
-                    nn.init.xavier_uniform_(m.weight)
-                elif initialization == "xavier_normal":
-                    nn.init.xavier_normal_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-
         # --- Chart T₂ (genus-1 torus) ---
         torus2_topo = {'torus': {'tau': str(tau2)}}
         self.torus2 = EmbeddingNetwork(
@@ -945,10 +877,9 @@ class Genus2MultiChartNetwork(nn.Module):
             topology_params=torus2_topo,
         )
 
-        # Offset T₂ in ℝ³ so the two tori start non-overlapping.
-        # Without this, both charts produce the same torus surface and the
-        # bridge degenerates.  The offset shifts T₂'s final-layer bias so
-        # its output is the standard torus embedding + offset.
+        # Offset T₂ in ℝ³ so the two tori start non-overlapping during pretraining.
+        # The gluing loss pulls φ₁(∂D₁) and φ₂(∂D₂) together during Willmore training.
+        # The offset shifts T₂'s final-layer bias.
         if not skip_init and any(abs(x) > 1e-12 for x in torus2_offset):
             with torch.no_grad():
                 # Last module in self.torus2.network is nn.Linear(hidden, 3)
@@ -963,10 +894,6 @@ class Genus2MultiChartNetwork(nn.Module):
     def forward_torus1(self, uv: torch.Tensor) -> torch.Tensor:
         """Evaluate T₁ chart.  uv ∈ [0, 2π]²."""
         return self.torus1(uv)
-
-    def forward_bridge(self, ut: torch.Tensor) -> torch.Tensor:
-        """Evaluate bridge chart.  u ∈ [0, 2π], t ∈ [0, 1]."""
-        return self.bridge_network(self.bridge_embed(ut))
 
     def forward_torus2(self, uv: torch.Tensor) -> torch.Tensor:
         """Evaluate T₂ chart.  uv ∈ [0, 2π]²."""
@@ -989,9 +916,8 @@ class Genus2MultiChartNetwork(nn.Module):
         """Map angle s ∈ [0, 2π] to parameter coords on ∂D₂ ⊂ T₂.
 
         The u-component uses −cos(s) (reversed relative to ∂D₁) so that the
-        corresponding boundary circles on T₁ and T₂ are consistently oriented
-        in ℝ³ (both counterclockwise viewed from the T₁ side).  Without this
-        sign the bridge cross-section degenerates at t = ½.
+        boundary circles on T₁ and T₂ are consistently oriented in ℝ³ (both
+        counterclockwise viewed from the T₁ side), enabling C¹ matching.
         """
         u0, v0 = self.disk_center_T2
         delta = self.disk_radius
@@ -1013,68 +939,18 @@ class Genus2MultiChartNetwork(nn.Module):
             ref = ref + offset
         return ref
 
-    def reference_bridge(self, ut: torch.Tensor) -> torch.Tensor:
-        """Reference embedding for the bridge (catenoid connecting ∂D₁ → ∂D₂).
-
-        Linearly interpolates between the T₁ disk-boundary reference
-        and the T₂ disk-boundary reference, with a catenoid-like
-        radius modulation.  This is deliberately simple — supervised
-        pretraining only needs a plausible initialisation target.
-        """
-        s = ut[:, 0]
-        t = ut[:, 1:2]
-        # Evaluate reference tori at disk boundaries
-        uv_d1 = self.disk_boundary_T1(s)
-        uv_d2 = self.disk_boundary_T2(s)
-        xyz1 = self.reference_torus1(uv_d1).detach()
-        xyz2 = self.reference_torus2(uv_d2).detach()
-        # Lerp with cosh waist modulation
-        # At t=0: xyz1,  at t=1: xyz2, with slight inward pinch at t=0.5
-        center = (xyz1 + xyz2) / 2.0
-        pinch = 0.7 + 0.3 * (2.0 * t - 1.0).pow(2)  # 0.7 at t=0.5, 1.0 at endpoints
-        return center + pinch * ((1.0 - t) * (xyz1 - center) + t * (xyz2 - center))
-
     # ---- supervised pretraining --------------------------------------------
 
     def pretrain(self, config: dict, device: torch.device):
         """
-        Supervised pretraining: fit each chart's network to its reference embedding.
+        Supervised pretraining for the two-chart genus-2 network.
 
-        The torus sub-networks use their built-in _init_near_reference.
-        The bridge network is pretrained here against reference_bridge.
+        T₁ and T₂ sub-networks pretrain via their built-in _init_near_reference.
+        Nothing extra is needed here; this method exists as a hook for run.py.
         """
         pretrain_cfg = config.get('model', {}).get('supervised_pretraining', {})
-        if not pretrain_cfg.get('enabled', True):
-            return
-
-        print("\n[Multi-chart] Supervised pretraining: T₁ and T₂ handled internally.")
-        print("[Multi-chart] Pretraining bridge network...")
-
-        n_epochs = pretrain_cfg.get('num_epochs', 30)
-        lr = pretrain_cfg.get('learning_rate', 0.01)
-        batch_size = pretrain_cfg.get('batch_size', 256)
-        n_per_epoch = pretrain_cfg.get('num_points_per_epoch', 2000)
-
-        opt = torch.optim.Adam(
-            list(self.bridge_embed.parameters()) + list(self.bridge_network.parameters()),
-            lr=lr,
-        )
-        for epoch in range(n_epochs):
-            epoch_loss = 0.0
-            n_batches = max(1, n_per_epoch // batch_size)
-            for _ in range(n_batches):
-                u = torch.rand(batch_size, device=device) * 2 * np.pi
-                t = torch.rand(batch_size, device=device)
-                ut = torch.stack([u, t], dim=1)
-                xyz_pred = self.forward_bridge(ut)
-                xyz_ref = self.reference_bridge(ut)
-                loss = ((xyz_pred - xyz_ref) ** 2).mean()
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
-                epoch_loss += loss.item()
-            if (epoch + 1) % max(1, n_epochs // 5) == 0:
-                print(f"  Bridge pretrain epoch {epoch+1}/{n_epochs}: MSE = {epoch_loss / n_batches:.6f}")
+        if pretrain_cfg.get('enabled', True):
+            print("\n[Two-chart genus 2] Supervised pretraining: T₁ and T₂ handled internally.")
 
     # ---- utilities ---------------------------------------------------------
 
@@ -1158,7 +1034,7 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         if not skip_init:
             model.pretrain(config, device)
 
-        print(f"Multi-chart model created for genus 2 (T₁ + bridge + T₂)")
+        print(f"Two-chart model created for genus 2 (T₁ + T₂, direct gluing)")
         print(f"  τ₁ = {tau1}, τ₂ = {tau2}")
         print(f"  Disk radius δ = {disk_radius}")
         if any(abs(x) > 1e-12 for x in torus2_offset):

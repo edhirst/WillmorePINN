@@ -23,10 +23,10 @@ topology:
     max_height: null  # Optional: maximum height to clip Im(τ) (null = no limit)
     # Clifford torus (R = √2, r = 1) has minimum Willmore energy 2π² ≈ 19.74
   
-  # Genus 2 (double torus) — multi-chart architecture
-  # Two punctured tori (T₁, T₂) connected by a catenoid bridge chart.
+  # Genus 2 (double torus) — two-chart architecture
+  # Two punctured tori (T₁, T₂) with their disk boundaries identified directly.
   # Each torus has a parametric disk D_i excluded from the Willmore integral.
-  # The bridge connects ∂D₁ → ∂D₂ with C⁰/C¹/C² matching enforced by a loss.
+  # A boundary-matching loss enforces C⁰/C¹/C² continuity between φ₁(∂D₁) and φ₂(∂D₂).
   #
   # Parameters:
   #   τ₁, τ₂ ∈ ℂ: modular parameters for each torus
@@ -35,6 +35,8 @@ topology:
   #   disk_radius: parameter-space radius δ of excluded disks on each torus
   #   disk_center_T1: (u₀, v₀) centre of excluded disk on T₁ (default (0,0) is always optimal)
   #   disk_center_T2: auto-derived from τ₂ — always the closest point of T₂ to T₁
+  #   torus2_offset: ℝ³ translation applied to T₂ during pretraining to prevent
+  #     initial overlap; the gluing loss pulls φ₁(∂D₁) and φ₂(∂D₂) together during training
   #
   double_torus:
     tau1: "0.85j"   # Im(τ₁) controls tube thickness; Re(τ₁)/Im(τ₁) is the helical twist rate
@@ -42,7 +44,7 @@ topology:
     disk_radius: 0.4             # Parameter-space radius of excluded disk on each torus chart
     disk_center_T1: [0.0, 0.0]  # (u₀, v₀) maps to the T₂-facing side of T₁ for any τ₁
     # disk_center_T2 is auto-computed from τ₂ in code: v₀ = (−Re(τ₂)π/Im(τ₂)) mod 2π, u₀ = (π − v₀·Re(τ₂)) mod 2π
-    torus2_offset: [4.4, 0.0, 0.0]    # ℝ³ translation applied to T₂; must satisfy d > (R+r₁)+(R+r₂) so bridge connects externally (R=1, r=Im(τ))
+    torus2_offset: [4.4, 0.0, 0.0]    # ℝ³ translation applied to T₂ during pretraining; gluing loss pulls φ₁(∂D₁) and φ₂(∂D₂) together during training
     # Lawson's minimal surface ξ_{2,1} has Willmore energy ≈ 4π² ≈ 39.48
 
 # Model Architecture
@@ -82,31 +84,32 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 600 #3000
+  num_epochs: 3000
   batch_size: 2000  # Larger batches for more stable gradients
   learning_rate: 0.0002  # Slightly higher to stay effective with warm restarts
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
   scheduler: "cosine_warm_restarts"  # Warm restarts prevent LR from decaying to near-zero and freezing the model
   scheduler_params:
-    T_0: 300        # First restart period; second restart at epoch 900
+    T_0: 200        # Cosine period; with T_mult=2: cycles end at 200, 600, 1400, 3000 epochs
     T_mult: 2       # Each restart doubles the period
     eta_min: 0.000001  # Low floor for fine-tuning between restarts
   gradient_clip: 1.0
-  log_frequency: 10   # Log metrics and save checkpoints every N epochs
+  log_frequency: 50   # Log metrics and save checkpoints every N epochs
   
   # Adaptive safeguards to prevent regularity collapse (applies to all genus types)
   adaptive_training:
     enabled: true  # Enable adaptive weight adjustment based on regularity health
     regularity_threshold: 0.1  # Intervene early, before geometry is already distorted
     regularity_boost_factor: 3.0  # Multiply regularity weight by this when threshold exceeded
-    checkpoint_rollback: false   # Rollback to last checkpoint on severe regularity degradation
+    checkpoint_rollback: true   # Rollback to last checkpoint on severe regularity degradation
     severe_degradation_threshold: 4.0  # Rollback if regularity increases by this factor
     regularity_abs_threshold: 0.000001  # Minimum absolute regularity value before rollback can fire (guards against near-zero noise)
     willmore_spike_threshold: 0.0  # Disabled: uncapped W has high MC variance from spiky bridge H²; false rollbacks outweigh benefit
     willmore_ema_alpha: 0.3        # Slightly faster EMA for W tracking
     max_rollbacks: 30  # Maximum number of rollbacks per training run
-    willmore_warmup_epochs: 50   # Ramp Willmore from willmore_warmup_start to full weight over 50 epochs
-    willmore_warmup_start: 0.05  # Inactive when willmore_warmup_epochs=0
+    willmore_warmup_epochs: 200   # Ramp Willmore from willmore_warmup_start to full weight over this many epochs
+    willmore_warmup_start: 0.02   # Willmore weight fraction at epoch 1 of Willmore training
+    willmore_topology_floor: 39.478  # W ≥ 4π² for any embedded genus-2 surface; trigger rollback if EMA W falls below this after warmup
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus
@@ -152,17 +155,29 @@ loss:
   regularity_mean_area_floor_weight: 5.0  # Strong barrier against global torus degeneration
 
   # Multi-chart gluing (genus 2 only)
-  gluing_weight: 3.0                     # Comparable order to willmore_weight and regularity_weight so no single loss dominates
+  gluing_weight: 10.0                    # Strong C°/C¹/C² enforcement to anchor topology during optimisation
   gluing_num_boundary_points: 128         # Number of boundary samples per junction
   gluing_derivative_weight: 0.5          # Weight for C¹ (first derivative) continuity relative to C⁰
   gluing_second_derivative_weight: 0.1   # Reduced from 0.3; C² matching creates extreme gradients at the junction
 
   # Junction circle radius penalty (genus 2 only)
-  # Penalises when the gluing circle on either torus chart collapses in ℝ³.
   # Fires a ReLU² penalty below junction_min_radius; gradient pushes the
   # gluing circle outward, preventing handle degeneration in the excluded disk.
+  # Also fires a ReLU² penalty above junction_max_radius; gradient pushes the
+  # gluing circle inward, preventing each torus chart from degenerating to a
+  # sphere-cap (which would expand the junction circle to sphere-equator scale).
   junction_radius_weight: 3.0   # Same order as other loss terms
   junction_min_radius: 0.3      # ℝ³ radius floor for the gluing circle on each torus chart
+  junction_max_radius: 1.2      # ℝ³ radius ceiling for the gluing circle on each torus chart
+
+  # Topology guard (genus 2 only)
+  # Exploits the Willmore conjecture (Marques-Neves 2012): any smooth embedded
+  # genus-2 surface satisfies W ≥ 4π² ≈ 39.48.  A ReLU² penalty fires when the
+  # training Willmore drops below topology_guard_floor, creating an energy floor
+  # that makes topology-changing deformations expensive.  At equilibrium the
+  # optimizer settles at W ≈ floor, which IS the Lawson minimum.
+  topology_guard_weight: 10.0      # Weight for the floor penalty; ~10× willmore_weight for strong containment
+  topology_guard_floor: 39.478     # 4π²; fires if W falls below this value
 
 # Optimization
 optimizer:

@@ -27,7 +27,7 @@ from losses import create_embedding_loss
 from sampling import (
     sample_parameters, compute_reference_willmore_energy,
     get_domain_for_genus, get_theoretical_minimum_willmore,
-    sample_torus_excluding_disk, sample_bridge_domain,
+    sample_torus_excluding_disk,
 )
 from utils import plot_loss_curves
 import functools
@@ -236,11 +236,10 @@ def _train_epoch_genus2(
     dtype: torch.dtype,
     gradient_clip: Optional[float] = None,
 ) -> Dict[str, float]:
-    """Train one epoch for genus 2 (multi-chart)."""
-    # Distribute points: ~40% T1, ~40% T2, ~20% bridge (bridge domain is smaller)
-    n_T1 = int(num_points * 0.4)
-    n_br = int(num_points * 0.2)
-    n_T2 = num_points - n_T1 - n_br
+    """Train one epoch for genus 2 (two-chart)."""
+    # Distribute points equally across T₁ and T₂.
+    n_T1 = num_points // 2
+    n_T2 = num_points - n_T1
 
     uv_T1 = sample_torus_excluding_disk(
         n_T1,
@@ -248,7 +247,6 @@ def _train_epoch_genus2(
         disk_radius=model.disk_radius,
         device=device, dtype=dtype,
     )
-    uv_br = sample_bridge_domain(n_br, device=device, dtype=dtype)
     uv_T2 = sample_torus_excluding_disk(
         n_T2,
         disk_center=model.disk_center_T2,
@@ -256,11 +254,10 @@ def _train_epoch_genus2(
         device=device, dtype=dtype,
     )
 
-    # The multi-chart loss already handles all three charts in one forward call.
+    # The two-chart loss handles both charts in one forward call.
     # Batch by splitting each chart proportionally.
     num_batches = max(1, (num_points + batch_size - 1) // batch_size)
     b_T1 = max(1, n_T1 // num_batches)
-    b_br = max(1, n_br // num_batches)
     b_T2 = max(1, n_T2 // num_batches)
 
     epoch_losses = {'total': 0.0, 'willmore': 0.0, 'regularity': 0.0, 'gluing': 0.0,
@@ -268,11 +265,10 @@ def _train_epoch_genus2(
 
     for batch_idx in range(num_batches):
         s1, e1 = batch_idx * b_T1, min((batch_idx + 1) * b_T1, n_T1)
-        sb, eb = batch_idx * b_br, min((batch_idx + 1) * b_br, n_br)
         s2, e2 = batch_idx * b_T2, min((batch_idx + 1) * b_T2, n_T2)
 
         optimizer.zero_grad(set_to_none=True)
-        loss_dict = loss_fn.forward(model, uv_T1[s1:e1], uv_br[sb:eb], uv_T2[s2:e2])
+        loss_dict = loss_fn.forward(model, uv_T1[s1:e1], uv_T2[s2:e2])
         loss = loss_dict['total']
         loss.backward()
 
@@ -450,7 +446,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     
     if genus == 2:
         # Multi-chart: no single-domain reference embedding
-        print(f"\nMode: Multi-chart genus-2 embedding (full embedding, no residual)")
+        print(f"\nMode: Two-chart genus-2 embedding (T₁ + T₂, direct gluing)")
         ref_willmore = 4 * np.pi**2
         print(f"Reference Willmore energy (Lawson ξ_{{2,1}}): {ref_willmore:.6f}")
     else:
@@ -496,7 +492,7 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     domain_ranges = {
         "ellipsoid": "[0, 2π] × [0, π]",
         "torus": "[0, 2π] × [0, 2π]",
-        "double_torus": "multi-chart (T₁ + bridge + T₂)"
+        "double_torus": "multi-chart (T₁ + T₂, direct gluing)"
     }
     print(f"\nStarting training for {num_epochs} epochs...")
     print(f"Batch size: {batch_size}, Number of points: {num_points}")
@@ -588,22 +584,18 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
 
         if should_eval:
             if genus == 2:
-                # Multi-chart eval: sample each chart uniformly, sum Willmore energies
-                n_eval_T = int(eval_num_points * 0.4)
-                n_eval_br = int(eval_num_points * 0.2)
-                n_eval_T2 = eval_num_points - n_eval_T - n_eval_br
+                # Two-chart eval: sample each torus chart uniformly, sum Willmore energies
+                n_eval_T1 = eval_num_points // 2
+                n_eval_T2 = eval_num_points - n_eval_T1
                 eval_uv_T1 = sample_torus_excluding_disk(
-                    n_eval_T, disk_center=model.disk_center_T1,
+                    n_eval_T1, disk_center=model.disk_center_T1,
                     disk_radius=model.disk_radius, device=device, dtype=dtype)
-                eval_uv_br = sample_bridge_domain(n_eval_br, device=device, dtype=dtype)
                 eval_uv_T2 = sample_torus_excluding_disk(
                     n_eval_T2, disk_center=model.disk_center_T2,
                     disk_radius=model.disk_radius, device=device, dtype=dtype)
                 model.eval()
-                # Evaluate Willmore in chunks to avoid OOM from full-batch second-order
-                # autodiff. Regularity and gluing are excluded from eval.
                 eval_willmore = loss_fn.eval_willmore_batched(
-                    model, eval_uv_T1, eval_uv_br, eval_uv_T2,
+                    model, eval_uv_T1, eval_uv_T2,
                     chunk_size=batch_size,
                 )
                 model.train()
@@ -671,9 +663,14 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
                     loss_fn.regularity_weight *= 3.0
                     rollback_count = 0
 
+        # --- EMA update (unconditional) ---
+        # Keep a smoothed estimate of W before any rollback checks so that all
+        # downstream guards see a consistent, low-variance signal.
+        ema_willmore = (eval_willmore if ema_willmore is None
+                        else _ema_alpha * eval_willmore + (1.0 - _ema_alpha) * ema_willmore)
+
         # --- Check 2: Willmore spike rollback ---
         # If W spikes far above the running best, revert to the best checkpoint.
-        # Uses an EMA of uncapped W to suppress false positives from MC sampling variance.
         willmore_spike_threshold = adaptive_config.get('willmore_spike_threshold', 0.0)
         if (not rolled_back
                 and adaptive_config.get('checkpoint_rollback', False)
@@ -681,9 +678,6 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
                 and epoch > 5
                 and best_willmore < float('inf')
                 and rollback_count < max_rollbacks):
-            # Use the unbiased eval_willmore so junction-focused sampling noise
-            # does not trigger false-positive rollbacks.
-            ema_willmore = eval_willmore if ema_willmore is None else _ema_alpha * eval_willmore + (1.0 - _ema_alpha) * ema_willmore
             if ema_willmore > best_willmore * willmore_spike_threshold:
                 rollback_count += 1
                 print(f"\n🚨 WILLMORE SPIKE (Rollback {rollback_count}/{max_rollbacks})")
@@ -691,12 +685,43 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
                 ok = _do_rollback(os.path.join(checkpoint_dir, 'best_model.pt'), lr_scale=0.5)
                 if ok:
                     ema_willmore = best_willmore  # reset EMA to best after rollback
-                    print(f"   Reverted to best model. LR → {optimizer.param_groups[0]['lr']:.2e}")
+                    print(f"   Reverted to best model. LR \u2192 {optimizer.param_groups[0]['lr']:.2e}")
                     rolled_back = True
                 else:
                     print(f"   Warning: best_model.pt not found, continuing")
-        elif ema_willmore is None:
-            ema_willmore = eval_willmore
+
+        # --- Check 3: Topology collapse (genus-2 only) ---
+        # The Willmore conjecture (Marques-Neves 2012) guarantees W ≥ 4π² ≈ 39.48
+        # for any smooth embedded genus-2 surface.  When the EMA of W falls below
+        # this threshold after the warmup period, the surface has lost genus-2
+        # topology (degenerated to a sphere-like dumbbell).  Roll back to the
+        # last good checkpoint and boost gluing + regularity weights to stabilise
+        # the topology before the Willmore gradient dominates again.
+        warmup_epochs_topo = adaptive_config.get('willmore_warmup_epochs', 0)
+        topo_floor = adaptive_config.get('willmore_topology_floor', 4.0 * np.pi ** 2)
+        if (not rolled_back
+                and genus == 2
+                and adaptive_config.get('checkpoint_rollback', False)
+                and epoch > max(5, warmup_epochs_topo)
+                and ema_willmore < topo_floor
+                and rollback_count < max_rollbacks):
+            rollback_count += 1
+            print(f"\n\U0001f6a8 TOPOLOGY COLLAPSE (Rollback {rollback_count}/{max_rollbacks})")
+            print(f"   EMA W={ema_willmore:.2f} < genus-2 floor {topo_floor:.2f}")
+            ckpt_path = os.path.join(checkpoint_dir, 'best_model.pt')
+            ok = _do_rollback(ckpt_path, lr_scale=0.5)
+            if ok:
+                ema_willmore = topo_floor  # reset EMA so guard doesn't immediately re-fire
+                loss_fn.regularity_weight = min(loss_fn.regularity_weight * 2.0,
+                                                loss_fn.initial_regularity_weight * 8.0)
+                loss_fn.gluing_weight = min(loss_fn.gluing_weight * 2.0,
+                                            loss_fn.initial_willmore_weight * 40.0)
+                print(f"   Reverted. regularity_weight\u2192{loss_fn.regularity_weight:.1f}, "
+                      f"gluing_weight\u2192{loss_fn.gluing_weight:.1f}")
+                print(f"   LR \u2192 {optimizer.param_groups[0]['lr']:.2e}")
+                rolled_back = True
+            else:
+                print(f"   Warning: best_model.pt not found, continuing")
 
         # Skip recording this failed epoch if we rolled back
         if rolled_back:

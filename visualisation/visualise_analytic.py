@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import yaml
 
-from sampling import get_reference_embedding, sample_parameters, get_domain_for_genus, sample_torus_excluding_disk, sample_bridge_domain
+from sampling import get_reference_embedding, sample_parameters, get_domain_for_genus, sample_torus_excluding_disk
 from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors, plot_surface_3d, make_genus2_colors
 
 
@@ -143,8 +143,8 @@ def visualise_analytic_genus1(output_dir: str, num_points: int = 10000, config_p
 def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_path: str = None):
     """Visualize analytic double torus reference embeddings (genus 2).
 
-    Two independent tori connected by a catenoid bridge, each with a disk
-    excised.  Reference embeddings come from model.reference_torus1/bridge/torus2.
+    Two independent tori, each with a disk excised and glued along their
+    boundaries.  Reference embeddings come from model.reference_torus1/torus2.
     """
     from model import create_embedding_model
 
@@ -207,19 +207,18 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
         config = {'topology': {'genus': 2, 'double_torus': dt_params}, 'model': {}}
         model = create_embedding_model(config, device, skip_init=True)
         print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
-        n_each = num_points // 3
+        n_t1 = num_points // 2
+        n_t2 = num_points - n_t1
         delta = float(dt_params['disk_radius'])
         c_T1 = model.disk_center_T1
         c_T2 = model.disk_center_T2
         with torch.no_grad():
-            uv_t1 = sample_torus_excluding_disk(n_each, disk_center=c_T1, disk_radius=delta, device=device, dtype=dtype)
-            ut_br = sample_bridge_domain(n_each, device=device, dtype=dtype)
-            uv_t2 = sample_torus_excluding_disk(n_each, disk_center=c_T2, disk_radius=delta, device=device, dtype=dtype)
+            uv_t1 = sample_torus_excluding_disk(n_t1, disk_center=c_T1, disk_radius=delta, device=device, dtype=dtype)
+            uv_t2 = sample_torus_excluding_disk(n_t2, disk_center=c_T2, disk_radius=delta, device=device, dtype=dtype)
             xyz = torch.cat([model.reference_torus1(uv_t1),
-                             model.reference_bridge(ut_br),
                              model.reference_torus2(uv_t2)], dim=0)
-            uv  = torch.cat([uv_t1, ut_br, uv_t2], dim=0)
-        _surfaces.append((label, uv, xyz, c_T1, c_T2, uv_t1, ut_br, uv_t2))
+            uv  = torch.cat([uv_t1, uv_t2], dim=0)
+        _surfaces.append((label, uv, xyz, c_T1, c_T2, uv_t1, uv_t2))
 
     _all_xyz = np.concatenate([s[2].cpu().numpy() for s in _surfaces])
     _global_range = np.array([
@@ -228,9 +227,9 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
         _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
     ]).max() / 2.0
 
-    for idx, (label, uv, xyz, c_T1, c_T2, uv_t1, ut_br, uv_t2) in enumerate(_surfaces):
+    for idx, (label, uv, xyz, c_T1, c_T2, uv_t1, uv_t2) in enumerate(_surfaces):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
-        colors = make_genus2_colors(uv_t1, ut_br, uv_t2,
+        colors = make_genus2_colors(uv_t1, uv_t2,
                                     disk_center_T1=c_T1, disk_center_T2=c_T2)
         plot_surface_3d(ax, xyz, uv, label, genus=2, global_range=_global_range,
                         color_values=colors)

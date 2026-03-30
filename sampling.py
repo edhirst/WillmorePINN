@@ -7,7 +7,7 @@ for various topologies. The neural network will learn the embedding to R³.
 Supported topologies:
 - Genus 0 (sphere/ellipsoid): polar coordinates on [0, π] × [0, 2π]
 - Genus 1 (torus): doubly-periodic coordinates on [0, 2π] × [0, 2π]  
-- Genus 2 (double torus): multi-chart sampling (torus with disk exclusion + bridge)
+- Genus 2 (double torus): two-chart sampling (torus with disk exclusion, no bridge)
 """
 
 import torch

@@ -28,7 +28,7 @@ import copy
 from pathlib import Path
 from mpl_toolkits.mplot3d import Axes3D
 from model import create_embedding_model
-from sampling import sample_parameters, get_domain_for_genus, get_reference_embedding, sample_torus_excluding_disk, sample_bridge_domain
+from sampling import sample_parameters, get_domain_for_genus, get_reference_embedding, sample_torus_excluding_disk
 from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors, plot_surface_3d, make_genus2_colors
 
 def train_surface(model, optimizer, uv, xyz_target, num_epochs):
@@ -302,19 +302,18 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         print(f"Visualizing model from {model_path}")
         print(f"  Genus {genus} ({genus_names.get(genus, 'unknown')})")
         print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
-        n_each = num_points // 3
+        n_t1 = num_points // 2
+        n_t2 = num_points - n_t1
         delta = float(dt_params.get('disk_radius', 0.3))
         c_T1 = model.disk_center_T1
         c_T2 = model.disk_center_T2
         with torch.no_grad():
-            uv_t1 = sample_torus_excluding_disk(n_each, disk_center=c_T1, disk_radius=delta, device=device)
-            ut_br = sample_bridge_domain(n_each, device=device)
-            uv_t2 = sample_torus_excluding_disk(n_each, disk_center=c_T2, disk_radius=delta, device=device)
+            uv_t1 = sample_torus_excluding_disk(n_t1, disk_center=c_T1, disk_radius=delta, device=device)
+            uv_t2 = sample_torus_excluding_disk(n_t2, disk_center=c_T2, disk_radius=delta, device=device)
             xyz = torch.cat([model.forward_torus1(uv_t1),
-                             model.forward_bridge(ut_br),
                              model.forward_torus2(uv_t2)], dim=0).cpu()
-            uv = torch.cat([uv_t1, ut_br, uv_t2], dim=0).cpu()
-        _plot_data.append((xyz, uv, label, genus, c_T1, c_T2, uv_t1, ut_br, uv_t2))
+            uv = torch.cat([uv_t1, uv_t2], dim=0).cpu()
+        _plot_data.append((xyz, uv, label, genus, c_T1, c_T2, uv_t1, uv_t2))
 
     _all_xyz = np.concatenate([d[0].numpy() for d in _plot_data])
     _global_range = np.array([
@@ -323,10 +322,10 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
     ]).max() / 2.0
 
-    for idx, (xyz, uv, label, genus, c_T1, c_T2, uv_t1, ut_br, uv_t2) in enumerate(_plot_data):
+    for idx, (xyz, uv, label, genus, c_T1, c_T2, uv_t1, uv_t2) in enumerate(_plot_data):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
         if genus == 2:
-            colors = make_genus2_colors(uv_t1, ut_br, uv_t2,
+            colors = make_genus2_colors(uv_t1, uv_t2,
                                         disk_center_T1=c_T1, disk_center_T2=c_T2)
             plot_surface_3d(ax, xyz, uv, label, genus=genus, global_range=_global_range,
                             color_values=colors)

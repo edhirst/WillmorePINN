@@ -21,7 +21,7 @@ from pathlib import Path
 from model import create_embedding_model
 from sampling import (
     sample_parameters, get_domain_for_genus,
-    sample_torus_excluding_disk, sample_bridge_domain,
+    sample_torus_excluding_disk,
 )
 from utils import get_next_run_number, plot_fundamental_domain_coloring, plot_surface_3d, make_genus2_colors
 
@@ -198,20 +198,18 @@ def visualise_training_evolution(
     precomputed_colors = None
     if genus_ckpt == 2:
         _tmp_model = create_embedding_model(config_ckpt, device, skip_init=True)
-        n_t1 = int(num_test_points * 0.4)
-        n_br = int(num_test_points * 0.2)
-        n_t2 = num_test_points - n_t1 - n_br
+        n_t1 = num_test_points // 2
+        n_t2 = num_test_points - n_t1
         uv_t1_test = sample_torus_excluding_disk(
             n_t1, disk_center=_tmp_model.disk_center_T1,
             disk_radius=_tmp_model.disk_radius, device=device)
-        uv_br_test = sample_bridge_domain(n_br, device=device)
         uv_t2_test = sample_torus_excluding_disk(
             n_t2, disk_center=_tmp_model.disk_center_T2,
             disk_radius=_tmp_model.disk_radius, device=device)
-        uv_test = torch.cat([uv_t1_test, uv_br_test, uv_t2_test], dim=0)
-        uv_genus2_parts = (uv_t1_test, uv_br_test, uv_t2_test)
+        uv_test = torch.cat([uv_t1_test, uv_t2_test], dim=0)
+        uv_genus2_parts = (uv_t1_test, uv_t2_test)
         precomputed_colors = make_genus2_colors(
-            uv_t1_test, uv_br_test, uv_t2_test,
+            uv_t1_test, uv_t2_test,
             disk_center_T1=_tmp_model.disk_center_T1,
             disk_center_T2=_tmp_model.disk_center_T2)
     else:
@@ -241,10 +239,9 @@ def visualise_training_evolution(
         model, epoch, loss = load_checkpoint_model(checkpoint_path, config_ckpt, device)
         with torch.no_grad():
             if genus_ckpt == 2:
-                uv_t1, uv_br, uv_t2 = uv_genus2_parts
+                uv_t1, uv_t2 = uv_genus2_parts
                 xyz = torch.cat([
                     model.forward_torus1(uv_t1),
-                    model.forward_bridge(uv_br),
                     model.forward_torus2(uv_t2),
                 ], dim=0)
             else:
@@ -320,24 +317,21 @@ def visualise_single_model(
     # Generate test data
     colors = None
     if genus == 2:
-        n_t1 = int(num_test_points * 0.4)
-        n_br = int(num_test_points * 0.2)
-        n_t2 = num_test_points - n_t1 - n_br
+        n_t1 = num_test_points // 2
+        n_t2 = num_test_points - n_t1
         uv_t1 = sample_torus_excluding_disk(
             n_t1, disk_center=model.disk_center_T1,
             disk_radius=model.disk_radius, device=device)
-        uv_br = sample_bridge_domain(n_br, device=device)
         uv_t2 = sample_torus_excluding_disk(
             n_t2, disk_center=model.disk_center_T2,
             disk_radius=model.disk_radius, device=device)
-        uv_test = torch.cat([uv_t1, uv_br, uv_t2], dim=0)
-        colors = make_genus2_colors(uv_t1, uv_br, uv_t2,
+        uv_test = torch.cat([uv_t1, uv_t2], dim=0)
+        colors = make_genus2_colors(uv_t1, uv_t2,
                                     disk_center_T1=model.disk_center_T1,
                                     disk_center_T2=model.disk_center_T2)
         with torch.no_grad():
             xyz = torch.cat([
                 model.forward_torus1(uv_t1),
-                model.forward_bridge(uv_br),
                 model.forward_torus2(uv_t2),
             ], dim=0)
     else:

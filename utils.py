@@ -142,45 +142,34 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6, global_range=None,
 
 
 def make_genus2_colors(
-    uv_t1, uv_bridge, uv_t2,
+    uv_t1, uv_t2,
     disk_center_T1=(0.0, 0.0),
     disk_center_T2=(np.pi, 0.0),
 ) -> np.ndarray:
     """Compute per-point RGB colours for a genus-2 multi-chart surface.
 
     T₁ and T₂ points are coloured by u (hue = u / 2π, matching the domain
-    plot).  Bridge points are coloured by t ∈ [0, 1], linearly interpolating
-    the centre-u hue of T₁'s disk to the centre-u hue of T₂'s disk.
+    plot).
 
     Args:
-        uv_t1:    (N₁, 2) parameter coords for T₁ (u, v).
-        uv_bridge:(Nᵦ, 2) parameter coords for bridge (s, t).
-        uv_t2:    (N₂, 2) parameter coords for T₂ (u, v).
+        uv_t1: (N₁, 2) parameter coords for T₁ (u, v).
+        uv_t2: (N₂, 2) parameter coords for T₂ (u, v).
         disk_center_T1: (u₀, v₀) disk centre on T₁.
         disk_center_T2: (u₀, v₀) disk centre on T₂.
 
     Returns:
-        (N₁+Nᵦ+N₂, 3) float32 RGB array in [0, 1].
+        (N₁+N₂, 3) float32 RGB array in [0, 1].
     """
     def _to_np(x):
         return x.cpu().numpy() if hasattr(x, 'cpu') else np.asarray(x)
 
     uv1 = _to_np(uv_t1)
-    uvb = _to_np(uv_bridge)
     uv2 = _to_np(uv_t2)
 
-    c1 = hsv_to_rgb_colors(uv1[:, 0], 2 * np.pi)            # (N₁, 3)
-    c2 = hsv_to_rgb_colors(uv2[:, 0], 2 * np.pi)            # (N₂, 3)
+    c1 = hsv_to_rgb_colors(uv1[:, 0], 2 * np.pi)  # (N₁, 3)
+    c2 = hsv_to_rgb_colors(uv2[:, 0], 2 * np.pi)  # (N₂, 3)
 
-    # Bridge: t from 0 → 1, hue from u₀_T1 → u₀_T2 (forward around circle)
-    u0_T1 = disk_center_T1[0]
-    u0_T2 = disk_center_T2[0]
-    u0_T2_fwd = u0_T2 if u0_T2 > u0_T1 else u0_T2 + 2 * np.pi
-    t_vals = uvb[:, 1]                                        # t ∈ [0, 1]
-    u_bridge = (u0_T1 * (1 - t_vals) + u0_T2_fwd * t_vals) % (2 * np.pi)
-    cb = hsv_to_rgb_colors(u_bridge, 2 * np.pi)              # (Nᵦ, 3)
-
-    return np.concatenate([c1, cb, c2], axis=0).astype(np.float32)
+    return np.concatenate([c1, c2], axis=0).astype(np.float32)
 
 
 def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=1j,
@@ -189,7 +178,7 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=
                                      disk_center_T2=None):
     """Plot the fundamental domain with the periodic coloring.
 
-    For genus 2, draws the three parameter-space charts (T₁, Bridge, T₂) with
+    For genus 2, draws the two parameter-space charts (T₁, T₂) with
     excised disks D₁ and D₂ indicated.
 
     Args:
@@ -265,12 +254,11 @@ def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
                                 disk_center_T2=(np.pi, 0.0),
                                 num_points=80):
     """
-    Three-chart parameter domain for the genus-2 multi-chart architecture.
+    Two-chart parameter domain for the genus-2 multi-chart architecture.
 
-    Three charts arranged horizontally, each coloured by u ∈ [0,2π] to match
+    Two charts arranged horizontally, each coloured by u ∈ [0,2π] to match
     the 3D surface colour scheme:
       T₁: [0,2π]² with disk D₁ excised at disk_center_T1
-      Bridge: [0,2π]×[0,1]  (t-axis stretched to height 2π for legibility)
       T₂: [0,2π]² with disk D₂ excised at disk_center_T2
     """
     from matplotlib.patches import Circle
@@ -306,31 +294,16 @@ def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
     gap = np.pi * 0.7      # horizontal gap between charts
 
     x0_T1, x1_T1 = 0.0, L
-    x0_Br, x1_Br = L + gap, 2 * L + gap
-    x0_T2, x1_T2 = 2 * L + 2 * gap, 3 * L + 2 * gap
+    x0_T2, x1_T2 = L + gap, 2 * L + gap
 
     # --- Coloured backgrounds ---
-    # T₁ and T₂: uniform u-hue gradient
     ax.imshow(rgb, extent=[x0_T1, x1_T1, 0, L], origin='lower', aspect='auto',
               interpolation='nearest', zorder=1)
     ax.imshow(rgb, extent=[x0_T2, x1_T2, 0, L], origin='lower', aspect='auto',
               interpolation='nearest', zorder=1)
 
-    # Bridge: a pure vertical gradient by t ∈ [0,1], from the hue of T₁'s disk
-    # centre (t=0, bottom) to T₂'s disk centre (t=1, top).  This directly shows
-    # "where along the bridge" each point is, and matches the disk-boundary colours
-    # on the adjacent tori charts.
-    _u0T1_ctr, _ = disk_center_T1
-    _u0T2_ctr, _ = disk_center_T2
-    _u0T2_fwd = _u0T2_ctr if _u0T2_ctr > _u0T1_ctr else _u0T2_ctr + 2 * np.pi
-    _t_arr = np.linspace(0, 1, N)                        # (N,)
-    _u_t = (_u0T1_ctr * (1 - _t_arr) + _u0T2_fwd * _t_arr)  # (N,) unwrapped
-    _stripe = _rgb_from_u((_u_t % (2 * np.pi))[:, np.newaxis] * np.ones((1, N)))  # (N, N, 3)
-    ax.imshow(_stripe, extent=[x0_Br, x1_Br, 0, L], origin='lower', aspect='auto',
-              interpolation='nearest', zorder=1)
-
     # --- Chart borders ---
-    for x0, x1 in [(x0_T1, x1_T1), (x0_Br, x1_Br), (x0_T2, x1_T2)]:
+    for x0, x1 in [(x0_T1, x1_T1), (x0_T2, x1_T2)]:
         ax.plot([x0, x1, x1, x0, x0], [0, 0, L, L, 0], 'k-', lw=1.5, zorder=10)
 
     # --- Excised disks clipped to chart boundaries ---
@@ -373,19 +346,12 @@ def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
         ax.add_patch(c)
         c.set_clip_path(T2_clip)
 
-    # --- Bridge t=0/t=1 tick labels ---
-    ax.text(x0_Br - 0.15, 0,    't=0', ha='right', va='center', fontsize=7, color='dimgray')
-    ax.text(x0_Br - 0.15, L,    't=1', ha='right', va='center', fontsize=7, color='dimgray')
-    ax.text(x0_Br - 0.15, L/2,  't=½', ha='right', va='center', fontsize=7, color='dimgray')
-
     # --- Chart labels ---
     tau1_str = (f'{tau1_re:.1f}+{tau1_im:.1f}i' if abs(tau1_re) > 0.02
                 else f'{tau1_im:.1f}i')
     tau2_str = (f'{tau2_re:.1f}+{tau2_im:.1f}i' if abs(tau2_re) > 0.02
                 else f'{tau2_im:.1f}i')
     ax.text((x0_T1 + x1_T1) / 2, L + 0.12, f'T₁  τ₁={tau1_str}',
-            ha='center', va='bottom', fontsize=8)
-    ax.text((x0_Br + x1_Br) / 2, L + 0.12, 'Bridge  t∈[0,1]',
             ha='center', va='bottom', fontsize=8)
     ax.text((x0_T2 + x1_T2) / 2, L + 0.12, f'T₂  τ₂={tau2_str}',
             ha='center', va='bottom', fontsize=8)
@@ -395,12 +361,11 @@ def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
     ax.set_ylim(-0.5, L + 0.9)
     ax.set_title('Multi-Chart Parameter Domain', fontsize=10)
     ax.set_xlabel('u')
-    ax.set_ylabel('v  /  t')
+    ax.set_ylabel('v')
 
     xt = [0, np.pi, 2 * np.pi,
-          x0_Br, x0_Br + np.pi, x1_Br,
           x0_T2, x0_T2 + np.pi, x1_T2]
-    xl = ['0', 'π', '2π', '0', 'π', '2π', '0', 'π', '2π']
+    xl = ['0', 'π', '2π', '0', 'π', '2π']
     ax.set_xticks(xt)
     ax.set_xticklabels(xl, fontsize=7)
     ax.set_yticks([0, np.pi, 2 * np.pi])

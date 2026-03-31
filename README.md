@@ -10,8 +10,11 @@ conda create -n willmore python=3.10
 conda activate willmore
 pip install -r environment/requirements.txt
 
-# Train
+# Train (defaults to configs/config_genus2.yaml)
 python run.py
+
+# Train with a specific config
+python run.py --config configs/config_genus1.yaml
 
 # Visualize training evolution
 python visualisation/visualise.py
@@ -34,8 +37,14 @@ where H is mean curvature computed via automatic differentiation of the embeddin
 ## Usage
 
 ```bash
-# Basic training
+# Basic training (defaults to configs/config_genus2.yaml)
 python run.py
+
+# Train with a specific config
+python run.py --config configs/config_genus1.yaml
+
+# Resume from a checkpoint
+python run.py --config configs/config_genus1.yaml --resume checkpoints/run_1/latest_model.pt
 
 # Visualize training evolution
 python visualisation/visualise.py --mode both
@@ -50,7 +59,7 @@ python visualisation/visualise_supervised.py --genus 1 --points 20000
 python utils.py --checkpoint checkpoints/run_1/best_model.pt
 ```
 
-Edit `hyperparameters.yaml` to configure model architecture, training parameters, topology (genus), and domain settings.
+Config files are in `configs/`. The `--config` flag accepts any path; it defaults to `configs/config_genus2.yaml`.
 
 ## Files
 

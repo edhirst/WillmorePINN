@@ -530,7 +530,15 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
     # multi-epoch degradation triggers a rollback.
     _ema_alpha = config['training'].get('adaptive_training', {}).get('willmore_ema_alpha', 0.2)
     ema_willmore: Optional[float] = None
-    
+
+    # Save epoch 0 checkpoint (post-pretraining, pre-training-loop state)
+    if start_epoch == 1:
+        save_checkpoint(
+            model, optimizer, 0,
+            epoch_losses['willmore'], config,
+            checkpoint_dir, is_best=False, scheduler=scheduler
+        )
+
     # Training loop
     for epoch in range(start_epoch, num_epochs + 1):
         # Adaptive weight adjustment based on regularity health
@@ -576,6 +584,7 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
 
         if eval_num_points is None:
             eval_willmore = epoch_losses['willmore']
+            should_eval = True
         else:
             should_eval = print_eval or (epoch % log_frequency == 0)
             if should_eval:
@@ -805,13 +814,6 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
     if num_epochs > 0:
         save_checkpoint(
             model, optimizer, num_epochs,
-            eval_willmore, config,
-            checkpoint_dir, is_best=False, scheduler=scheduler
-        )
-    else:
-        # For num_epochs=0, save the pretrained model
-        save_checkpoint(
-            model, optimizer, 0,
             eval_willmore, config,
             checkpoint_dir, is_best=False, scheduler=scheduler
         )

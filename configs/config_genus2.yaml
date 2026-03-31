@@ -44,7 +44,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 2000
+  num_epochs: 400 ##2000
   batch_size: 3000
   learning_rate: 0.0002
   weight_decay: 0.000001
@@ -67,8 +67,8 @@ training:
     willmore_spike_threshold: 0.0       # 0.0 = disabled
     willmore_ema_alpha: 0.3             # EMA decay for Willmore tracking
     max_rollbacks: 30
-    willmore_warmup_epochs: 100         # Epochs before topology-collapse rollback can fire
-    willmore_warmup_start: 1.0          # Willmore weight fraction at epoch 1
+    willmore_warmup_epochs: 300         # Epochs before topology-collapse rollback can fire
+    willmore_warmup_start: 0.01           # Willmore weight fraction at epoch 1
     willmore_topology_floor: 38.0       # W floor for genus-2 topology-collapse rollback (≈ 4π² = 39.48)
 
 # Sampling Parameters
@@ -99,9 +99,9 @@ loss:
   regularity_mean_area_floor_weight: 5.0
 
   # Multi-chart gluing (genus 2 only)
-  gluing_weight: 10.0
-  gluing_num_boundary_points: 64
-  gluing_derivative_weight: 0.5           # C¹ continuity weight relative to C⁰
+  gluing_weight: 100.0
+  gluing_num_boundary_points: 128
+  gluing_derivative_weight: 2.0           # C¹ continuity weight relative to C⁰
   gluing_second_derivative_weight: 0.1    # C² continuity weight
 
   # Junction circle radius penalty (genus 2 only)

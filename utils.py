@@ -8,6 +8,7 @@ and compare with theoretical values.
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import json
 from typing import Optional, Dict
 import os
@@ -630,20 +631,32 @@ def plot_loss_curves(history: dict, output_path: str):
     fig.suptitle(f"Training Progress - Genus {genus} ({genus_names.get(genus, 'Unknown')})",
                  fontsize=14, fontweight='bold')
 
+    use_log_total_willmore = genus not in (0, 1)
+
     # --- Total Loss ---
     ax_total.plot(epochs, history['total_loss'], 'b-', linewidth=2)
     ax_total.set_xlabel('Epoch', fontsize=12)
-    ax_total.set_ylabel('Total Loss (log scale)', fontsize=12)
+    ax_total.set_ylabel('Total Loss', fontsize=12)
     ax_total.set_title('Total Loss', fontsize=14, fontweight='bold')
-    ax_total.set_yscale('log')
+    if use_log_total_willmore:
+        ax_total.set_yscale('log')
+    else:
+        ax_total.set_ylim(bottom=0)
+    ax_total.set_xlim(left=0)
+    ax_total.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax_total.grid(True, alpha=0.3, which='both')
 
     # --- Willmore Energy ---
     ax_willmore.plot(epochs, history['willmore_energy'], 'r-', linewidth=2)
     ax_willmore.set_xlabel('Epoch', fontsize=12)
-    ax_willmore.set_ylabel('Willmore Energy (log scale)', fontsize=12)
+    ax_willmore.set_ylabel('Willmore Energy', fontsize=12)
     ax_willmore.set_title('Willmore Energy', fontsize=14, fontweight='bold')
-    ax_willmore.set_yscale('log')
+    if use_log_total_willmore:
+        ax_willmore.set_yscale('log')
+    else:
+        ax_willmore.set_ylim(bottom=0)
+    ax_willmore.set_xlim(left=0)
+    ax_willmore.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax_willmore.grid(True, alpha=0.3, which='both')
     try:
         theoretical_min = get_theoretical_minimum_willmore(genus)
@@ -658,17 +671,21 @@ def plot_loss_curves(history: dict, output_path: str):
     if ax_gluing is not None:
         ax_gluing.plot(epochs, gluing, color='purple', linewidth=2)
         ax_gluing.set_xlabel('Epoch', fontsize=12)
-        ax_gluing.set_ylabel('Gluing Loss (log scale)', fontsize=12)
+        ax_gluing.set_ylabel('Gluing Loss', fontsize=12)
         ax_gluing.set_title('Gluing Loss (C⁰+C¹+C²)', fontsize=14, fontweight='bold')
         ax_gluing.set_yscale('log')
+        ax_gluing.set_xlim(left=0)
+        ax_gluing.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax_gluing.grid(True, alpha=0.3, which='both')
 
     # --- Regularity Loss ---
     ax_reg.plot(epochs, history['regularity'], 'g-', linewidth=2)
     ax_reg.set_xlabel('Epoch', fontsize=12)
-    ax_reg.set_ylabel('Regularity Loss (log scale)', fontsize=12)
+    ax_reg.set_ylabel('Regularity Loss', fontsize=12)
     ax_reg.set_title('Regularity Loss', fontsize=14, fontweight='bold')
     ax_reg.set_yscale('log')
+    ax_reg.set_xlim(left=0)
+    ax_reg.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax_reg.grid(True, alpha=0.3, which='both')
 
     # --- All Loss Components ---
@@ -679,9 +696,11 @@ def plot_loss_curves(history: dict, output_path: str):
         ax_all.plot(epochs, gluing, color='purple', linewidth=2,
                     label='Gluing Loss', alpha=0.7)
     ax_all.set_xlabel('Epoch', fontsize=12)
-    ax_all.set_ylabel('Loss (log scale)', fontsize=12)
+    ax_all.set_ylabel('Loss', fontsize=12)
     ax_all.set_title('All Loss Components', fontsize=14, fontweight='bold')
     ax_all.set_yscale('log')
+    ax_all.set_xlim(left=0)
+    ax_all.xaxis.set_major_locator(MaxNLocator(integer=True))
     ax_all.legend(fontsize=10, loc='best')
     ax_all.grid(True, alpha=0.3, which='both')
 

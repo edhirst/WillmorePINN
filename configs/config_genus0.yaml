@@ -41,10 +41,10 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 10
-  batch_size: 1024
-  learning_rate: 0.00003
-  weight_decay: 0.000001
+  num_epochs: 30
+  batch_size: 100
+  learning_rate: 0.003
+  weight_decay: 0.0001
   scheduler: null
   gradient_clip: 1.0
   log_frequency: 1  # Log metrics and save checkpoints every N epochs
@@ -65,7 +65,7 @@ training:
 
 # Sampling Parameters
 sampling:
-  num_points: 2000
+  num_points: 1000
   eval_num_points: null     # Uniform eval sample for logged W (reduces MC variance)
   print_eval: false          # If true, full eval runs every epoch; if false, only on log epochs
   noise_level: 0.0

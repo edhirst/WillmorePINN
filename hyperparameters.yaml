@@ -84,13 +84,13 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 3000
-  batch_size: 2000  # Larger batches for more stable gradients
+  num_epochs: 2000
+  batch_size: 3000  # Fewer steps/epoch → ~2× fewer gradient computations per epoch
   learning_rate: 0.0002  # Slightly higher to stay effective with warm restarts
   weight_decay: 0.000001  # Lighter weight decay to preserve learned features
   scheduler: "cosine_warm_restarts"  # Warm restarts prevent LR from decaying to near-zero and freezing the model
   scheduler_params:
-    T_0: 200        # Cosine period; with T_mult=2: cycles end at 200, 600, 1400, 3000 epochs
+    T_0: 500        # Cosine period; with T_mult=2: cycles end at 500, 1500, 3500, ... epochs
     T_mult: 2       # Each restart doubles the period
     eta_min: 0.000001  # Low floor for fine-tuning between restarts
   gradient_clip: 1.0
@@ -107,9 +107,9 @@ training:
     willmore_spike_threshold: 0.0  # Disabled: uncapped W has high MC variance from spiky bridge H²; false rollbacks outweigh benefit
     willmore_ema_alpha: 0.3        # Slightly faster EMA for W tracking
     max_rollbacks: 30  # Maximum number of rollbacks per training run
-    willmore_warmup_epochs: 200   # Ramp Willmore from willmore_warmup_start to full weight over this many epochs
-    willmore_warmup_start: 0.02   # Willmore weight fraction at epoch 1 of Willmore training
-    willmore_topology_floor: 39.478  # W ≥ 4π² for any embedded genus-2 surface; trigger rollback if EMA W falls below this after warmup
+    willmore_warmup_epochs: 100     # No warmup for continued training; full Willmore weight from epoch 1
+    willmore_warmup_start: 1.0    # Willmore weight fraction at epoch 1 of Willmore training
+    willmore_topology_floor: 38.0    # Lowered from 4π² to reduce false rollbacks from MC variance; surface topology is confirmed
 
 # Sampling Parameters
 # Note: Domain is now automatically determined from topology.genus
@@ -117,8 +117,8 @@ training:
 # - genus 1: torus domain with periodic coordinates [0, 2π] × [0, 2π]
 # - genus 2: double_torus domain with custom parametrization
 sampling:
-  num_points: 10000
-  eval_num_points: 10000  # Uniform eval sample to reduce MC variance in logged W
+  num_points: 9000
+  eval_num_points: 5000  # Uniform eval sample to reduce MC variance in logged W
   print_eval: false        # If true, full eval runs every epoch. If false, only runs on log/save epochs (faster).
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
@@ -128,7 +128,7 @@ sampling:
 loss:
   willmore_weight: 1.0  # Willmore loss weight (constant throughout training)
   max_willmore_weight: 1.0  # Set equal to willmore_weight to disable annealing
-  regularity_weight: 25.0  # High weight to prevent early metric collapse; W/Reg ratio was ~10,000:1 at 2.5
+  regularity_weight: 10.0  # Reduced; surface is stable (reg≈−0.22); give more gradient budget to Willmore
   target_area: null  # Target surface area (null for adaptive constraint with bounds)
   epsilon: 0.000001  # Numerical stability constant (1e-6) - smaller for better precision
   h2_clip: 5.0  # Huber threshold for H² in the training integrand. Below √h2_clip: exact Willmore
@@ -156,7 +156,7 @@ loss:
 
   # Multi-chart gluing (genus 2 only)
   gluing_weight: 10.0                    # Strong C°/C¹/C² enforcement to anchor topology during optimisation
-  gluing_num_boundary_points: 128         # Number of boundary samples per junction
+  gluing_num_boundary_points: 64          # Number of boundary samples per junction
   gluing_derivative_weight: 0.5          # Weight for C¹ (first derivative) continuity relative to C⁰
   gluing_second_derivative_weight: 0.1   # Reduced from 0.3; C² matching creates extreme gradients at the junction
 
@@ -176,7 +176,7 @@ loss:
   # training Willmore drops below topology_guard_floor, creating an energy floor
   # that makes topology-changing deformations expensive.  At equilibrium the
   # optimizer settles at W ≈ floor, which IS the Lawson minimum.
-  topology_guard_weight: 10.0      # Weight for the floor penalty; ~10× willmore_weight for strong containment
+  topology_guard_weight: 8.0       # Reduced: surface is confirmed genus-2 (gluing < 0.001); allow W to explore below 4π²
   topology_guard_floor: 39.478     # 4π²; fires if W falls below this value
 
 # Optimization

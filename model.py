@@ -590,46 +590,29 @@ class EmbeddingNetwork(nn.Module):
                             G = <φ_v, φ_v>
         
         Args:
-            uv: Parameter coordinates (batch_size, 2) with requires_grad=True
+            uv: Parameter coordinates (batch_size, 2)
         
         Returns:
             E, F, G: Components of the first fundamental form (batch_size,)
         """
-        batch_size = uv.shape[0]
-        uv = uv.requires_grad_(True)
-        
-        # Compute embedding
-        xyz = self.forward(uv)  # (batch_size, 3)
-        
-        # Compute partial derivatives using Jacobian
-        # φ_u = ∂φ/∂u for each component (x, y, z)
-        phi_u = []
-        phi_v = []
-        
-        for i in range(3):  # For x, y, z components
-            # Compute ∂φ_i/∂u and ∂φ_i/∂v
-            grad_outputs = torch.zeros_like(xyz)
-            grad_outputs[:, i] = 1.0
-            
-            grads = torch.autograd.grad(
-                outputs=xyz,
-                inputs=uv,
-                grad_outputs=grad_outputs,
-                create_graph=True,
-                retain_graph=True
-            )[0]  # (batch_size, 2)
-            
-            phi_u.append(grads[:, 0:1])  # ∂φ_i/∂u
-            phi_v.append(grads[:, 1:2])  # ∂φ_i/∂v
-        
-        phi_u = torch.cat(phi_u, dim=1)  # (batch_size, 3)
-        phi_v = torch.cat(phi_v, dim=1)  # (batch_size, 3)
-        
-        # First fundamental form components
-        E = torch.sum(phi_u * phi_u, dim=1)  # <φ_u, φ_u>
-        F = torch.sum(phi_u * phi_v, dim=1)  # <φ_u, φ_v>
-        G = torch.sum(phi_v * phi_v, dim=1)  # <φ_v, φ_v>
-        
+        from torch.func import vmap, jacfwd
+
+        # Per-sample forward: (2,) → (3,).  vmap batches this over the N samples.
+        def fwd(uv_s: torch.Tensor) -> torch.Tensor:
+            return self(uv_s.unsqueeze(0)).squeeze(0)
+
+        # J[b, i, j] = ∂φ_i(uv[b]) / ∂uv_j,  shape (N, 3, 2).
+        # Forward-mode uses input_dim=2 tangent passes instead of output_dim=3
+        # reverse passes — a reduction from 3 backward to 2 forward passes per batch.
+        J = vmap(jacfwd(fwd))(uv)   # (N, 3, 2)
+
+        phi_u = J[:, :, 0]   # ∂φ/∂u, (N, 3)
+        phi_v = J[:, :, 1]   # ∂φ/∂v, (N, 3)
+
+        E = torch.sum(phi_u * phi_u, dim=1)   # <φ_u, φ_u>
+        F = torch.sum(phi_u * phi_v, dim=1)   # <φ_u, φ_v>
+        G = torch.sum(phi_v * phi_v, dim=1)   # <φ_v, φ_v>
+
         return E, F, G, phi_u, phi_v
     
     def compute_second_fundamental_form(
@@ -657,58 +640,30 @@ class EmbeddingNetwork(nn.Module):
             L, M, N: Components of second fundamental form (batch_size,)
             normal: Unit normal vector n (batch_size, 3)
         """
-        batch_size = uv.shape[0]
-        
-        # Compute unit normal: N = (φ_u × φ_v) / |φ_u × φ_v|
+        from torch.func import vmap, jacfwd
+
+        # Unit normal from first-form tangent vectors (same as before)
         normal_unnorm = torch.cross(phi_u, phi_v, dim=1)
         normal_norm = torch.norm(normal_unnorm, dim=1, keepdim=True) + 1e-8
         normal = normal_unnorm / normal_norm
-        
-        # Compute second derivatives
-        # For each component of phi_u, compute derivative w.r.t. u and v
-        phi_uu = []
-        phi_uv = []
-        phi_vv = []
-        
-        for i in range(3):  # For x, y, z components
-            # ∂²φ_i/∂u² and ∂²φ_i/∂u∂v from phi_u
-            grad_outputs_u = torch.zeros_like(phi_u)
-            grad_outputs_u[:, i] = 1.0
-            
-            grads_u = torch.autograd.grad(
-                outputs=phi_u,
-                inputs=uv,
-                grad_outputs=grad_outputs_u,
-                create_graph=True,
-                retain_graph=True
-            )[0]  # (batch_size, 2)
-            
-            phi_uu.append(grads_u[:, 0:1])  # ∂²φ_i/∂u²
-            phi_uv.append(grads_u[:, 1:2])  # ∂²φ_i/∂u∂v
-            
-            # ∂²φ_i/∂v² from phi_v
-            grad_outputs_v = torch.zeros_like(phi_v)
-            grad_outputs_v[:, i] = 1.0
-            
-            grads_v = torch.autograd.grad(
-                outputs=phi_v,
-                inputs=uv,
-                grad_outputs=grad_outputs_v,
-                create_graph=True,
-                retain_graph=True
-            )[0]  # (batch_size, 2)
-            
-            phi_vv.append(grads_v[:, 1:2])  # ∂²φ_i/∂v²
-        
-        phi_uu = torch.cat(phi_uu, dim=1)  # (batch_size, 3)
-        phi_uv = torch.cat(phi_uv, dim=1)  # (batch_size, 3)
-        phi_vv = torch.cat(phi_vv, dim=1)  # (batch_size, 3)
-        
-        # Second fundamental form components
+
+        # Per-sample forward: (2,) → (3,)
+        def fwd(uv_s: torch.Tensor) -> torch.Tensor:
+            return self(uv_s.unsqueeze(0)).squeeze(0)
+
+        # H[b, i, j, k] = ∂²φ_i(uv[b]) / ∂uv_j∂uv_k,  shape (N, 3, 2, 2).
+        # forward-over-forward uses 4 passes (input_dim² = 2×2) instead of
+        # 6 reverse-mode passes (3 for φ_uu/φ_uv from φ_u + 3 for φ_vv from φ_v).
+        H = vmap(jacfwd(jacfwd(fwd)))(uv)   # (N, 3, 2, 2)
+
+        phi_uu = H[:, :, 0, 0]   # ∂²φ/∂u²
+        phi_uv = H[:, :, 0, 1]   # ∂²φ/∂u∂v
+        phi_vv = H[:, :, 1, 1]   # ∂²φ/∂v²
+
         L = torch.sum(phi_uu * normal, dim=1)
         M = torch.sum(phi_uv * normal, dim=1)
         N = torch.sum(phi_vv * normal, dim=1)
-        
+
         return L, M, N, normal
     
     def compute_mean_curvature(

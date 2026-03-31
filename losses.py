@@ -286,7 +286,12 @@ class RegularityLoss(nn.Module):
         if self.log_barrier_weight > 0:
             det_lb = torch.clamp(E * G - F * F, min=self.epsilon)
             ae_lb = torch.sqrt(det_lb)
-            log_barrier = -torch.log(torch.clamp(ae_lb, min=self.epsilon)).mean()
+            # Clamp to ≥ 0: the barrier only fires for area_element < 1 (collapse
+            # direction); for area_element ≥ 1 the surface is already safe so the
+            # contribution is zero rather than negative (which would reward expansion).
+            log_barrier = torch.clamp(
+                -torch.log(torch.clamp(ae_lb, min=self.epsilon)), min=0.0
+            ).mean()
             total_loss += self.log_barrier_weight * log_barrier
             weight_sum += self.log_barrier_weight
 

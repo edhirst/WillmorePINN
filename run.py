@@ -435,8 +435,8 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     if resume_from is not None and os.path.exists(resume_from):
         print(f"Resuming from checkpoint: {resume_from}")
         checkpoint = torch.load(resume_from, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        model.load_state_dict(checkpoint.get('model_state_dict', checkpoint.get('model')))
+        optimizer.load_state_dict(checkpoint.get('optimizer_state_dict', checkpoint.get('optimizer')))
         start_epoch = checkpoint['epoch'] + 1
         best_willmore = checkpoint.get('loss', float('inf'))
     

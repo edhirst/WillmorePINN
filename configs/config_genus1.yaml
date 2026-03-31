@@ -1,0 +1,110 @@
+# Willmore energy minimisation — Genus 1 (torus)
+# Minimum: W = 2π² ≈ 19.74 (Clifford torus, R = r = 1/√2)
+
+topology:
+  genus: 1  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus
+
+  # Doubly-periodic domain [0, 2π] × [0, 2π] with complex modulus τ ∈ ℂ, Im(τ) > 0.
+  torus:
+    tau: "0.1 + 0.1j"          # Complex modulus τ; Im(τ) controls tube thickness, Re(τ) controls shear
+    max_height: null   # Maximum allowed Im(τ) during training (null = no limit)
+
+# Model Architecture
+model:
+  input_dim: 2                            # Parameter space dimension (u, v)
+  output_dim: 3                           # Embedding space dimension (x, y, z)
+  hidden_dims: [64, 128, 128, 64]
+  activation: "tanh"
+  dropout: 0.0
+  use_spectral_features: true             # Use Fourier features for periodic input embedding
+  num_frequencies: 2                      # Fourier frequency components per dimension → 4·N input features
+  initialization: "xavier_uniform"
+  use_residual: false                     # Learn corrections to reference embedding rather than full embedding
+  residual_scale: 0.5                     # Scale factor for residual corrections
+
+  # Coarse-to-fine Fourier frequency curriculum (Mildenhall et al. 2020):
+  # progressively activates higher bands so the network learns global shape before fine detail.
+  freq_curriculum:
+    warmup_epochs: 0   # Epochs over which to ramp from start_freqs to all frequencies; 0 = disabled
+    start_freqs: 1     # Fourier bands active at epoch 1
+
+  # Supervised pretraining: initialise network to match reference embedding before Willmore training.
+  supervised_pretraining:
+    enabled: true
+    num_epochs: 20
+    learning_rate: 0.003
+    batch_size: 512
+    num_points_per_epoch: 4096
+    position_weight: 1.0      # Weight for C⁰ position matching
+    derivative_weight: 1.0    # Weight for C¹ derivative matching
+
+# Training Parameters
+training:
+  num_epochs: 30
+  batch_size: 1024
+  learning_rate: 0.00003
+  weight_decay: 0.000001
+  scheduler: null
+  gradient_clip: 1.0
+  log_frequency: 1  # Log metrics and save checkpoints every N epochs
+
+  # Adaptive safeguards against regularity collapse.
+  adaptive_training:
+    enabled: false
+    regularity_threshold: 0.1           # Regularity/Willmore ratio above which to boost regularity weight
+    regularity_boost_factor: 3.0
+    checkpoint_rollback: false
+    severe_degradation_threshold: 4.0   # Rollback if regularity increases by this factor
+    regularity_abs_threshold: 0.000001  # Minimum absolute regularity before rollback can fire
+    willmore_spike_threshold: 0.0       # 0.0 = disabled
+    willmore_ema_alpha: 0.3             # EMA decay for Willmore tracking
+    max_rollbacks: 5
+    willmore_warmup_epochs: 0           # Epochs before rollback can fire
+    willmore_warmup_start: 1.0          # Willmore weight fraction at epoch 1
+
+# Sampling Parameters
+sampling:
+  num_points: 2000
+  eval_num_points: null     # null = skip eval, use training loss only
+  print_eval: false          # If true, full eval runs every epoch; if false, only on log epochs
+  noise_level: 0.0
+  resample_each_epoch: true
+
+# Loss Function Parameters
+loss:
+  willmore_weight: 1.0
+  max_willmore_weight: 1.0  # Equal to willmore_weight disables annealing
+  regularity_weight: 10.0
+  target_area: null          # Target surface area (null = adaptive)
+  epsilon: 0.000001          # Numerical stability constant
+  h2_clip: null              # Huber threshold for H² (null = exact Willmore throughout)
+
+  regularity_min_area_element: 0.01        # Floor on √(EG−F²) to prevent Jacobian collapse
+  regularity_area_element_weight: 1.0
+  regularity_min_positivity: 0.001         # Floor for E = |φ_u|² and G = |φ_v|²; positivity term fires below this
+  regularity_metric_positivity_weight: 0.5
+  regularity_max_metric_value: 5.0         # Upper threshold for E = |φ_u|² and G = |φ_v|²
+  regularity_smoothness_weight: 0.5
+  regularity_log_barrier_weight: 0         # −log(√(EG−F²)) barrier; gradient diverges as area element → 0
+
+  # Mean area floor: prevents sphere-collapse (W → 4π per chart) for torus topology.
+  # For a torus (R, r), the parameter-space average of √(EG−F²) is R·r.
+  regularity_mean_area_floor: 0.2         # Fires when mean area element < threshold
+  regularity_mean_area_floor_weight: 0
+
+# Optimiser
+optimizer:
+  type: "adam"
+  betas: [0.9, 0.999]
+  momentum: 0.9  # For SGD
+
+# Output and Logging
+output:
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  save_best_only: false
+  metric_to_monitor: "willmore_energy"
+
+device: "auto"  # auto, cpu, cuda, mps
+seed: 42
+dtype: "float32"

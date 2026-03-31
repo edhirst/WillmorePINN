@@ -122,7 +122,6 @@ sampling:
   print_eval: false        # If true, full eval runs every epoch. If false, only runs on log/save epochs (faster).
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
-  use_rotation_augmentation: false  # Apply random z-axis rotations for symmetry enforcement
 
 # Loss Function Parameters
 loss:
@@ -140,10 +139,9 @@ loss:
   
   # Regularity loss sub-components (normalized internally to sum to 1.0)
   regularity_area_element_weight: 1.0  # Prevent area element collapse
-  regularity_orientation_weight: 1.0  # Maintain consistent orientation
-  regularity_metric_positivity_weight: 0.5  # Prevent metric degeneration (enable for stability)
+  regularity_metric_positivity_weight: 0.5  # Prevent metric degeneration
+  regularity_min_positivity: 0.001  # Floor for E = |φ_u|² and G = |φ_v|²; positivity term fires below this
   regularity_smoothness_weight: 0.5  # Penalise derivatives that exceed the threshold (ReLU gate)
-  regularity_conformal_weight: 0.0   # Disabled — Willmore energy is conformally invariant so there is no reason to prefer isotropic parametrisation
   regularity_log_barrier_weight: 2.0  # Log-barrier −log(√(EG−F²)) on area element; gradient −1/√(EG−F²) fires continuously (no ReLU gate), diverging as area element → 0
   regularity_max_metric_value: 5.0   # Upper threshold for E = |φ_u|² and G = |φ_v|²
 

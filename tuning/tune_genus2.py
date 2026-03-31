@@ -59,9 +59,6 @@ SEARCH_SPACE = {
     'loss.regularity_weight': (
         'categorical', [0.5, 1.0, 2.0, 5.0]
     ),
-    'loss.regularity_conformal_weight': (
-        'categorical', [0.0, 0.5, 1.0, 2.0, 4.0]
-    ),
     'loss.h2_clip': (
         'categorical', [10, 25, 50, 100, None]
     ),
@@ -233,7 +230,6 @@ def _print_report(results_path: str) -> None:
         short = {
             'lr':   p.get('training.learning_rate', '?'),
             'reg':  p.get('loss.regularity_weight', '?'),
-            'conf': p.get('loss.regularity_conformal_weight', '?'),
             'wup':  p.get('training.adaptive_training.willmore_warmup_epochs', '?'),
             'h2':   p.get('loss.h2_clip', '?'),
             'clip': p.get('training.gradient_clip', '?'),
@@ -292,8 +288,8 @@ def main():
     )
     parser.add_argument(
         '--config',
-        default=os.path.join(ROOT, 'hyperparameters.yaml'),
-        help='Base YAML configuration file (default: hyperparameters.yaml)'
+        default=os.path.join(ROOT, 'configs', 'config_genus2.yaml'),
+        help='Base YAML configuration file (default: configs/config_genus2.yaml)'
     )
     parser.add_argument(
         '--n-trials', type=int, default=20,

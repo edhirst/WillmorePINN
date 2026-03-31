@@ -127,7 +127,6 @@ sampling:
   bridge_oversample_factor: 1.0  # Uniform sampling; IS correction not implemented so factor>1 biases MC estimator
   noise_level: 0.0  # Add Gaussian noise to coordinates
   resample_each_epoch: true  # Whether to resample points each epoch
-  use_rotation_augmentation: false  # Apply random z-axis rotations for symmetry enforcement
 
 # Loss Function Parameters
 loss:

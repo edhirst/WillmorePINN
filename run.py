@@ -31,6 +31,7 @@ from sampling import (
 )
 from utils import plot_loss_curves
 import functools
+import shutil
 print = functools.partial(print, flush=True)
 
 
@@ -155,7 +156,6 @@ def train_epoch(
     device: torch.device,
     dtype: torch.dtype,
     gradient_clip: Optional[float] = None,
-    use_rotation_augmentation: bool = True,
     genus: Optional[int] = None,
 ) -> Dict[str, float]:
     """Train for one epoch."""
@@ -171,15 +171,7 @@ def train_epoch(
     # --- Genus 0 / 1: single-domain path ---
     # Sample parameter space points according to the topology
     uv = sample_parameters(num_points, domain, device, dtype, genus=genus)
-    
-    # Apply random z-axis rotation augmentation if enabled
-    # Only applicable for torus (not ellipsoid due to poles)
-    if use_rotation_augmentation and domain in ['torus']:
-        # Random rotation angle in [0, 2π)
-        theta = torch.rand(1, device=device, dtype=dtype).item() * 2 * 3.14159265359
-        # Shift u coordinate by theta (rotates around z-axis)
-        uv[:, 0] = (uv[:, 0] + theta) % (2 * 3.14159265359)
-    
+
     # Split into batches
     num_batches = (num_points + batch_size - 1) // batch_size
     epoch_losses = {
@@ -288,7 +280,7 @@ def _train_epoch_genus2(
     return epoch_losses
 
 
-def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] = None, config_dict: Optional[dict] = None):
+def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional[str] = None, config_dict: Optional[dict] = None):
     """Main training loop."""
     # Load configuration
     if config_dict is not None:
@@ -423,7 +415,15 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
     
     os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
-    
+
+    # Save a copy of the config to the log directory
+    config_save_path = os.path.join(log_dir, 'config.yaml')
+    if config_dict is not None:
+        with open(config_save_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+    else:
+        shutil.copy2(config_path, config_save_path)
+
     print(f"\nStarting Training Run #{run_number}")
     print(f"Checkpoints: {checkpoint_dir}")
     print(f"Logs: {log_dir}")
@@ -560,58 +560,54 @@ def train(config_path: str = "hyperparameters.yaml", resume_from: Optional[str] 
                 _pl.set_active_frequencies(total_freqs)
 
         # Train one epoch
-        use_rotation_aug = config["sampling"].get("use_rotation_augmentation", True)
-
         epoch_losses = train_epoch(
             model, loss_fn, optimizer,
             num_points, batch_size, domain,
             device, dtype, gradient_clip,
-            use_rotation_augmentation=use_rotation_aug,
             genus=genus,
         )
 
-        # --- Unbiased Willmore evaluation ---
-        # epoch_losses['willmore'] was computed from junction-focused training samples,
-        # which inflate the MC estimate when H is large at the junctions.  Evaluate on
-        # a separate uniform sample so that best-model selection, rollback decisions,
-        # and training history all reflect the true Willmore energy.
-        #
-        # When print_eval=False, the full eval only runs on logging/saving epochs;
-        # other epochs use the training-sample willmore as a cheap proxy.
-        eval_num_points = config["sampling"].get("eval_num_points", 5000)
+        # --- Willmore evaluation ---
+        # If eval_num_points is null, skip separate evaluation and use the training
+        # sample Willmore directly.  When set, evaluation runs on a fresh uniform
+        # sample (always on log epochs; every epoch when print_eval=True).
+        eval_num_points = config["sampling"].get("eval_num_points", None)
         print_eval = config["sampling"].get("print_eval", True)
-        should_eval = print_eval or (epoch % log_frequency == 0)
 
-        if should_eval:
-            if genus == 2:
-                # Two-chart eval: sample each torus chart uniformly, sum Willmore energies
-                n_eval_T1 = eval_num_points // 2
-                n_eval_T2 = eval_num_points - n_eval_T1
-                eval_uv_T1 = sample_torus_excluding_disk(
-                    n_eval_T1, disk_center=model.disk_center_T1,
-                    disk_radius=model.disk_radius, device=device, dtype=dtype)
-                eval_uv_T2 = sample_torus_excluding_disk(
-                    n_eval_T2, disk_center=model.disk_center_T2,
-                    disk_radius=model.disk_radius, device=device, dtype=dtype)
-                model.eval()
-                eval_willmore = loss_fn.eval_willmore_batched(
-                    model, eval_uv_T1, eval_uv_T2,
-                    chunk_size=batch_size,
-                )
-                model.train()
-            else:
-                eval_uv = sample_parameters(eval_num_points, domain, device, dtype, genus=genus)
-                model.eval()
-                # Evaluate in 10 chunks to reduce peak autograd graph size
-                chunk = (eval_num_points + 9) // 10
-                total_weighted = 0.0
-                for _start in range(0, eval_num_points, chunk):
-                    _end = min(_start + chunk, eval_num_points)
-                    total_weighted += loss_fn.willmore_loss(model, eval_uv[_start:_end])[1] * (_end - _start)
-                eval_willmore = total_weighted / eval_num_points
-                model.train()
-        else:
+        if eval_num_points is None:
             eval_willmore = epoch_losses['willmore']
+        else:
+            should_eval = print_eval or (epoch % log_frequency == 0)
+            if should_eval:
+                if genus == 2:
+                    # Two-chart eval: sample each torus chart uniformly, sum Willmore energies
+                    n_eval_T1 = eval_num_points // 2
+                    n_eval_T2 = eval_num_points - n_eval_T1
+                    eval_uv_T1 = sample_torus_excluding_disk(
+                        n_eval_T1, disk_center=model.disk_center_T1,
+                        disk_radius=model.disk_radius, device=device, dtype=dtype)
+                    eval_uv_T2 = sample_torus_excluding_disk(
+                        n_eval_T2, disk_center=model.disk_center_T2,
+                        disk_radius=model.disk_radius, device=device, dtype=dtype)
+                    model.eval()
+                    eval_willmore = loss_fn.eval_willmore_batched(
+                        model, eval_uv_T1, eval_uv_T2,
+                        chunk_size=batch_size,
+                    )
+                    model.train()
+                else:
+                    eval_uv = sample_parameters(eval_num_points, domain, device, dtype, genus=genus)
+                    model.eval()
+                    # Evaluate in 10 chunks to reduce peak autograd graph size
+                    chunk = (eval_num_points + 9) // 10
+                    total_weighted = 0.0
+                    for _start in range(0, eval_num_points, chunk):
+                        _end = min(_start + chunk, eval_num_points)
+                        total_weighted += loss_fn.willmore_loss(model, eval_uv[_start:_end])[1] * (_end - _start)
+                    eval_willmore = total_weighted / eval_num_points
+                    model.train()
+            else:
+                eval_willmore = epoch_losses['willmore']
 
         # Helper to execute a rollback: loads a checkpoint, halves LR, rescales scheduler.
         def _do_rollback(checkpoint_path: str, lr_scale: float = 0.5) -> bool:
@@ -862,7 +858,7 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default="hyperparameters.yaml",
+        default="configs/config_genus2.yaml",
         help="Path to configuration file"
     )
     parser.add_argument(

@@ -151,11 +151,10 @@ class RegularityLoss(nn.Module):
         epsilon: float = 1e-8,
         min_area_element: float = 0.01,
         area_element_weight: float = 1.0,
-        orientation_weight: float = 1.0,
         metric_positivity_weight: float = 1.0,
+        min_positivity: float = 0.001,
         smoothness_weight: float = 1.0,
         max_metric_value: float = 10.0,
-        conformal_weight: float = 0.0,
         mean_area_floor: float = 0.0,
         mean_area_floor_weight: float = 0.0,
         log_barrier_weight: float = 0.0
@@ -165,12 +164,10 @@ class RegularityLoss(nn.Module):
             epsilon: Small constant for numerical stability
             min_area_element: Minimum allowed area element (prevents collapse)
             area_element_weight: Weight for area element loss term
-            orientation_weight: Weight for orientation preservation term
             metric_positivity_weight: Weight for metric positivity term
+            min_positivity: Minimum threshold for E = |φ_u|² and G = |φ_v|²; positivity loss fires below this
             smoothness_weight: Weight for smoothness term
             max_metric_value: Upper threshold for E and G; only excess beyond this is penalised
-            conformal_weight: Weight for Dirichlet excess (E+G)/(2√(EG−F²)) − 1; fires
-                continuously, penalising metric anisotropy even for smooth surfaces
             mean_area_floor: Threshold for mean area element; loss fires when the batch mean
                 √(EG−F²) drops below this value, preventing global torus degeneration (e.g.
                 sphere-collapse where the hole closes and W→4π per chart)
@@ -190,11 +187,9 @@ class RegularityLoss(nn.Module):
         
         # Store initial weights
         self.area_element_weight = area_element_weight
-        self.orientation_weight = orientation_weight
         self.metric_positivity_weight = metric_positivity_weight
+        self.min_positivity = min_positivity
         self.smoothness_weight = smoothness_weight
-        self.conformal_weight = conformal_weight
-    
     def forward(self, model: nn.Module, uv: torch.Tensor) -> torch.Tensor:
         """
         Compute regularity loss.
@@ -223,19 +218,11 @@ class RegularityLoss(nn.Module):
             total_loss += self.area_element_weight * area_element_loss
             weight_sum += self.area_element_weight
         
-        # Check orientation is preserved (normal should point consistently)
-        # Cross product magnitude should stay bounded away from zero
-        if self.orientation_weight > 0:
-            cross_magnitude = torch.norm(torch.cross(phi_u, phi_v, dim=1), dim=1)
-            orientation_loss = torch.mean(torch.nn.functional.relu(self.min_area_element - cross_magnitude) ** 2)
-            total_loss += self.orientation_weight * orientation_loss
-            weight_sum += self.orientation_weight
-        
         # Penalize extreme metric distortion (prevents degeneration)
         # E and G should be positive and not too different (isotropy encouragement)
         if self.metric_positivity_weight > 0:
-            metric_positivity = torch.mean(torch.nn.functional.relu(0.001 - E) ** 2) + \
-                               torch.mean(torch.nn.functional.relu(0.001 - G) ** 2)
+            metric_positivity = torch.mean(torch.nn.functional.relu(self.min_positivity - E) ** 2) + \
+                               torch.mean(torch.nn.functional.relu(self.min_positivity - G) ** 2)
             total_loss += self.metric_positivity_weight * metric_positivity
             weight_sum += self.metric_positivity_weight
         
@@ -249,21 +236,6 @@ class RegularityLoss(nn.Module):
             total_loss += self.smoothness_weight * smoothness_loss
             weight_sum += self.smoothness_weight
         
-        # Conformal energy (Dirichlet excess): (E+G)/(2√(EG−F²)) − 1 ≥ 0, equals 0
-        # iff the map is conformal (E=G, F=0).  Unlike the ReLU-gated terms above,
-        # this fires continuously, providing gradient signal before collapse.
-        # Clamped to ≥ 0: in exact arithmetic (E+G)/(2√(EG-F²)) ≥ 1 by AM-GM, but
-        # when det is clamped at ε while E,G are also small the ratio can fall below
-        # 1 numerically, making the loss negative and incentivising further collapse.
-        if self.conformal_weight > 0:
-            det = torch.clamp(E * G - F * F, min=self.epsilon)
-            area_el = torch.sqrt(det)
-            conformal_defect = torch.mean(
-                torch.clamp((E + G) / (2.0 * area_el + self.epsilon) - 1.0, min=0.0)
-            )
-            total_loss += self.conformal_weight * conformal_defect
-            weight_sum += self.conformal_weight
-
         # Mean area element floor: fires when the batch mean √(EG−F²) drops below
         # mean_area_floor.  For a torus (R, r) the parameter-space average is R·r, so
         # this detects sphere-collapse (R·r → 0) long before the per-point minimum
@@ -449,12 +421,11 @@ class MultiChartCombinedLoss(nn.Module):
         epsilon: float = 1e-6,
         h2_clip: Optional[float] = None,
         regularity_area_element_weight: float = 1.0,
-        regularity_orientation_weight: float = 1.0,
         regularity_metric_positivity_weight: float = 0.5,
+        regularity_min_positivity: float = 0.001,
         regularity_smoothness_weight: float = 0.5,
         regularity_max_metric_value: float = 10.0,
         regularity_min_area_element: float = 0.01,
-        regularity_conformal_weight: float = 0.0,
         regularity_mean_area_floor: float = 0.0,
         regularity_mean_area_floor_weight: float = 0.0,
         regularity_log_barrier_weight: float = 0.0,
@@ -494,11 +465,10 @@ class MultiChartCombinedLoss(nn.Module):
             epsilon=epsilon,
             min_area_element=regularity_min_area_element,
             area_element_weight=regularity_area_element_weight,
-            orientation_weight=regularity_orientation_weight,
             metric_positivity_weight=regularity_metric_positivity_weight,
+            min_positivity=regularity_min_positivity,
             smoothness_weight=regularity_smoothness_weight,
             max_metric_value=regularity_max_metric_value,
-            conformal_weight=regularity_conformal_weight,
             mean_area_floor=regularity_mean_area_floor,
             mean_area_floor_weight=regularity_mean_area_floor_weight,
             log_barrier_weight=regularity_log_barrier_weight,
@@ -684,12 +654,11 @@ class CombinedEmbeddingLoss(nn.Module):
         target_area: Optional[float] = None,
         epsilon: float = 1e-8,
         regularity_area_element_weight: float = 1.0,
-        regularity_orientation_weight: float = 1.0,
         regularity_metric_positivity_weight: float = 1.0,
+        regularity_min_positivity: float = 0.001,
         regularity_smoothness_weight: float = 1.0,
         regularity_max_metric_value: float = 10.0,
         regularity_min_area_element: float = 0.01,
-        regularity_conformal_weight: float = 0.0,
         regularity_mean_area_floor: float = 0.0,
         regularity_mean_area_floor_weight: float = 0.0,
         regularity_log_barrier_weight: float = 0.0,
@@ -705,12 +674,11 @@ class CombinedEmbeddingLoss(nn.Module):
             target_area: Target surface area (None for adaptive)
             epsilon: Small constant for numerical stability
             regularity_area_element_weight: Weight for area element term within regularity loss
-            regularity_orientation_weight: Weight for orientation term within regularity loss
             regularity_metric_positivity_weight: Weight for metric positivity term within regularity loss
+            regularity_min_positivity: Minimum threshold for E and G in the positivity term
             regularity_smoothness_weight: Weight for smoothness term within regularity loss
             regularity_max_metric_value: Upper threshold for E and G in the smoothness term
             regularity_min_area_element: Minimum allowed area element √(EG−F²); collapse below this is penalised
-            regularity_conformal_weight: Weight for the conformal energy term within RegularityLoss
             regularity_mean_area_floor: Batch-mean area element floor; fires when mean √(EG−F²) < this
             regularity_mean_area_floor_weight: Weight for the mean area floor loss
             genus: Surface genus (0 or 1)
@@ -731,11 +699,10 @@ class CombinedEmbeddingLoss(nn.Module):
             epsilon=epsilon,
             min_area_element=regularity_min_area_element,
             area_element_weight=regularity_area_element_weight,
-            orientation_weight=regularity_orientation_weight,
             metric_positivity_weight=regularity_metric_positivity_weight,
+            min_positivity=regularity_min_positivity,
             smoothness_weight=regularity_smoothness_weight,
             max_metric_value=regularity_max_metric_value,
-            conformal_weight=regularity_conformal_weight,
             mean_area_floor=regularity_mean_area_floor,
             mean_area_floor_weight=regularity_mean_area_floor_weight,
         )
@@ -881,12 +848,11 @@ def create_embedding_loss(config: dict) -> nn.Module:
             epsilon=loss_config.get("epsilon", 1e-6),
             h2_clip=loss_config.get("h2_clip", None),
             regularity_area_element_weight=loss_config.get("regularity_area_element_weight", 1.0),
-            regularity_orientation_weight=loss_config.get("regularity_orientation_weight", 1.0),
             regularity_metric_positivity_weight=loss_config.get("regularity_metric_positivity_weight", 0.5),
+            regularity_min_positivity=loss_config.get("regularity_min_positivity", 0.001),
             regularity_smoothness_weight=loss_config.get("regularity_smoothness_weight", 0.5),
             regularity_max_metric_value=loss_config.get("regularity_max_metric_value", 10.0),
             regularity_min_area_element=loss_config.get("regularity_min_area_element", 0.01),
-            regularity_conformal_weight=loss_config.get("regularity_conformal_weight", 0.0),
             regularity_mean_area_floor=loss_config.get("regularity_mean_area_floor", 0.0),
             regularity_mean_area_floor_weight=loss_config.get("regularity_mean_area_floor_weight", 0.0),
             regularity_log_barrier_weight=loss_config.get("regularity_log_barrier_weight", 0.0),
@@ -912,12 +878,11 @@ def create_embedding_loss(config: dict) -> nn.Module:
         target_area=loss_config.get("target_area", None),
         epsilon=loss_config.get("epsilon", 1e-8),
         regularity_area_element_weight=loss_config.get("regularity_area_element_weight", 1.0),
-        regularity_orientation_weight=loss_config.get("regularity_orientation_weight", 1.0),
         regularity_metric_positivity_weight=loss_config.get("regularity_metric_positivity_weight", 1.0),
+        regularity_min_positivity=loss_config.get("regularity_min_positivity", 0.001),
         regularity_smoothness_weight=loss_config.get("regularity_smoothness_weight", 1.0),
         regularity_max_metric_value=loss_config.get("regularity_max_metric_value", 10.0),
         regularity_min_area_element=loss_config.get("regularity_min_area_element", 0.01),
-        regularity_conformal_weight=loss_config.get("regularity_conformal_weight", 0.0),
         regularity_mean_area_floor=loss_config.get("regularity_mean_area_floor", 0.0),
         regularity_mean_area_floor_weight=loss_config.get("regularity_mean_area_floor_weight", 0.0),
         regularity_log_barrier_weight=loss_config.get("regularity_log_barrier_weight", 0.0),

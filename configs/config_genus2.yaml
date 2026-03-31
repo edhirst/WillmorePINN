@@ -1,0 +1,133 @@
+# Willmore energy minimisation — Genus 2 (double torus)
+# Conjectured minimum: W = 4π² ≈ 39.48 (Lawson's ξ_{2,1})
+
+topology:
+  genus: 2  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus
+
+  # Two punctured tori (T₁, T₂) with disk boundaries identified.
+  # Boundary-matching loss enforces C⁰/C¹/C² continuity between φ₁(∂D₁) and φ₂(∂D₂).
+  double_torus:
+    tau1: "0.85j"               # Complex modulus for T₁; Im(τ) controls tube thickness, Re(τ) controls shear
+    tau2: "0.85j"               # Complex modulus for T₂; Im(τ) controls tube thickness, Re(τ) controls shear
+    disk_radius: 0.4            # Parameter-space radius δ of excluded disk on each torus chart
+    disk_center_T1: [0.0, 0.0] # (u₀, v₀) centre of excluded disk on T₁
+    torus2_offset: [4.4, 0.0, 0.0]  # ℝ³ translation applied to T₂ during pretraining
+
+# Model Architecture
+model:
+  input_dim: 2                            # Parameter space dimension (u, v)
+  output_dim: 3                           # Embedding space dimension (x, y, z)
+  hidden_dims: [128, 256, 512, 256, 128]
+  activation: "tanh"
+  dropout: 0.0
+  use_spectral_features: true             # Use Fourier features for periodic input embedding
+  num_frequencies: 6                      # Fourier frequency components per dimension → 4·N input features
+  initialization: "xavier_uniform"
+  use_residual: false                     # Learn corrections to reference embedding rather than full embedding
+  residual_scale: 0.5                     # Scale factor for residual corrections
+
+  # Coarse-to-fine Fourier frequency curriculum (Mildenhall et al. 2020):
+  # progressively activates higher bands so the network learns global shape before fine detail.
+  freq_curriculum:
+    warmup_epochs: 0   # Epochs over which to ramp from start_freqs to all frequencies; 0 = disabled
+    start_freqs: 1     # Fourier bands active at epoch 1
+
+  # Supervised pretraining: initialise network to match reference embedding before Willmore training.
+  supervised_pretraining:
+    enabled: true
+    num_epochs: 200
+    learning_rate: 0.003
+    batch_size: 512
+    num_points_per_epoch: 4096
+    position_weight: 1.0      # Weight for C⁰ position matching
+    derivative_weight: 1.0    # Weight for C¹ derivative matching
+
+# Training Parameters
+training:
+  num_epochs: 2000
+  batch_size: 3000
+  learning_rate: 0.0002
+  weight_decay: 0.000001
+  scheduler: "cosine_warm_restarts"
+  scheduler_params:
+    T_0: 500       # Initial cosine period in epochs
+    T_mult: 2      # Each restart multiplies the period by this factor
+    eta_min: 0.000001
+  gradient_clip: 1.0
+  log_frequency: 50  # Log metrics and save checkpoints every N epochs
+
+  # Adaptive safeguards against regularity collapse and topology change.
+  adaptive_training:
+    enabled: true
+    regularity_threshold: 0.1           # Regularity/Willmore ratio above which to boost regularity weight
+    regularity_boost_factor: 3.0
+    checkpoint_rollback: true
+    severe_degradation_threshold: 4.0   # Rollback if regularity increases by this factor
+    regularity_abs_threshold: 0.000001  # Minimum absolute regularity before rollback can fire
+    willmore_spike_threshold: 0.0       # 0.0 = disabled
+    willmore_ema_alpha: 0.3             # EMA decay for Willmore tracking
+    max_rollbacks: 30
+    willmore_warmup_epochs: 100         # Epochs before topology-collapse rollback can fire
+    willmore_warmup_start: 1.0          # Willmore weight fraction at epoch 1
+    willmore_topology_floor: 38.0       # W floor for genus-2 topology-collapse rollback (≈ 4π² = 39.48)
+
+# Sampling Parameters
+sampling:
+  num_points: 9000
+  eval_num_points: 5000     # Uniform eval sample for logged W (reduces MC variance)
+  print_eval: false          # If true, full eval runs every epoch; if false, only on log epochs
+  noise_level: 0.0
+  resample_each_epoch: true
+
+# Loss Function Parameters
+loss:
+  willmore_weight: 1.0
+  max_willmore_weight: 1.0  # Equal to willmore_weight disables annealing
+  regularity_weight: 10.0
+  target_area: null          # Target surface area (null = adaptive)
+  epsilon: 0.000001          # Numerical stability constant
+  h2_clip: 5.0               # Huber threshold for H²: exact Willmore below, linear gradient above
+
+  regularity_min_area_element: 0.01       # Floor on √(EG−F²) to prevent Jacobian collapse
+  regularity_area_element_weight: 1.0
+  regularity_min_positivity: 0.001      # Floor for E = |φ_u|² and G = |φ_v|²; positivity term fires below this
+  regularity_metric_positivity_weight: 0.5
+  regularity_max_metric_value: 5.0        # Upper threshold for E = |φ_u|² and G = |φ_v|²
+  regularity_smoothness_weight: 0.5
+  regularity_log_barrier_weight: 2.0      # −log(√(EG−F²)) barrier; gradient diverges as area element → 0
+  regularity_mean_area_floor: 0.2         # Fires when mean area element < threshold; prevents global torus degeneration
+  regularity_mean_area_floor_weight: 5.0
+
+  # Multi-chart gluing (genus 2 only)
+  gluing_weight: 10.0
+  gluing_num_boundary_points: 64
+  gluing_derivative_weight: 0.5           # C¹ continuity weight relative to C⁰
+  gluing_second_derivative_weight: 0.1    # C² continuity weight
+
+  # Junction circle radius penalty (genus 2 only)
+  # ReLU² penalty below junction_min_radius and above junction_max_radius.
+  junction_radius_weight: 3.0
+  junction_min_radius: 0.3   # ℝ³ radius floor for the gluing circle
+  junction_max_radius: 1.2   # ℝ³ radius ceiling for the gluing circle
+
+  # Topology guard (genus 2 only)
+  # ReLU² penalty fires when W < topology_guard_floor, exploiting W ≥ 4π² for genus-2 surfaces.
+  topology_guard_weight: 8.0
+  topology_guard_floor: 38  # 4π²
+
+# Optimiser
+optimizer:
+  type: "adam"
+  betas: [0.9, 0.999]
+  momentum: 0.9  # For SGD
+
+# Output and Logging
+output:
+  checkpoint_dir: "checkpoints"
+  log_dir: "logs"
+  save_best_only: false
+  metric_to_monitor: "willmore_energy"
+
+device: "auto"  # auto, cpu, cuda, mps
+seed: 42
+dtype: "float32"

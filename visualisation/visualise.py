@@ -60,7 +60,7 @@ def get_highest_run_number(base_checkpoint_dir: str) -> int:
     return max(run_numbers) if run_numbers else None
 
 
-def plot_fundamental_domain_image(output_path, num_points=200, genus=None, config_path='hyperparameters.yaml'):
+def plot_fundamental_domain_image(output_path, num_points=200, genus=None, config_path='configs/config_genus2.yaml'):
     """
     Plot and save the fundamental domain with rainbow coloring.
     
@@ -93,7 +93,7 @@ def plot_fundamental_domain_image(output_path, num_points=200, genus=None, confi
 
 
 def visualise_training_evolution(
-    config_path='hyperparameters.yaml',
+    config_path='configs/config_genus2.yaml',
     checkpoint_dir='checkpoints',
     num_test_points=5000,
     output_path='logs/embedding_evolution.png',
@@ -283,7 +283,7 @@ def visualise_training_evolution(
 
 def visualise_single_model(
     checkpoint_path='checkpoints/best_model.pt',
-    config_path='hyperparameters.yaml',
+    config_path='configs/config_genus2.yaml',
     num_test_points=10000,
     output_path='logs/best_embedding.png'
 ):
@@ -370,7 +370,7 @@ def main():
     # Default paths relative to parent directory (project root)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    default_config = os.path.join(project_root, 'hyperparameters.yaml')
+    default_config = os.path.join(project_root, 'configs', 'config_genus2.yaml')
     default_checkpoints = os.path.join(project_root, 'checkpoints')
     
     parser = argparse.ArgumentParser(description="Visualize learned embeddings")

@@ -752,7 +752,7 @@ def plot_curvature_distribution(
 
 def analyze_model(
     checkpoint_path: str = 'logs/checkpoints/best_model.pt',
-    config_path: str = 'hyperparameters.yaml',
+    config_path: str = 'configs/config_genus2.yaml',
     num_test_points: int = 5000,
     device: torch.device = torch.device('cpu'),
     output_dir: str = 'logs/analysis'
@@ -844,7 +844,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze a trained Willmore embedding model")
     parser.add_argument("--checkpoint", type=str, default='logs/checkpoints/best_model.pt',
                        help="Path to model checkpoint")
-    parser.add_argument("--config", type=str, default='hyperparameters.yaml',
+    parser.add_argument("--config", type=str, default='configs/config_genus2.yaml',
                        help="Path to configuration file")
     parser.add_argument("--num_points", type=int, default=5000,
                        help="Number of test points")

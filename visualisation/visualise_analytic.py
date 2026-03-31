@@ -248,7 +248,7 @@ def main():
     # Default config path relative to script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    default_config = os.path.join(project_root, 'hyperparameters.yaml')
+    default_config = os.path.join(project_root, 'configs', 'config_genus2.yaml')
     
     parser = argparse.ArgumentParser(description="Visualize analytical surface embeddings")
     parser.add_argument('--config', type=str, default=default_config,

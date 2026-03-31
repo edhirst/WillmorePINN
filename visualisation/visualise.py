@@ -19,6 +19,7 @@ import glob
 from pathlib import Path
 
 from model import create_embedding_model
+from losses import EmbeddingWillmoreLoss
 from sampling import (
     sample_parameters, get_domain_for_genus,
     sample_torus_excluding_disk,
@@ -237,6 +238,13 @@ def visualise_training_evolution(
         print(f"  Domain: {domain_ckpt}")
         print(f"  Parameters: {sum(p.numel() for p in create_embedding_model(config_ckpt, device, skip_init=True).parameters())} trainable")
         model, epoch, loss = load_checkpoint_model(checkpoint_path, config_ckpt, device)
+        if epoch == 0:
+            # Stored loss for epoch 0 is ref_willmore (analytic surface), not the network.
+            # Compute W fresh from the network instead.
+            wloss = EmbeddingWillmoreLoss(domain=domain_ckpt)
+            uv_e0 = sample_parameters(len(uv_test), domain_ckpt, device, genus=genus_ckpt)
+            _, w = wloss(model, uv_e0.requires_grad_(True))
+            loss = w.item() if hasattr(w, 'item') else float(w)
         with torch.no_grad():
             if genus_ckpt == 2:
                 uv_t1, uv_t2 = uv_genus2_parts

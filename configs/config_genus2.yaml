@@ -44,7 +44,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 400 ##2000
+  num_epochs: 2000
   batch_size: 3000
   learning_rate: 0.0002
   weight_decay: 0.000001

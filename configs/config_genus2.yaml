@@ -9,7 +9,7 @@ topology:
   double_torus:
     tau1: "0.85j"               # Complex modulus for T₁; Im(τ) controls tube thickness, Re(τ) controls shear
     tau2: "0.85j"               # Complex modulus for T₂; Im(τ) controls tube thickness, Re(τ) controls shear
-    disk_radius: 0.4            # Parameter-space radius δ of excluded disk on each torus chart
+    disk_radius: 0.65           # Parameter-space radius δ of excluded disk on each torus chart
     disk_center_T1: [0.0, 0.0] # (u₀, v₀) centre of excluded disk on T₁
     torus2_offset: [3.7, 0.0, 0.0]  # ℝ³ translation applied to T₂ during pretraining; 2(R+r)=2(1+Im(τ)) places tori in contact
 
@@ -106,9 +106,16 @@ loss:
 
   # Junction circle radius penalty (genus 2 only)
   # ReLU² penalty below junction_min_radius and above junction_max_radius.
-  junction_radius_weight: 3.0
-  junction_min_radius: 0.3   # ℝ³ radius floor for the gluing circle
+  junction_radius_weight: 15.0
+  junction_min_radius: 0.5   # ℝ³ radius floor for the gluing circle
   junction_max_radius: 1.2   # ℝ³ radius ceiling for the gluing circle
+
+  # Annular near-disk regularity (genus 2 only)
+  # Applies regularity loss in the transition zone δ ≤ r_param ≤ annular_radius_factor·δ.
+  # Prevents the embedding from forming a thin funnel just outside the gluing circle.
+  annular_regularity_weight: 5.0
+  annular_radius_factor: 2.5   # outer/inner ratio of the annular zone in parameter space
+  annular_num_points: 256      # samples per chart per step in the annular zone
 
   # Topology guard (genus 2 only)
   # ReLU² penalty fires when W < topology_guard_floor, exploiting W ≥ 4π² for genus-2 surfaces.

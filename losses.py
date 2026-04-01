@@ -439,6 +439,9 @@ class MultiChartCombinedLoss(nn.Module):
         junction_max_radius: Optional[float] = None,
         topology_guard_weight: float = 0.0,
         topology_guard_floor: float = 4.0 * np.pi ** 2,
+        annular_regularity_weight: float = 0.0,
+        annular_radius_factor: float = 2.5,
+        annular_num_points: int = 128,
     ):
         super().__init__()
         self.willmore_weight = willmore_weight
@@ -453,6 +456,10 @@ class MultiChartCombinedLoss(nn.Module):
         self.junction_max_radius = junction_max_radius
         self.topology_guard_weight = topology_guard_weight
         self.topology_guard_floor = topology_guard_floor
+        self.annular_regularity_weight = annular_regularity_weight
+        self.annular_radius_factor = annular_radius_factor
+        self.annular_num_points = annular_num_points
+        self.disk_radius = disk_radius
 
         # Each torus chart integrates over [0, 2π]² minus the excluded disk D
         # of parameter-space area πδ².
@@ -590,6 +597,40 @@ class MultiChartCombinedLoss(nn.Module):
                     + torch.nn.functional.relu(junction_r2 - self.junction_max_radius) ** 2
                 )
             total = total + self.junction_radius_weight * junction_penalty
+
+        # --- Annular near-disk regularity ---
+        # The excluded disk is absent from both the Willmore and regularity
+        # integrals, so the network can freely form a thin funnel just outside
+        # the gluing circle.  Sampling the annular zone δ ≤ r_param ≤ α·δ and
+        # applying regularity there prevents area-element collapse in the
+        # transition region, enforcing a wide neck rather than a thin tube.
+        if self.annular_regularity_weight > 0:
+            device = uv_T1.device
+            dtype = uv_T1.dtype
+            n_ann = self.annular_num_points
+            inner = self.disk_radius
+            outer = self.disk_radius * self.annular_radius_factor
+
+            def _sample_annulus(u0, v0, n):
+                collected = []
+                while sum(c.shape[0] for c in collected) < n:
+                    cand = torch.rand(n * 8, 2, device=device, dtype=dtype) * (2 * np.pi)
+                    du = torch.abs(cand[:, 0] - u0)
+                    du = torch.min(du, 2 * np.pi - du)
+                    dv = torch.abs(cand[:, 1] - v0)
+                    dv = torch.min(dv, 2 * np.pi - dv)
+                    r2 = du * du + dv * dv
+                    mask = (r2 >= inner * inner) & (r2 <= outer * outer)
+                    collected.append(cand[mask])
+                return torch.cat(collected, dim=0)[:n]
+
+            u0_T1, v0_T1 = model.disk_center_T1
+            u0_T2, v0_T2 = model.disk_center_T2
+            uv_ann_T1 = _sample_annulus(u0_T1, v0_T1, n_ann)
+            uv_ann_T2 = _sample_annulus(u0_T2, v0_T2, n_ann)
+            ann_reg = (self.regularity_loss(model.torus1, uv_ann_T1)
+                       + self.regularity_loss(model.torus2, uv_ann_T2))
+            total = total + self.annular_regularity_weight * ann_reg
 
         # --- Gluing loss (C⁰+C¹+C² boundary matching at chart junctions) ---
         gluing_loss_val = self.gluing_loss(model)
@@ -866,6 +907,9 @@ def create_embedding_loss(config: dict) -> nn.Module:
             junction_max_radius=loss_config.get("junction_max_radius", None),
             topology_guard_weight=loss_config.get("topology_guard_weight", 0.0),
             topology_guard_floor=loss_config.get("topology_guard_floor", 4.0 * np.pi ** 2),
+            annular_regularity_weight=loss_config.get("annular_regularity_weight", 0.0),
+            annular_radius_factor=loss_config.get("annular_radius_factor", 2.5),
+            annular_num_points=loss_config.get("annular_num_points", 128),
         )
     
     # --- Genus 0 or 1: single-chart loss ---

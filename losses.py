@@ -405,12 +405,189 @@ class BoundaryMatchingLoss(nn.Module):
         return total
 
 
+class AnnularGluingLoss(nn.Module):
+    """
+    Gluing loss enforcing C⁰/C¹/C² smoothness throughout an annular collar
+    neighbourhood of the excluded disk.
+
+    By the smooth collar construction for genus-2 surfaces, the annular region
+    r ∈ [δ·r_inner, δ·r_outer] is simultaneously covered by both chart
+    parametrisations via the identification
+
+        uv_T1(r, θ) = (u₀_T1 + r cos θ,  v₀_T1 + r sin θ)
+        uv_T2(r, θ) = (u₀_T2 − r cos θ,  v₀_T2 + r sin θ)
+
+    The gluing map g: uv_T1 ↦ uv_T2 has Jacobian Dg = diag(−1, +1), so the
+    C¹ compatibility condition reads
+
+        ∂φ₁/∂u = −∂φ₂/∂u'   and   ∂φ₁/∂v = ∂φ₂/∂v'
+
+    and applying the chain rule for Dg gives the C² conditions
+
+        ∂²φ₁/∂u²   =   ∂²φ₂/∂u'²
+        ∂²φ₁/∂u∂v  = −∂²φ₂/∂u'∂v'
+        ∂²φ₁/∂v²   =   ∂²φ₂/∂v'²
+
+    Sampling the full 2D annulus (rather than just ∂D at r = δ) provides dense
+    gradient signal throughout the collar, and matching both partial derivatives
+    rather than a single inward direction gives complete C¹/C² enforcement.
+    """
+
+    def __init__(
+        self,
+        num_annular_points: int = 256,
+        inner_radius_factor: float = 1.0,
+        outer_radius_factor: float = 2.5,
+        c0_weight: float = 1.0,
+        c1_weight: float = 0.5,
+        c2_weight: float = 0.3,
+    ):
+        """
+        Args:
+            num_annular_points: Number of (r, θ) samples per forward call.
+            inner_radius_factor: r_inner = inner_radius_factor · δ.
+            outer_radius_factor: r_outer = outer_radius_factor · δ.
+            c0_weight: Weight for C⁰ position matching.
+            c1_weight: Weight for C¹ Jacobian matching relative to C⁰.
+            c2_weight: Weight for C² Hessian matching relative to C⁰.
+        """
+        super().__init__()
+        self.num_annular_points = num_annular_points
+        self.inner_radius_factor = inner_radius_factor
+        self.outer_radius_factor = outer_radius_factor
+        self.c0_weight = c0_weight
+        self.c1_weight = c1_weight
+        self.c2_weight = c2_weight
+
+    @staticmethod
+    def _jacobian_and_hessian(model_fn, uv: torch.Tensor, need_hessian: bool = False):
+        """Compute the Jacobian, and optionally the Hessian, of model_fn at uv.
+
+        Args:
+            model_fn: maps (N, 2) → (N, 3).
+            uv: (N, 2) parameter coordinates (detached; re-attached internally).
+            need_hessian: if True, also return the (N, 3, 2, 2) Hessian.
+
+        Returns:
+            xyz: (N, 3)
+            J:   (N, 3, 2)      J[:, i, j] = ∂φᵢ/∂uⱼ
+            H:   (N, 3, 2, 2) or None   H[:, i, j, k] = ∂²φᵢ/(∂uₖ∂uⱼ)
+        """
+        uv = uv.detach().requires_grad_(True)
+        xyz = model_fn(uv)  # (N, 3)
+        J_rows = []
+        for i in range(3):
+            gi = torch.autograd.grad(
+                xyz[:, i], uv, torch.ones_like(xyz[:, i]),
+                create_graph=True, retain_graph=True,
+            )[0]  # (N, 2)
+            J_rows.append(gi)
+        J = torch.stack(J_rows, dim=1)  # (N, 3, 2)
+
+        if not need_hessian:
+            return xyz, J, None
+
+        H_rows = []
+        for i in range(3):
+            H_cols = []
+            for j in range(2):
+                Hijk = torch.autograd.grad(
+                    J[:, i, j], uv, torch.ones_like(J[:, i, j]),
+                    create_graph=True, retain_graph=True,
+                )[0]  # (N, 2):  [∂²φᵢ/(∂u₀∂uⱼ), ∂²φᵢ/(∂u₁∂uⱼ)]
+                H_cols.append(Hijk)
+            H_rows.append(torch.stack(H_cols, dim=1))  # (N, 2, 2)
+        H = torch.stack(H_rows, dim=1)  # (N, 3, 2, 2)
+        return xyz, J, H
+
+    def forward(self, model) -> torch.Tensor:
+        """Compute annular gluing loss for a Genus2MultiChartNetwork.
+
+        Args:
+            model: Genus2MultiChartNetwork instance.
+
+        Returns:
+            Scalar annular gluing loss.
+        """
+        n = self.num_annular_points
+        device = next(model.parameters()).device
+        dtype = next(model.parameters()).dtype
+
+        delta = model.disk_radius
+        r_inner = delta * self.inner_radius_factor
+        r_outer = delta * self.outer_radius_factor
+
+        # Sample (r, θ) with uniform area distribution (uniform in r² ↔ uniform in area)
+        r2 = (torch.rand(n, device=device, dtype=dtype)
+              * (r_outer ** 2 - r_inner ** 2) + r_inner ** 2)
+        r = r2.sqrt()
+        theta = torch.rand(n, device=device, dtype=dtype) * 2.0 * np.pi
+        cos_t = torch.cos(theta)
+        sin_t = torch.sin(theta)
+
+        u0_T1, v0_T1 = model.disk_center_T1
+        u0_T2, v0_T2 = model.disk_center_T2
+
+        # T₁ annular coordinates: (u₀ + r cos θ, v₀ + r sin θ)
+        uv_1 = torch.stack([
+            (u0_T1 + r * cos_t) % (2.0 * np.pi),
+            (v0_T1 + r * sin_t) % (2.0 * np.pi),
+        ], dim=1)
+
+        # T₂ annular coordinates via gluing map: (u₀' − r cos θ, v₀' + r sin θ)
+        uv_2 = torch.stack([
+            (u0_T2 - r * cos_t) % (2.0 * np.pi),
+            (v0_T2 + r * sin_t) % (2.0 * np.pi),
+        ], dim=1)
+
+        need_hessian = self.c2_weight > 0
+        need_jacobian = self.c1_weight > 0 or need_hessian
+
+        if need_jacobian:
+            xyz_1, J_1, H_1 = self._jacobian_and_hessian(
+                model.forward_torus1, uv_1, need_hessian)
+            xyz_2, J_2, H_2 = self._jacobian_and_hessian(
+                model.forward_torus2, uv_2, need_hessian)
+        else:
+            xyz_1 = model.forward_torus1(uv_1.detach())
+            xyz_2 = model.forward_torus2(uv_2.detach())
+
+        # C⁰: position matching
+        total = self.c0_weight * ((xyz_1 - xyz_2) ** 2).sum(dim=1).mean()
+
+        # C¹: Jacobian matching via Dg = diag(−1, +1)
+        #   ∂φ₁/∂u = −∂φ₂/∂u'  →  J₁[:,:,0] + J₂[:,:,0] = 0
+        #   ∂φ₁/∂v =  ∂φ₂/∂v'  →  J₁[:,:,1] − J₂[:,:,1] = 0
+        if self.c1_weight > 0:
+            c1 = (
+                ((J_1[:, :, 0] + J_2[:, :, 0]) ** 2).mean()
+                + ((J_1[:, :, 1] - J_2[:, :, 1]) ** 2).mean()
+            )
+            total = total + self.c1_weight * c1
+
+        # C²: Hessian matching  (H[:, i, j, k] = ∂²φᵢ/(∂uₖ∂uⱼ))
+        #   ∂²φ₁/∂u²    =   ∂²φ₂/∂u'²    →  H₁[:,:,0,0] − H₂[:,:,0,0] = 0
+        #   ∂²φ₁/∂u∂v   = −∂²φ₂/∂u'∂v'  →  H₁[:,:,0,1] + H₂[:,:,0,1] = 0  (also :,1,0)
+        #   ∂²φ₁/∂v²    =   ∂²φ₂/∂v'²   →  H₁[:,:,1,1] − H₂[:,:,1,1] = 0
+        if self.c2_weight > 0:
+            c2 = (
+                ((H_1[:, :, 0, 0] - H_2[:, :, 0, 0]) ** 2).mean()
+                + ((H_1[:, :, 0, 1] + H_2[:, :, 0, 1]) ** 2).mean()
+                + ((H_1[:, :, 1, 0] + H_2[:, :, 1, 0]) ** 2).mean()
+                + ((H_1[:, :, 1, 1] - H_2[:, :, 1, 1]) ** 2).mean()
+            )
+            total = total + self.c2_weight * c2
+
+        return total
+
+
 class MultiChartCombinedLoss(nn.Module):
     """
     Combined loss for the genus-2 two-chart architecture.
 
-    Aggregates Willmore + regularity over two charts (T₁, T₂) plus a direct
-    gluing loss at the single φ₁(∂D₁) = φ₂(∂D₂) identification.
+    Aggregates Willmore + regularity over two charts (T₁, T₂) plus an annular
+    gluing loss enforcing C⁰/C¹/C² continuity throughout the collar neighbourhood
+    of the gluing circle.
     """
 
     def __init__(
@@ -430,7 +607,9 @@ class MultiChartCombinedLoss(nn.Module):
         regularity_mean_area_floor_weight: float = 0.0,
         regularity_log_barrier_weight: float = 0.0,
         max_willmore_weight: float = 1.0,
-        gluing_num_boundary_points: int = 64,
+        gluing_num_annular_points: int = 256,
+        gluing_inner_radius_factor: float = 1.0,
+        gluing_outer_radius_factor: float = 2.5,
         gluing_derivative_weight: float = 0.5,
         gluing_second_derivative_weight: float = 0.3,
         disk_radius: float = 0.3,
@@ -480,10 +659,13 @@ class MultiChartCombinedLoss(nn.Module):
             mean_area_floor_weight=regularity_mean_area_floor_weight,
             log_barrier_weight=regularity_log_barrier_weight,
         )
-        self.gluing_loss = BoundaryMatchingLoss(
-            num_boundary_points=gluing_num_boundary_points,
-            derivative_weight=gluing_derivative_weight,
-            second_derivative_weight=gluing_second_derivative_weight,
+        self.gluing_loss = AnnularGluingLoss(
+            num_annular_points=gluing_num_annular_points,
+            inner_radius_factor=gluing_inner_radius_factor,
+            outer_radius_factor=gluing_outer_radius_factor,
+            c0_weight=1.0,
+            c1_weight=gluing_derivative_weight,
+            c2_weight=gluing_second_derivative_weight,
         )
         self.genus = 2
 
@@ -898,7 +1080,10 @@ def create_embedding_loss(config: dict) -> nn.Module:
             regularity_mean_area_floor_weight=loss_config.get("regularity_mean_area_floor_weight", 0.0),
             regularity_log_barrier_weight=loss_config.get("regularity_log_barrier_weight", 0.0),
             max_willmore_weight=loss_config.get("max_willmore_weight", 1.0),
-            gluing_num_boundary_points=loss_config.get("gluing_num_boundary_points", 64),
+            gluing_num_annular_points=loss_config.get("gluing_num_annular_points",
+                                                       loss_config.get("gluing_num_boundary_points", 256)),
+            gluing_inner_radius_factor=loss_config.get("gluing_inner_radius_factor", 1.0),
+            gluing_outer_radius_factor=loss_config.get("gluing_outer_radius_factor", 2.5),
             gluing_derivative_weight=loss_config.get("gluing_derivative_weight", 0.5),
             gluing_second_derivative_weight=loss_config.get("gluing_second_derivative_weight", 0.3),
             disk_radius=float(dt_params.get('disk_radius', 0.3)),

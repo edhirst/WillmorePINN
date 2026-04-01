@@ -223,40 +223,39 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
 def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: str, device: torch.device):
     """Pretrain and visualize double torus embeddings (genus 2).
 
-    create_embedding_model with skip_init=False calls model.pretrain() internally,
-    fitting T₁, bridge, and T₂ sub-networks to their reference embeddings.
+    create_embedding_model with skip_init=False calls model.pretrain() internally.
+    T₁ is fitted to the standard torus.  T₂'s reference is the x → −x reflection
+    plus a z-offset of 2·Im(τ₂), which:
+      • keeps C¹/C² exact at the collar (z of a standard torus is independent of u)
+      • breaks C⁰ by exactly z_shift in z, giving the gluing loss a non-zero gradient
+      • places T₂ above T₁ in z, avoiding the self-intersection degeneracy of the
+        pure x-flip (where both charts are identical in ℝ³ and training is stuck).
     """
     with open(config_path, 'r') as f:
         base_config = yaml.safe_load(f)
 
     dt_configs = [
-        # T2 disk at (π,0) faces T1's disk at (0,0) so the bridge goes right→left
-        # torus2_offset = (R+r1) + (R+r2) + gap  (R=1, r=Im(τ), gap=1.0)
+        # disk_center_T2 is always auto-computed from τ₂ via _compute_disk_center_T2
+        {'tau1': '0.85j', 'tau2': '0.85j',
+         'disk_radius': 0.65,
+         'disk_center_T1': [0.0, 0.0],
+         'label': 'τ₁=τ₂=0.85i (training config)'},
         {'tau1': '1j', 'tau2': '1j',
-         'disk_radius': 0.3,
-         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
-         'torus2_offset': [5.0, 0.0, 0.0],
+         'disk_radius': 0.65,
+         'disk_center_T1': [0.0, 0.0],
          'label': 'τ₁=τ₂=i (symmetric)'},
         {'tau1': '0.5j', 'tau2': '0.7j',
-         'disk_radius': 0.3,
-         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
-         'torus2_offset': [4.2, 0.0, 0.0],
+         'disk_radius': 0.65,
+         'disk_center_T1': [0.0, 0.0],
          'label': 'τ₁=0.5i, τ₂=0.7i (asymmetric)'},
         {'tau1': '1.0+0.5j', 'tau2': '-1.0+0.5j',
+         'disk_radius': 0.5,
+         'disk_center_T1': [0.0, 0.0],
+         'label': 'τ₁=1+0.5i, τ₂=−1+0.5i (twisted)'},
+        {'tau1': '0.85j', 'tau2': '0.85j',
          'disk_radius': 0.3,
-         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
-         'torus2_offset': [4.0, 0.0, 0.0],
-         'label': 'τ₁=1+0.5i, τ₂=-1+0.5i (twisted)'},
-        {'tau1': '0.5+0.3j', 'tau2': '0.5j',
-         'disk_radius': 0.3,
-         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
-         'torus2_offset': [3.8, 0.0, 0.0],
-         'label': 'τ₁=0.5+0.3i (twist+thin)'},
-        {'tau1': '0.7j', 'tau2': '0.7j',
-         'disk_radius': 0.12,
-         'disk_center_T1': [0.0, 0.0], 'disk_center_T2': [3.14159265359, 0.0],
-         'torus2_offset': [4.4, 0.0, 0.0],
-         'label': 'disk_radius=0.12 (narrow neck)'},
+         'disk_center_T1': [0.0, 0.0],
+         'label': 'disk_radius=0.3 (narrow neck)'},
     ]
 
     model_paths = []
@@ -290,7 +289,6 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         ax_domain, genus=2, tau1=tau1, tau2=tau2,
         neck_radius=first_cfg['disk_radius'],
         disk_center_T1=tuple(first_cfg['disk_center_T1']),
-        disk_center_T2=tuple(first_cfg['disk_center_T2']),
     )
 
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}

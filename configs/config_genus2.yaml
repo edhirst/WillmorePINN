@@ -11,7 +11,7 @@ topology:
     tau2: "0.85j"               # Complex modulus for T₂; Im(τ) controls tube thickness, Re(τ) controls shear
     disk_radius: 0.65           # Parameter-space radius δ of excluded disk on each torus chart
     disk_center_T1: [0.0, 0.0] # (u₀, v₀) centre of excluded disk on T₁
-    torus2_offset: [3.7, 0.0, 0.0]  # ℝ³ translation applied to T₂ during pretraining; 2(R+r)=2(1+Im(τ)) places tori in contact
+    torus2_offset: [0.0, 0.0, 0.0]  # ℝ³ translation applied to T₂ during pretraining (deprecated; x-flip in model handles gluing alignment)
 
 # Model Architecture
 model:
@@ -99,10 +99,14 @@ loss:
   regularity_mean_area_floor_weight: 5.0
 
   # Multi-chart gluing (genus 2 only)
+  # AnnularGluingLoss samples N points (r, θ) in the collar r ∈ [δ·inner, δ·outer]
+  # and enforces C⁰/C¹/C² agreement between both charts via the gluing map Dg = diag(−1, +1).
   gluing_weight: 200.0
-  gluing_num_boundary_points: 128
-  gluing_derivative_weight: 100.0         # C¹ continuity weight relative to C⁰
-  gluing_second_derivative_weight: 100.0  # C² continuity weight
+  gluing_num_annular_points: 256          # (r, θ) samples in the collar per step
+  gluing_inner_radius_factor: 1.0         # r_inner = factor · δ (1.0 = start from boundary ∂D)
+  gluing_outer_radius_factor: 2.5         # r_outer = factor · δ (width of the collar)
+  gluing_derivative_weight: 100.0         # C¹ Jacobian matching weight relative to C⁰
+  gluing_second_derivative_weight: 100.0  # C² Hessian matching weight
 
   # Junction circle radius penalty (genus 2 only)
   # ReLU² penalty below junction_min_radius and above junction_max_radius.

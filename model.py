@@ -832,16 +832,30 @@ class Genus2MultiChartNetwork(nn.Module):
             topology_params=torus2_topo,
         )
 
-        # Offset T₂ in ℝ³ so the two tori start non-overlapping during pretraining.
-        # The gluing loss pulls φ₁(∂D₁) and φ₂(∂D₂) together during Willmore training.
-        # The offset shifts T₂'s final-layer bias.
-        if not skip_init and any(abs(x) > 1e-12 for x in torus2_offset):
+        # After T₂ pretraining, flip the x-coordinate of its output so that the collar
+        # around D₂ maps to the same ℝ³ points as T₁'s collar.
+        # Derivation (τ purely imaginary, R=1, r=Im(τ)):
+        #   φ₁(r cosθ, r sinθ) = ((1+r cosθ sinθ)·cos(r cosθ), ...)         (T₁ near (0,0))
+        #   φ₂(π−r cosθ, r sinθ) = (−same, same, same)                       (T₂ near (π,0))
+        # Negating T₂ x gives exact C⁰/C¹/C² on the collar for x and y.
+        #
+        # Adding a z-offset = 2·Im(τ₂) to T₂ breaks the self-intersection degeneracy:
+        #   – the pure x-flip makes both charts output the same surface in ℝ³,
+        #     so gluing loss gradient is zero and training is stuck.
+        #   – z of the standard torus is independent of u, so the z-offset leaves
+        #     ALL u-partial and mixed derivatives unchanged: C¹ and C² remain exact.
+        #   – C⁰ is broken by exactly z_shift in the z-component; the gluing loss
+        #     (weight 200) drives T₂ down to meet T₁ at the collar during training.
+        #   – T₁ lives in z ∈ [−Im(τ₁), +Im(τ₁)];  T₂ lives in z ∈ [Im(τ₂), 3·Im(τ₂)];
+        #     the two charts are spatially separated and form a proper genus-2 neck.
+        if not skip_init:
             with torch.no_grad():
-                # Last module in self.torus2.network is nn.Linear(hidden, 3)
-                final_layer = list(self.torus2.network.modules())
-                for m in reversed(final_layer):
+                z_shift = 2.0 * abs(tau2.imag)
+                for m in reversed(list(self.torus2.network.modules())):
                     if isinstance(m, nn.Linear) and m.out_features == 3:
-                        m.bias.add_(torch.tensor(list(torus2_offset), dtype=m.bias.dtype))
+                        m.weight[0].neg_()
+                        m.bias[0].neg_()
+                        m.bias[2] = m.bias[2] + z_shift
                         break
 
     # ---- forwarding helpers ------------------------------------------------
@@ -887,12 +901,21 @@ class Genus2MultiChartNetwork(nn.Module):
         return self.torus1._get_reference_embedding(uv)
 
     def reference_torus2(self, uv: torch.Tensor) -> torch.Tensor:
-        """Reference embedding for T₂ (standard torus + offset)."""
+        """Reference embedding for T₂: x → −x reflection plus z-offset.
+
+        The x-flip gives exact C⁰/C¹/C² gluing conditions at the collar for x and y.
+        The z-offset = 2·Im(τ₂) separates T₂ above T₁ in ℝ³, breaking the
+        self-intersection degeneracy of the pure x-flip (where both charts output
+        identical surfaces and training has zero gluing-loss gradient).
+
+        C¹ and C² remain exact: z of the standard torus is independent of u, so
+        all u-partial and mixed derivatives of z are zero on both sides and the
+        z-offset (a constant) vanishes upon differentiation.  Only C⁰ is broken,
+        by exactly z_shift in the z-component; the gluing loss corrects this.
+        """
         ref = self.torus2._get_reference_embedding(uv)
-        if any(abs(x) > 1e-12 for x in self.torus2_offset):
-            offset = torch.tensor(list(self.torus2_offset), device=ref.device, dtype=ref.dtype)
-            ref = ref + offset
-        return ref
+        z_shift = 2.0 * abs(self.tau2.imag)
+        return torch.stack([-ref[:, 0], ref[:, 1], ref[:, 2] + z_shift], dim=1)
 
     # ---- supervised pretraining --------------------------------------------
 

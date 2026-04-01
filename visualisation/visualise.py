@@ -246,7 +246,7 @@ def visualise_training_evolution(
                 uv_t1, uv_t2 = uv_genus2_parts
                 _, w1 = wloss_t(model.torus1, uv_t1.requires_grad_(True))
                 _, w2 = wloss_t(model.torus2, uv_t2.requires_grad_(True))
-                loss = (w1 + w2).item()
+                loss = w1 + w2
             else:
                 wloss = EmbeddingWillmoreLoss(domain=domain_ckpt)
                 uv_e0 = sample_parameters(len(uv_test), domain_ckpt, device, genus=genus_ckpt)

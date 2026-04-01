@@ -6,7 +6,7 @@ topology:
 
   # Doubly-periodic domain [0, 2π] × [0, 2π] with complex modulus τ ∈ ℂ, Im(τ) > 0.
   torus:
-    tau: "0.1 + 0.1j"          # Complex modulus τ; Im(τ) controls tube thickness, Re(τ) controls shear
+    tau: "0.1j"          # Complex modulus τ; Im(τ) controls tube thickness, Re(τ) controls shear
     max_height: null   # Maximum allowed Im(τ) during training (null = no limit)
 
 # Model Architecture
@@ -40,11 +40,14 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 30
-  batch_size: 1024
+  num_epochs: 200
+  batch_size: 4000
   learning_rate: 0.00003
   weight_decay: 0.000001
-  scheduler: null
+  scheduler: "cosine"    # Learning rate scheduler: step, cosine, exponential, plateau, none
+  scheduler_params:
+    T_max: 100            # Num_epochs for full cosine cycle
+    eta_min: 0.00000001   # Near-zero floor for long fine-settling phase at end
   gradient_clip: 1.0
   log_frequency: 1  # Log metrics and save checkpoints every N epochs
 
@@ -64,8 +67,8 @@ training:
 
 # Sampling Parameters
 sampling:
-  num_points: 2000
-  eval_num_points: null     # null = skip eval, use training loss only
+  num_points: 40000
+  eval_num_points: null      # null = skip eval, use training loss only
   print_eval: false          # If true, full eval runs every epoch; if false, only on log epochs
   noise_level: 0.0
   resample_each_epoch: true
@@ -74,7 +77,7 @@ sampling:
 loss:
   willmore_weight: 1.0
   max_willmore_weight: 1.0  # Equal to willmore_weight disables annealing
-  regularity_weight: 10.0
+  regularity_weight: 5.0
   target_area: null          # Target surface area (null = adaptive)
   epsilon: 0.000001          # Numerical stability constant
   h2_clip: null              # Huber threshold for H² (null = exact Willmore throughout)

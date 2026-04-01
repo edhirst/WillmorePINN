@@ -241,10 +241,17 @@ def visualise_training_evolution(
         if epoch == 0:
             # Stored loss for epoch 0 is ref_willmore (analytic surface), not the network.
             # Compute W fresh from the network instead.
-            wloss = EmbeddingWillmoreLoss(domain=domain_ckpt)
-            uv_e0 = sample_parameters(len(uv_test), domain_ckpt, device, genus=genus_ckpt)
-            _, w = wloss(model, uv_e0.requires_grad_(True))
-            loss = w.item() if hasattr(w, 'item') else float(w)
+            if genus_ckpt == 2:
+                wloss_t = EmbeddingWillmoreLoss(domain="torus", genus=1)
+                uv_t1, uv_t2 = uv_genus2_parts
+                _, w1 = wloss_t(model.torus1, uv_t1.requires_grad_(True))
+                _, w2 = wloss_t(model.torus2, uv_t2.requires_grad_(True))
+                loss = (w1 + w2).item()
+            else:
+                wloss = EmbeddingWillmoreLoss(domain=domain_ckpt)
+                uv_e0 = sample_parameters(len(uv_test), domain_ckpt, device, genus=genus_ckpt)
+                _, w = wloss(model, uv_e0.requires_grad_(True))
+                loss = w.item() if hasattr(w, 'item') else float(w)
         with torch.no_grad():
             if genus_ckpt == 2:
                 uv_t1, uv_t2 = uv_genus2_parts

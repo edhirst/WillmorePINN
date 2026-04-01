@@ -93,7 +93,7 @@ def plot_surface_3d(ax, xyz, uv, title, genus=1, alpha=0.6, global_range=None,
         vmin, vmax: Colour scale limits for color_values (None = data range).
     """
     xyz_np = xyz.detach().cpu().numpy() if torch.is_tensor(xyz) else xyz
-    uv_np = uv.cpu().numpy() if torch.is_tensor(uv) else uv
+    uv_np = uv.detach().cpu().numpy() if torch.is_tensor(uv) else uv
 
     if color_values is not None:
         cv = color_values.detach().cpu().numpy() if torch.is_tensor(color_values) else np.asarray(color_values)

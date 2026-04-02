@@ -602,13 +602,21 @@ class MultiChartCombinedLoss(nn.Module):
             self.regularity_weight = self.initial_regularity_weight
             # C¹/C² gluing delays still apply regardless of adaptive mode.
             if self.gluing_c1_delay > 0:
+                c1_ramp = max(1, round(0.2 * self.gluing_c1_delay))
                 if epoch <= self.gluing_c1_delay:
                     self.gluing_loss.c1_weight = 0.0
+                elif epoch <= self.gluing_c1_delay + c1_ramp:
+                    t = (epoch - self.gluing_c1_delay) / c1_ramp
+                    self.gluing_loss.c1_weight = t * self.initial_gluing_c1_weight
                 else:
                     self.gluing_loss.c1_weight = self.initial_gluing_c1_weight
             if self.gluing_c2_delay > 0:
+                c2_ramp = max(1, round(0.2 * self.gluing_c2_delay))
                 if epoch <= self.gluing_c2_delay:
                     self.gluing_loss.c2_weight = 0.0
+                elif epoch <= self.gluing_c2_delay + c2_ramp:
+                    t = (epoch - self.gluing_c2_delay) / c2_ramp
+                    self.gluing_loss.c2_weight = t * self.initial_gluing_c2_weight
                 else:
                     self.gluing_loss.c2_weight = self.initial_gluing_c2_weight
             return
@@ -625,16 +633,24 @@ class MultiChartCombinedLoss(nn.Module):
                 base_r *= boost
         self.regularity_weight = base_r
 
-        # C¹ gluing delay: hold c1_weight at 0 until gluing_c1_delay epochs have passed.
+        # C¹ gluing delay: hold c1_weight at 0 until gluing_c1_delay epochs, then ramp over 0.2·delay epochs.
         if self.gluing_c1_delay > 0:
+            c1_ramp = max(1, round(0.2 * self.gluing_c1_delay))
             if epoch <= self.gluing_c1_delay:
                 self.gluing_loss.c1_weight = 0.0
+            elif epoch <= self.gluing_c1_delay + c1_ramp:
+                t = (epoch - self.gluing_c1_delay) / c1_ramp
+                self.gluing_loss.c1_weight = t * self.initial_gluing_c1_weight
             else:
                 self.gluing_loss.c1_weight = self.initial_gluing_c1_weight
-        # C² gluing delay: hold c2_weight at 0 until gluing_c2_delay epochs have passed.
+        # C² gluing delay: hold c2_weight at 0 until gluing_c2_delay epochs, then ramp over 0.2·delay epochs.
         if self.gluing_c2_delay > 0:
+            c2_ramp = max(1, round(0.2 * self.gluing_c2_delay))
             if epoch <= self.gluing_c2_delay:
                 self.gluing_loss.c2_weight = 0.0
+            elif epoch <= self.gluing_c2_delay + c2_ramp:
+                t = (epoch - self.gluing_c2_delay) / c2_ramp
+                self.gluing_loss.c2_weight = t * self.initial_gluing_c2_weight
             else:
                 self.gluing_loss.c2_weight = self.initial_gluing_c2_weight
 

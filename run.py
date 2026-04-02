@@ -448,7 +448,6 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
         # Multi-chart: no single-domain reference embedding
         print(f"\nMode: Two-chart genus-2 embedding (T₁ + T₂, direct gluing)")
         ref_willmore = 4 * np.pi**2
-        print(f"Reference Willmore energy (Lawson ξ_{{2,1}}): {ref_willmore:.6f}")
     else:
         try:
             # Get topology-specific parameters for reference computation
@@ -483,10 +482,10 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
             1: "Clifford torus", 
             2: "Lawson surface ξ_{2,1}"
         }
-        print(f"Optimization target: {theoretical_min:.6f} ({target_names.get(genus, 'optimal surface')})")
+        if genus != 2:
+            print(f"Optimization target: {theoretical_min:.6f} ({target_names.get(genus, 'optimal surface')})")
     except Exception as e:
         theoretical_min = None
-        print(f"Note: Theoretical minimum not available for genus {genus}")
     
     # Print domain information
     domain_ranges = {

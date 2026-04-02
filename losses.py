@@ -509,6 +509,7 @@ class MultiChartCombinedLoss(nn.Module):
         gluing_collar_width: float = 0.5,
         gluing_c1_weight: float = 0.5,
         gluing_c2_weight: float = 0.3,
+        gluing_c1_delay: int = 0,
         disk_radius: float = 0.3,
         junction_radius_weight: float = 0.0,
         junction_min_radius: float = 0.1,
@@ -524,6 +525,8 @@ class MultiChartCombinedLoss(nn.Module):
         self.initial_regularity_weight = regularity_weight
         self.gluing_weight = gluing_weight
         self.initial_gluing_weight = gluing_weight
+        self.gluing_c1_delay = gluing_c1_delay
+        self.initial_gluing_c1_weight = gluing_c1_weight
         self.max_willmore_weight = max_willmore_weight
         self.initial_weight_sum = willmore_weight + regularity_weight
         self.junction_radius_weight = junction_radius_weight
@@ -584,6 +587,12 @@ class MultiChartCombinedLoss(nn.Module):
             if not in_warmup:
                 self.willmore_weight = self.initial_willmore_weight
             self.regularity_weight = self.initial_regularity_weight
+            # C¹ gluing delay still applies regardless of adaptive mode.
+            if self.gluing_c1_delay > 0:
+                if epoch <= self.gluing_c1_delay:
+                    self.gluing_loss.c1_weight = 0.0
+                else:
+                    self.gluing_loss.c1_weight = self.initial_gluing_c1_weight
             return
 
         progress = min(1.0, (epoch - 1) / max(1, total_epochs))
@@ -597,6 +606,13 @@ class MultiChartCombinedLoss(nn.Module):
             if regularity_value > threshold:
                 base_r *= boost
         self.regularity_weight = base_r
+
+        # C¹ gluing delay: hold c1_weight at 0 until gluing_c1_delay epochs have passed.
+        if self.gluing_c1_delay > 0:
+            if epoch <= self.gluing_c1_delay:
+                self.gluing_loss.c1_weight = 0.0
+            else:
+                self.gluing_loss.c1_weight = self.initial_gluing_c1_weight
 
         # Gluing annealing: after willmore warmup ends, linearly reduce gluing
         # weight to initial_gluing_weight * gluing_annealing.  1.0 = no annealing.
@@ -973,6 +989,7 @@ def create_embedding_loss(config: dict) -> nn.Module:
             gluing_collar_width=loss_config.get("gluing_collar_width", 0.5),
             gluing_c1_weight=loss_config.get("gluing_c1_weight", 0.5),
             gluing_c2_weight=loss_config.get("gluing_c2_weight", 0.3),
+            gluing_c1_delay=loss_config.get("gluing_c1_delay", 0),
             disk_radius=float(dt_params.get('disk_radius', 0.3)),
             junction_radius_weight=loss_config.get("junction_radius_weight", 0.0),
             junction_min_radius=loss_config.get("junction_min_radius", 0.1),

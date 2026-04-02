@@ -46,7 +46,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 150 ##2000
+  num_epochs: 200 ##2000
   batch_size: 3000
   learning_rate: 0.0002
   weight_decay: 0.000001
@@ -107,6 +107,7 @@ loss:
   gluing_num_points: 256                 # (r, θ) samples in the collar per step
   gluing_collar_width: 0.5               # collar half-width as fraction of δ: r ∈ [δ(1−w), δ(1+w)]
   gluing_c1_weight: 50.0                 # C¹ matching weight relative to C⁰
+  gluing_c1_delay: 50                     # Epochs before C¹ loss activates; allows C⁰ to converge first
   gluing_c2_weight: 0.0                 # C² matching weight relative to C⁰
 
   # Junction circle radius penalty (genus 2 only)

@@ -107,8 +107,9 @@ loss:
   gluing_num_points: 256                 # (r, θ) samples in the collar per step
   gluing_collar_width: 0.5               # collar half-width as fraction of δ: r ∈ [δ(1−w), δ(1+w)]
   gluing_c1_weight: 50.0                 # C¹ matching weight relative to C⁰
-  gluing_c1_delay: 50                     # Epochs before C¹ loss activates; allows C⁰ to converge first
-  gluing_c2_weight: 0.0                 # C² matching weight relative to C⁰
+  gluing_c1_delay: 20                     # Epochs before C¹ loss activates; allows C⁰ to converge first
+  gluing_c2_weight: 25.0                 # C² matching weight relative to C⁰
+  gluing_c2_delay: 40                   # Epochs before C² loss activates; allows C¹ to converge first
 
   # Junction circle radius penalty (genus 2 only)
   # ReLU² penalty below junction_min_radius and above junction_max_radius.

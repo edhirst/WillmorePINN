@@ -309,11 +309,15 @@ class SeamGluingLoss(nn.Module):
         C°:            φ₁(p₁) = φ₂(p₂)
         C¹ radial:     ∂ᵣφ₁ + ∂ᵣφ₂ = 0                    (Dg maps e_r → −e_r)
         C¹ tangential: r·(e_θ·∇φ₁) − (2δ−r)·(e_θ·∇φ₂) = 0  (Dg maps e_θ → (2δ−r)/r · e_θ)
-        C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0   (Dg⊗Dg on d̂_r⊗d̂_r: (−1)(−1)=+1)
-        C² rθ:  e_r⊗e_θ:∇²φ₁ + e_r⊗e_θ:∇²φ₂ = 0   (Dg⊗Dg on d̂_r⊗d̂_θ: (−1)(+1)=−1)
-        C² θθ: e_θ⊗e_θ:∇²φ₁ − e_θ⊗e_θ:∇²φ₂ = 0   (Dg⊗Dg on d̂_θ⊗d̂_θ: (+1)(+1)=+1)
+        C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0
+        C² rθ:  r·(e_r⊗e_θ:∇²φ₁) + r₂·(e_r⊗e_θ:∇²φ₂) + (e_θ·∇φ₁ + e_θ·∇φ₂) = 0
+        C² θθ: r²·(e_θ⊗e_θ:∇²φ₁) − r₂²·(e_θ⊗e_θ:∇²φ₂) − 2δ·(e_r·∇φ₁) = 0
 
-    where e_r = (cos θ, sin θ), e_θ = (−sin θ, cos θ).
+    The C² rθ/θθ conditions include curvature-of-frame corrections from ∂e_θ/∂θ = −e_r
+    and ∂e_r/∂θ = e_θ, derived by differentiating the C⁰ identity twice in (r, θ).
+    At r = δ (seam centre) they reduce to the naive Dg⊗Dg forms.
+
+    where e_r = (cos θ, sin θ), e_θ = (−sin θ, cos θ), r₂ = 2δ − r.
     """
 
     def __init__(
@@ -459,6 +463,10 @@ class SeamGluingLoss(nn.Module):
             if self.c1_weight <= 0:
                 e_r = torch.stack([cos_t, sin_t], dim=1)
                 e_th = torch.stack([-sin_t, cos_t], dim=1)
+                # J projections needed for curvature-of-frame corrections
+                J1_r = torch.einsum('nij,nj->ni', J_1, e_r)
+                J1_th = torch.einsum('nij,nj->ni', J_1, e_th)
+                J2_th = torch.einsum('nij,nj->ni', J_2, e_th)
 
             # Hessian contracted on polar frame vectors:
             # H_ab[n,i] = Σ_{j,k} H[n,i,j,k] · a[n,j] · b[n,k]
@@ -469,12 +477,14 @@ class SeamGluingLoss(nn.Module):
             H1_tt = torch.einsum('nijk,nj,nk->ni', H_1, e_th, e_th)
             H2_tt = torch.einsum('nijk,nj,nk->ni', H_2, e_th, e_th)
 
-            # C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0   (Dg maps e_r→−e_r, double sign flip)
+            # C² rr:  H₁_rr − H₂_rr = 0
             c2_rr = ((H1_rr - H2_rr) ** 2).sum(dim=1).mean()
-            # C² rθ:  e_r⊗e_θ:∇²φ₁ + e_r⊗e_θ:∇²φ₂ = 0   (one sign flip: e_r→−e_r, e_θ→e_θ)
-            c2_rt = ((H1_rt + H2_rt) ** 2).sum(dim=1).mean()
-            # C² θθ: e_θ⊗e_θ:∇²φ₁ − e_θ⊗e_θ:∇²φ₂ = 0   (e_θ→e_θ, no sign flip)
-            c2_tt = ((H1_tt - H2_tt) ** 2).sum(dim=1).mean()
+            # C² rθ:  r·H₁_rt + r₂·H₂_rt + (J₁_θ + J₂_θ) = 0
+            # (curvature-of-frame term from ∂e_r/∂θ = e_θ entering ∂²/∂r∂θ)
+            c2_rt = ((r[:, None] * H1_rt + r2[:, None] * H2_rt + (J1_th + J2_th)) ** 2).sum(dim=1).mean()
+            # C² θθ: r²·H₁_tt − r₂²·H₂_tt − 2δ·J₁_r = 0
+            # (curvature-of-frame term from ∂e_θ/∂θ = −e_r entering ∂²/∂θ²)
+            c2_tt = (((r ** 2)[:, None] * H1_tt - (r2 ** 2)[:, None] * H2_tt - (2.0 * delta) * J1_r) ** 2).sum(dim=1).mean()
             total = total + self.c2_weight * (c2_rr + c2_rt + c2_tt)
 
         return total
@@ -510,6 +520,7 @@ class MultiChartCombinedLoss(nn.Module):
         gluing_c1_weight: float = 0.5,
         gluing_c2_weight: float = 0.3,
         gluing_c1_delay: int = 0,
+        gluing_c2_delay: int = 0,
         disk_radius: float = 0.3,
         junction_radius_weight: float = 0.0,
         junction_min_radius: float = 0.1,
@@ -527,6 +538,8 @@ class MultiChartCombinedLoss(nn.Module):
         self.initial_gluing_weight = gluing_weight
         self.gluing_c1_delay = gluing_c1_delay
         self.initial_gluing_c1_weight = gluing_c1_weight
+        self.gluing_c2_delay = gluing_c2_delay
+        self.initial_gluing_c2_weight = gluing_c2_weight
         self.max_willmore_weight = max_willmore_weight
         self.initial_weight_sum = willmore_weight + regularity_weight
         self.junction_radius_weight = junction_radius_weight
@@ -587,12 +600,17 @@ class MultiChartCombinedLoss(nn.Module):
             if not in_warmup:
                 self.willmore_weight = self.initial_willmore_weight
             self.regularity_weight = self.initial_regularity_weight
-            # C¹ gluing delay still applies regardless of adaptive mode.
+            # C¹/C² gluing delays still apply regardless of adaptive mode.
             if self.gluing_c1_delay > 0:
                 if epoch <= self.gluing_c1_delay:
                     self.gluing_loss.c1_weight = 0.0
                 else:
                     self.gluing_loss.c1_weight = self.initial_gluing_c1_weight
+            if self.gluing_c2_delay > 0:
+                if epoch <= self.gluing_c2_delay:
+                    self.gluing_loss.c2_weight = 0.0
+                else:
+                    self.gluing_loss.c2_weight = self.initial_gluing_c2_weight
             return
 
         progress = min(1.0, (epoch - 1) / max(1, total_epochs))
@@ -613,6 +631,12 @@ class MultiChartCombinedLoss(nn.Module):
                 self.gluing_loss.c1_weight = 0.0
             else:
                 self.gluing_loss.c1_weight = self.initial_gluing_c1_weight
+        # C² gluing delay: hold c2_weight at 0 until gluing_c2_delay epochs have passed.
+        if self.gluing_c2_delay > 0:
+            if epoch <= self.gluing_c2_delay:
+                self.gluing_loss.c2_weight = 0.0
+            else:
+                self.gluing_loss.c2_weight = self.initial_gluing_c2_weight
 
         # Gluing annealing: after willmore warmup ends, linearly reduce gluing
         # weight to initial_gluing_weight * gluing_annealing.  1.0 = no annealing.
@@ -990,6 +1014,7 @@ def create_embedding_loss(config: dict) -> nn.Module:
             gluing_c1_weight=loss_config.get("gluing_c1_weight", 0.5),
             gluing_c2_weight=loss_config.get("gluing_c2_weight", 0.3),
             gluing_c1_delay=loss_config.get("gluing_c1_delay", 0),
+            gluing_c2_delay=loss_config.get("gluing_c2_delay", 0),
             disk_radius=float(dt_params.get('disk_radius', 0.3)),
             junction_radius_weight=loss_config.get("junction_radius_weight", 0.0),
             junction_min_radius=loss_config.get("junction_min_radius", 0.1),

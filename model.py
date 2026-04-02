@@ -882,9 +882,11 @@ class Genus2MultiChartNetwork(nn.Module):
         """Map angle s ∈ [0, 2π] to parameter coords on ∂D₂ ⊂ T₂.
 
         D₂ is centred at (u₀_T2, v₀_T2), the outer equatorial point of T₂
-        that touches x = 0.  The gluing map is the identity in parameter space,
-        so both boundary circles use the same orientation.
-        Returns (len(s), 2) with periodic wrapping.
+        that touches x = 0.  Returns (len(s), 2) with periodic wrapping.
+
+        Note: The gluing map g(r,θ)=(2δ−r,θ+π) pairs angle s on T₁'s boundary
+        with angle s+π on T₂'s boundary.  This function parametrises T₂'s full
+        boundary circle and is used (e.g.) to measure the junction radius in 3D.
         """
         u0, v0 = self.disk_center_T2
         delta = self.disk_radius

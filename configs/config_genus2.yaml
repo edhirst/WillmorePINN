@@ -5,7 +5,7 @@ topology:
   genus: 2  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus
 
   # Two punctured tori (T₁, T₂) with disk boundaries identified.
-  # SeamGluingLoss enforces C⁰/C¹/C² continuity via g(r,θ) = (2δ−r,θ).
+  # SeamGluingLoss enforces C⁰/C¹/C² continuity via g(r,θ) = (2δ−r,θ+π).
   double_torus:
     tau1: "0.7j"                # Complex modulus for T₁; Im(τ) controls tube thickness, Re(τ) controls shear
     tau2: "0.7j"                # Complex modulus for T₂; Im(τ) controls tube thickness, Re(τ) controls shear
@@ -102,7 +102,7 @@ loss:
 
   # Multi-chart gluing (genus 2 only)
   # SeamGluingLoss samples N points (r, θ) in the collar r ∈ [δ(1−w), δ(1+w)]
-  # and enforces C⁰/C¹/C² agreement between both charts via the linear reflection g: (r,θ)↦(2δ−r,θ).
+  # and enforces C⁰/C¹/C² agreement between both charts via the opposite-angle reflection g: (r,θ)↦(2δ−r,θ+π).
   gluing_weight: 200.0
   gluing_num_points: 256                 # (r, θ) samples in the collar per step
   gluing_collar_width: 0.5               # collar half-width as fraction of δ: r ∈ [δ(1−w), δ(1+w)]

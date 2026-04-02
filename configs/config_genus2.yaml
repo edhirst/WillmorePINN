@@ -56,7 +56,7 @@ training:
     T_mult: 2      # Each restart multiplies the period by this factor
     eta_min: 0.000001
   gradient_clip: 1.0
-  log_frequency: 50  # Log metrics and save checkpoints every N epochs
+  log_frequency: 20  # Log metrics and save checkpoints every N epochs
 
   # Adaptive safeguards against regularity collapse and topology change.
   adaptive_training:

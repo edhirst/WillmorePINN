@@ -71,7 +71,7 @@ training:
     max_rollbacks: 30
     willmore_warmup_epochs: 200         # Epochs before topology-collapse rollback can fire
     willmore_warmup_start: 0.01         # Willmore weight fraction at epoch 1
-    gluing_annealing: 0.1               # after willmore warmup, gluing weight ramps to this fraction of its initial value
+    gluing_annealing: 0.5               # after willmore warmup, gluing weight ramps to this fraction of its initial value
 
 # Sampling Parameters
 sampling:
@@ -88,7 +88,7 @@ loss:
   regularity_weight: 10.0
   target_area: null          # Target surface area (null = adaptive)
   epsilon: 0.000001          # Numerical stability constant
-  h2_clip: 5.0               # Huber threshold for H²: exact Willmore below, linear gradient above
+  h2_clip: 50.0              # Huber threshold for H²: exact Willmore below, linear gradient above
 
   regularity_min_area_element: 0.01       # Floor on √(EG−F²) to prevent Jacobian collapse
   regularity_area_element_weight: 1.0
@@ -118,7 +118,7 @@ loss:
   # Annular near-disk regularity (genus 2 only)
   # Applies regularity loss in the transition zone δ ≤ r_param ≤ annular_radius_factor·δ.
   # Prevents the embedding from forming a thin funnel just outside the gluing circle.
-  annular_regularity_weight: 5.0
+  annular_regularity_weight: 20.0
   annular_radius_factor: 2.5   # outer/inner ratio of the annular zone in parameter space
   annular_num_points: 256      # samples per chart per step in the annular zone
 

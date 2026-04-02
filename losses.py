@@ -284,36 +284,33 @@ class SeamGluingLoss(nn.Module):
     Gluing loss enforcing C°/C¹/C² smoothness across the seam between the
     two torus charts of the genus-2 parametrisation.
 
-    The gluing map is the "opposite-angle" radial reflection
+    The gluing map is the radial reflection
 
-        g(r, θ) = (2δ − r, θ + π)
+        g(r, θ) = (2δ − r, θ)
 
     which maps the collar {δ(1−w) ≤ r ≤ δ(1+w)} bijectively to itself.
-    In Cartesian parameter coordinates the displacement from the disk centre
-    transforms as (Δu, Δv) ↦ −(2δ−r)/r · (Δu, Δv), so at the seam r = δ
-    the Jacobian is a reflection through the radial direction:
+    In polar parameter coordinates the Jacobian Dg reverses the radial
+    direction and preserves the angular direction:
 
-        Dg|_{r=δ}: d̂_r ↦ +d̂_r,  d̂_θ ↦ −d̂_θ
+        Dg|_{r=δ}: d̂_r ↦ −d̂_r,  d̂_θ ↦ +d̂_θ
 
     Both T₁ and T₂ have their disk centres at the outer equatorial point
     (u=0, v=0), and both reference embeddings have the same tangent-plane
-    orientation at that point.  The θ+π pairing correctly pairs "directly
-    opposite" collar points so that the reference radial derivatives cancel:
-    ∂_r φ_T1 = ∂_r φ_T2 at matched seam points.
+    orientation at that point.
 
     Sample points:
         p₁(r, θ) = (u₀_T1 + r cos θ,       v₀_T1 + r sin θ)        [mod 2π]
-        p₂(r, θ) = (u₀_T2 − (2δ−r) cos θ,  v₀_T2 − (2δ−r) sin θ)  [mod 2π]
+        p₂(r, θ) = (u₀_T2 + (2δ−r) cos θ,  v₀_T2 + (2δ−r) sin θ)  [mod 2π]
 
     with r ∼ Uniform[δ(1−w), δ(1+w)], θ ∼ Uniform[0, 2π).
 
     Matching conditions derived from the Dg sign pattern:
         C°:            φ₁(p₁) = φ₂(p₂)
-        C¹ radial:     ∂ᵣφ₁ − ∂ᵣφ₂ = 0          (no sign flip: Dg maps d̂_r → +d̂_r)
-        C¹ tangential: e_θ·∇φ₁ + e_θ·∇φ₂ = 0    (sign flip: Dg maps d̂_θ → −d̂_θ)
-        C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0   (Dg⊗Dg on d̂_r⊗d̂_r = +)
-        C² rθ:  e_r⊗e_θ:∇²φ₁ + e_r⊗e_θ:∇²φ₂ = 0   (Dg⊗Dg on d̂_r⊗d̂_θ = −)
-        C² θθ: e_θ⊗e_θ:∇²φ₁ − e_θ⊗e_θ:∇²φ₂ = 0   (Dg⊗Dg on d̂_θ⊗d̂_θ = +)
+        C¹ radial:     ∂ᵣφ₁ + ∂ᵣφ₂ = 0          (Dg maps d̂_r → −d̂_r)
+        C¹ tangential: e_θ·∇φ₁ − e_θ·∇φ₂ = 0    (Dg preserves d̂_θ)
+        C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0   (Dg⊗Dg on d̂_r⊗d̂_r: (−1)(−1)=+1)
+        C² rθ:  e_r⊗e_θ:∇²φ₁ + e_r⊗e_θ:∇²φ₂ = 0   (Dg⊗Dg on d̂_r⊗d̂_θ: (−1)(+1)=−1)
+        C² θθ: e_θ⊗e_θ:∇²φ₁ − e_θ⊗e_θ:∇²φ₂ = 0   (Dg⊗Dg on d̂_θ⊗d̂_θ: (+1)(+1)=+1)
 
     where e_r = (cos θ, sin θ), e_θ = (−sin θ, cos θ).
     """
@@ -417,11 +414,11 @@ class SeamGluingLoss(nn.Module):
             (v0_T1 + r * sin_t) % (2.0 * np.pi),
         ], dim=1)
 
-        # T₂ sample via g: p₂ = (u₀ − (2δ−r) cos θ, v₀ − (2δ−r) sin θ)  [mod 2π]
-        # The θ+π "opposite angle" pairing: directly opposite point on T₂'s collar.
+        # T₂ sample via g: p₂ = (u₀ + (2δ−r) cos θ, v₀ + (2δ−r) sin θ)  [mod 2π]
+        # Same-angle (MAP A) pairing: r-reflection g(r,θ) = (2δ−r, θ).
         uv_2 = torch.stack([
-            (u0_T2 - r2 * cos_t) % (2.0 * np.pi),
-            (v0_T2 - r2 * sin_t) % (2.0 * np.pi),
+            (u0_T2 + r2 * cos_t) % (2.0 * np.pi),
+            (v0_T2 + r2 * sin_t) % (2.0 * np.pi),
         ], dim=1)
 
         need_hessian = self.c2_weight > 0
@@ -451,10 +448,10 @@ class SeamGluingLoss(nn.Module):
             J1_th = torch.einsum('nij,nj->ni', J_1, e_th)
             J2_th = torch.einsum('nij,nj->ni', J_2, e_th)
 
-            # C¹ radial:     ∂ᵣφ₁ − ∂ᵣφ₂ = 0   (Dg maps d̂_r → +d̂_r, no sign flip)
-            c1_r = ((J1_r - J2_r) ** 2).sum(dim=1).mean()
-            # C¹ tangential: e_θ·∇φ₁ + e_θ·∇φ₂ = 0   (Dg maps d̂_θ → −d̂_θ, sign flip)
-            c1_th = ((J1_th + J2_th) ** 2).sum(dim=1).mean()
+            # C¹ radial:     ∂ᵣφ₁ + ∂ᵣφ₂ = 0   (Dg maps d̂_r → −d̂_r under r-reflection)
+            c1_r = ((J1_r + J2_r) ** 2).sum(dim=1).mean()
+            # C¹ tangential: e_θ·∇φ₁ − e_θ·∇φ₂ = 0   (Dg preserves e_θ under r-reflection)
+            c1_th = ((J1_th - J2_th) ** 2).sum(dim=1).mean()
             total = total + self.c1_weight * (c1_r + c1_th)
 
         if self.c2_weight > 0:
@@ -471,11 +468,11 @@ class SeamGluingLoss(nn.Module):
             H1_tt = torch.einsum('nijk,nj,nk->ni', H_1, e_th, e_th)
             H2_tt = torch.einsum('nijk,nj,nk->ni', H_2, e_th, e_th)
 
-            # C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0   (no sign flip)
+            # C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0   (Dg maps e_r→−e_r, double sign flip)
             c2_rr = ((H1_rr - H2_rr) ** 2).sum(dim=1).mean()
-            # C² rθ:  e_r⊗e_θ:∇²φ₁ + e_r⊗e_θ:∇²φ₂ = 0   (sign flip from Dg)
+            # C² rθ:  e_r⊗e_θ:∇²φ₁ + e_r⊗e_θ:∇²φ₂ = 0   (one sign flip: e_r→−e_r, e_θ→e_θ)
             c2_rt = ((H1_rt + H2_rt) ** 2).sum(dim=1).mean()
-            # C² θθ: e_θ⊗e_θ:∇²φ₁ − e_θ⊗e_θ:∇²φ₂ = 0   (no sign flip)
+            # C² θθ: e_θ⊗e_θ:∇²φ₁ − e_θ⊗e_θ:∇²φ₂ = 0   (e_θ→e_θ, no sign flip)
             c2_tt = ((H1_tt - H2_tt) ** 2).sum(dim=1).mean()
             total = total + self.c2_weight * (c2_rr + c2_rt + c2_tt)
 

@@ -106,7 +106,7 @@ loss:
   gluing_weight: 200.0
   gluing_num_points: 256                 # (r, θ) samples in the collar per step
   gluing_collar_width: 0.5               # collar half-width as fraction of δ: r ∈ [δ(1−w), δ(1+w)]
-  gluing_c1_weight: 0.0                 # C¹ matching weight relative to C⁰
+  gluing_c1_weight: 50.0                 # C¹ matching weight relative to C⁰
   gluing_c2_weight: 0.0                 # C² matching weight relative to C⁰
 
   # Junction circle radius penalty (genus 2 only)

@@ -289,10 +289,11 @@ class SeamGluingLoss(nn.Module):
         g(r, θ) = (2δ − r, θ)
 
     which maps the collar {δ(1−w) ≤ r ≤ δ(1+w)} bijectively to itself.
-    In polar parameter coordinates the Jacobian Dg reverses the radial
-    direction and preserves the angular direction:
+    The Jacobian Dg in Cartesian (u,v) coordinates acts as follows
+    for all r in the collar (verified by direct computation):
 
-        Dg|_{r=δ}: d̂_r ↦ −d̂_r,  d̂_θ ↦ +d̂_θ
+        Dg: e_r ↦ −e_r  (exact for all r)
+        Dg: e_θ ↦ (2δ−r)/r · e_θ  (equals +e_θ only at r = δ)
 
     Both T₁ and T₂ have their disk centres at the outer equatorial point
     (u=0, v=0), and both reference embeddings have the same tangent-plane
@@ -306,8 +307,8 @@ class SeamGluingLoss(nn.Module):
 
     Matching conditions derived from the Dg sign pattern:
         C°:            φ₁(p₁) = φ₂(p₂)
-        C¹ radial:     ∂ᵣφ₁ + ∂ᵣφ₂ = 0          (Dg maps d̂_r → −d̂_r)
-        C¹ tangential: e_θ·∇φ₁ − e_θ·∇φ₂ = 0    (Dg preserves d̂_θ)
+        C¹ radial:     ∂ᵣφ₁ + ∂ᵣφ₂ = 0                    (Dg maps e_r → −e_r)
+        C¹ tangential: r·(e_θ·∇φ₁) − (2δ−r)·(e_θ·∇φ₂) = 0  (Dg maps e_θ → (2δ−r)/r · e_θ)
         C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0   (Dg⊗Dg on d̂_r⊗d̂_r: (−1)(−1)=+1)
         C² rθ:  e_r⊗e_θ:∇²φ₁ + e_r⊗e_θ:∇²φ₂ = 0   (Dg⊗Dg on d̂_r⊗d̂_θ: (−1)(+1)=−1)
         C² θθ: e_θ⊗e_θ:∇²φ₁ − e_θ⊗e_θ:∇²φ₂ = 0   (Dg⊗Dg on d̂_θ⊗d̂_θ: (+1)(+1)=+1)
@@ -448,10 +449,10 @@ class SeamGluingLoss(nn.Module):
             J1_th = torch.einsum('nij,nj->ni', J_1, e_th)
             J2_th = torch.einsum('nij,nj->ni', J_2, e_th)
 
-            # C¹ radial:     ∂ᵣφ₁ + ∂ᵣφ₂ = 0   (Dg maps d̂_r → −d̂_r under r-reflection)
+            # C¹ radial:     ∂ᵣφ₁ + ∂ᵣφ₂ = 0                    (Dg maps e_r → −e_r for all r)
             c1_r = ((J1_r + J2_r) ** 2).sum(dim=1).mean()
-            # C¹ tangential: e_θ·∇φ₁ − e_θ·∇φ₂ = 0   (Dg preserves e_θ under r-reflection)
-            c1_th = ((J1_th - J2_th) ** 2).sum(dim=1).mean()
+            # C¹ tangential: r·(J₁@e_θ) − r₂·(J₂@e_θ) = 0  (Dg maps e_θ → (2δ−r)/r·e_θ)
+            c1_th = ((r[:, None] * J1_th - r2[:, None] * J2_th) ** 2).sum(dim=1).mean()
             total = total + self.c1_weight * (c1_r + c1_th)
 
         if self.c2_weight > 0:

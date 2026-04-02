@@ -725,32 +725,23 @@ class EmbeddingNetwork(nn.Module):
 
 
 def _compute_disk_center_T2(tau2: complex) -> Tuple[float, float]:
-    """Compute the T₂ disk centre that maps to the closest point of T₂ toward T₁.
+    """Compute the T₂ disk centre in the square [0, 2π]² parameter domain.
 
-    Returns (u₀, v₀) ∈ [0, 2π]² such that the flat-torus embedding at (u₀, v₀)
-    has u_major = π and v_twisted = 0, i.e., the outermost point of the T₂ tube
-    on the T₁-facing side.  For purely imaginary τ₂ this reduces to (π, 0).
+    D₂ is placed at the outer equatorial point (u=0, v=0) of T₂, which is
+    the same domain location as D₁ on T₁.  Under transform_square_to_parallelogram
+    the domain origin (0, 0) always maps to v_twisted = 0, giving
+    x = R + r cos(0) = R + r — the outermost point of the torus tube.
+    After the x-flip and +(R+r) shift applied to T₂, this point lands at x = 0.
 
-    Derivation: after transform_square_to_parallelogram and get_flat_torus_embedding,
-      u_major = (u₀ + v₀·Re(τ)) mod 2π  and  v_twisted = v₀ + Re(τ)/Im(τ)·u_major.
-    Setting u_major = π, v_twisted = 0 gives:
-      v₀ = −Re(τ)·π / Im(τ)  (mod 2π)
-      u₀ =  π − v₀·Re(τ)     (mod 2π)  ← uses the wrapped v₀
+    Returns (0.0, 0.0) for all τ₂.
 
     Args:
-        tau2: Complex modulus of T₂ with Im(τ₂) > 0.
+        tau2: Complex modulus of T₂ (unused; retained for API compatibility).
 
     Returns:
-        (u₀, v₀): disk centre in the square [0, 2π]² parameter domain.
+        (0.0, 0.0): disk centre in the square [0, 2π]² parameter domain.
     """
-    a = tau2.real
-    b = tau2.imag   # Im(τ) > 0 required
-    v0 = (-a * np.pi / b) % (2 * np.pi)
-    # u₀ = π − v₀·Re(τ), using the already-wrapped v₀.  The naive derivation
-    # (π + Re²·π/Im) is only correct when v₀ needs no wrapping; using v₀
-    # directly handles all cases uniformly.
-    u0 = (np.pi - v0 * a) % (2 * np.pi)
-    return (u0, v0)
+    return (0.0, 0.0)
 
 
 class Genus2MultiChartNetwork(nn.Module):
@@ -785,6 +776,7 @@ class Genus2MultiChartNetwork(nn.Module):
         disk_center_T2: Tuple[float, float] = (0.0, 0.0),
         disk_radius: float = 0.3,
         torus2_offset: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        torus_major_radius: float = 1.0,
         skip_init: bool = False,
         supervised_pretraining_config: Optional[dict] = None,
         topology_params: Optional[Dict] = None,
@@ -796,6 +788,7 @@ class Genus2MultiChartNetwork(nn.Module):
         self.disk_center_T2 = disk_center_T2
         self.disk_radius = disk_radius
         self.torus2_offset = torus2_offset
+        self.torus_major_radius = torus_major_radius
         self.topology_params = topology_params or {}
 
         pretrain_cfg = supervised_pretraining_config or {}
@@ -832,30 +825,33 @@ class Genus2MultiChartNetwork(nn.Module):
             topology_params=torus2_topo,
         )
 
-        # After T₂ pretraining, flip the x-coordinate of its output so that the collar
-        # around D₂ maps to the same ℝ³ points as T₁'s collar.
-        # Derivation (τ purely imaginary, R=1, r=Im(τ)):
-        #   φ₁(r cosθ, r sinθ) = ((1+r cosθ sinθ)·cos(r cosθ), ...)         (T₁ near (0,0))
-        #   φ₂(π−r cosθ, r sinθ) = (−same, same, same)                       (T₂ near (π,0))
-        # Negating T₂ x gives exact C⁰/C¹/C² on the collar for x and y.
+        # After T₁/T₂ initialisation, set up the x-separation construction:
         #
-        # Adding a z-offset = 2·Im(τ₂) to T₂ breaks the self-intersection degeneracy:
-        #   – the pure x-flip makes both charts output the same surface in ℝ³,
-        #     so gluing loss gradient is zero and training is stuck.
-        #   – z of the standard torus is independent of u, so the z-offset leaves
-        #     ALL u-partial and mixed derivatives unchanged: C¹ and C² remain exact.
-        #   – C⁰ is broken by exactly z_shift in the z-component; the gluing loss
-        #     (weight 200) drives T₂ down to meet T₁ at the collar during training.
-        #   – T₁ lives in z ∈ [−Im(τ₁), +Im(τ₁)];  T₂ lives in z ∈ [Im(τ₂), 3·Im(τ₂)];
-        #     the two charts are spatially separated and form a proper genus-2 neck.
+        # Both tori keep their natural orientation (hole-axis along z, major
+        # circle in the x-y plane) and are translated along x so their outer
+        # equatorial circles touch at the origin:
+        #
+        #   T₁: x-shift −(R+r)  →  x ∈ [−2(R+r), 0],  outer equator at x=0
+        #   T₂: x-flip + x-shift +(R+r)  →  x ∈ [0, 2(R+r)], outer equator at x=0
+        #
+        # With R=1 and r=Im(τ), the shift is −(1+r) for T₁ and the output
+        # x-column is negated for T₂ (so both facing equators land at x=0).
+        # Applied to the last nn.Linear (output layer) only.
         if not skip_init:
             with torch.no_grad():
-                z_shift = 2.0 * abs(tau2.imag)
+                R = torus_major_radius
+                r1 = abs(tau1.imag)
+                r2 = abs(tau2.imag)
+                # T₁: shift x by −(R+r)
+                for m in reversed(list(self.torus1.network.modules())):
+                    if isinstance(m, nn.Linear) and m.out_features == 3:
+                        m.bias[0] = m.bias[0] - (R + r1)
+                        break
+                # T₂: negate x-output column, then shift x by +(R+r)
                 for m in reversed(list(self.torus2.network.modules())):
                     if isinstance(m, nn.Linear) and m.out_features == 3:
                         m.weight[0].neg_()
-                        m.bias[0].neg_()
-                        m.bias[2] = m.bias[2] + z_shift
+                        m.bias[0] = -m.bias[0] + (R + r2)
                         break
 
     # ---- forwarding helpers ------------------------------------------------
@@ -873,7 +869,8 @@ class Genus2MultiChartNetwork(nn.Module):
     def disk_boundary_T1(self, s: torch.Tensor) -> torch.Tensor:
         """Map angle s ∈ [0, 2π] to parameter coords on ∂D₁ ⊂ T₁.
 
-        Returns (len(s), 2) tensor with periodic wrapping to [0, 2π]².
+        D₁ is centred at (u₀_T1, v₀_T1), the outer equatorial point of T₁
+        that touches x = 0.  Returns (len(s), 2) with periodic wrapping.
         """
         u0, v0 = self.disk_center_T1
         delta = self.disk_radius
@@ -884,38 +881,39 @@ class Genus2MultiChartNetwork(nn.Module):
     def disk_boundary_T2(self, s: torch.Tensor) -> torch.Tensor:
         """Map angle s ∈ [0, 2π] to parameter coords on ∂D₂ ⊂ T₂.
 
-        The u-component uses −cos(s) (reversed relative to ∂D₁) so that the
-        boundary circles on T₁ and T₂ are consistently oriented in ℝ³ (both
-        counterclockwise viewed from the T₁ side), enabling C¹ matching.
+        D₂ is centred at (u₀_T2, v₀_T2), the outer equatorial point of T₂
+        that touches x = 0.  The gluing map is the identity in parameter space,
+        so both boundary circles use the same orientation.
+        Returns (len(s), 2) with periodic wrapping.
         """
         u0, v0 = self.disk_center_T2
         delta = self.disk_radius
-        u = (u0 - delta * torch.cos(s)) % (2 * np.pi)
+        u = (u0 + delta * torch.cos(s)) % (2 * np.pi)
         v = (v0 + delta * torch.sin(s)) % (2 * np.pi)
         return torch.stack([u, v], dim=1)
 
     # ---- reference embeddings per chart ------------------------------------
 
     def reference_torus1(self, uv: torch.Tensor) -> torch.Tensor:
-        """Reference embedding for T₁ (standard torus at position x₁)."""
-        return self.torus1._get_reference_embedding(uv)
+        """Reference embedding for T₁: standard torus shifted −(R+r) in x.
+
+        Hole-axis along z (major circle in the x-y plane).  T₁ spans
+        x ∈ [−2(R+r), 0] with its outer equator touching x = 0 at u=0, v=0.
+        """
+        ref = self.torus1._get_reference_embedding(uv)
+        R, r = self.torus_major_radius, abs(self.tau1.imag)
+        return torch.stack([ref[:, 0] - (R + r), ref[:, 1], ref[:, 2]], dim=1)
 
     def reference_torus2(self, uv: torch.Tensor) -> torch.Tensor:
-        """Reference embedding for T₂: x → −x reflection plus z-offset.
+        """Reference embedding for T₂: standard torus x-flipped then shifted +(R+r) in x.
 
-        The x-flip gives exact C⁰/C¹/C² gluing conditions at the collar for x and y.
-        The z-offset = 2·Im(τ₂) separates T₂ above T₁ in ℝ³, breaking the
-        self-intersection degeneracy of the pure x-flip (where both charts output
-        identical surfaces and training has zero gluing-loss gradient).
-
-        C¹ and C² remain exact: z of the standard torus is independent of u, so
-        all u-partial and mixed derivatives of z are zero on both sides and the
-        z-offset (a constant) vanishes upon differentiation.  Only C⁰ is broken,
-        by exactly z_shift in the z-component; the gluing loss corrects this.
+        Hole-axis along z.  T₂ spans x ∈ [0, 2(R+r)] with its outer equator
+        touching x = 0 at u=0, v=0.  The x-flip ensures the facing equators
+        of T₁ and T₂ share the same ℝ³ circle at x = 0.
         """
         ref = self.torus2._get_reference_embedding(uv)
-        z_shift = 2.0 * abs(self.tau2.imag)
-        return torch.stack([-ref[:, 0], ref[:, 1], ref[:, 2] + z_shift], dim=1)
+        R, r = self.torus_major_radius, abs(self.tau2.imag)
+        return torch.stack([(R + r) - ref[:, 0], ref[:, 1], ref[:, 2]], dim=1)
 
     # ---- supervised pretraining --------------------------------------------
 
@@ -990,6 +988,7 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         # sits on the part of T₂ closest to T₁ for any complex τ₂.
         disk_center_T2 = _compute_disk_center_T2(tau2)
         torus2_offset = tuple(dt_params.get('torus2_offset', [0.0, 0.0, 0.0]))
+        torus_major_radius = float(dt_params.get('torus_major_radius', 1.0))
 
         model = Genus2MultiChartNetwork(
             hidden_dims=model_config.get("hidden_dims", [128, 256, 512, 256, 128]),
@@ -1002,6 +1001,7 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
             disk_center_T2=disk_center_T2,
             disk_radius=disk_radius,
             torus2_offset=torus2_offset,
+            torus_major_radius=torus_major_radius,
             skip_init=skip_init,
             supervised_pretraining_config=supervised_pretraining_config,
             topology_params=topology_config,

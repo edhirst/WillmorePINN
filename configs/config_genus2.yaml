@@ -5,12 +5,14 @@ topology:
   genus: 2  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus
 
   # Two punctured tori (T₁, T₂) with disk boundaries identified.
-  # Boundary-matching loss enforces C⁰/C¹/C² continuity between φ₁(∂D₁) and φ₂(∂D₂).
+  # SeamGluingLoss enforces C⁰/C¹/C² continuity via g(r,θ) = (2δ−r,θ).
   double_torus:
-    tau1: "0.85j"               # Complex modulus for T₁; Im(τ) controls tube thickness, Re(τ) controls shear
-    tau2: "0.85j"               # Complex modulus for T₂; Im(τ) controls tube thickness, Re(τ) controls shear
+    tau1: "0.7j"                # Complex modulus for T₁; Im(τ) controls tube thickness, Re(τ) controls shear
+    tau2: "0.7j"                # Complex modulus for T₂; Im(τ) controls tube thickness, Re(τ) controls shear
     disk_radius: 0.65           # Parameter-space radius δ of excluded disk on each torus chart
-    disk_center_T1: [0.0, 0.0] # (u₀, v₀) centre of excluded disk on T₁
+    torus_major_radius: 1.0     # R: major torus radius; x-separation per torus = R + Im(τ)
+    annular_width_factor: 2.0   # Collar outer radius = annular_width_factor · δ (for visualisation and loss sampling)
+    disk_center_T1: [0.0, 0.0] # (u₀, v₀) centre of excluded disk on T₁; outer equatorial point of T₁ (u=v=0)
     torus2_offset: [0.0, 0.0, 0.0]  # ℝ³ translation applied to T₂ during pretraining (deprecated; x-flip in model handles gluing alignment)
 
 # Model Architecture
@@ -67,9 +69,9 @@ training:
     willmore_spike_threshold: 0.0       # 0.0 = disabled
     willmore_ema_alpha: 0.3             # EMA decay for Willmore tracking
     max_rollbacks: 30
-    willmore_warmup_epochs: 300         # Epochs before topology-collapse rollback can fire
+    willmore_warmup_epochs: 200         # Epochs before topology-collapse rollback can fire
     willmore_warmup_start: 0.01         # Willmore weight fraction at epoch 1
-    willmore_topology_floor: 20.0       # W floor for genus-2 topology-collapse rollback (≈ 4π² = 39.48)
+    gluing_annealing: 0.1               # after willmore warmup, gluing weight ramps to this fraction of its initial value
 
 # Sampling Parameters
 sampling:
@@ -99,20 +101,19 @@ loss:
   regularity_mean_area_floor_weight: 5.0
 
   # Multi-chart gluing (genus 2 only)
-  # AnnularGluingLoss samples N points (r, θ) in the collar r ∈ [δ·inner, δ·outer]
-  # and enforces C⁰/C¹/C² agreement between both charts via the gluing map Dg = diag(−1, +1).
+  # SeamGluingLoss samples N points (r, θ) in the collar r ∈ [δ(1−w), δ(1+w)]
+  # and enforces C⁰/C¹/C² agreement between both charts via the linear reflection g: (r,θ)↦(2δ−r,θ).
   gluing_weight: 200.0
-  gluing_num_annular_points: 256          # (r, θ) samples in the collar per step
-  gluing_inner_radius_factor: 1.0         # r_inner = factor · δ (1.0 = start from boundary ∂D)
-  gluing_outer_radius_factor: 2.5         # r_outer = factor · δ (width of the collar)
-  gluing_derivative_weight: 100.0         # C¹ Jacobian matching weight relative to C⁰
-  gluing_second_derivative_weight: 100.0  # C² Hessian matching weight
+  gluing_num_points: 256                 # (r, θ) samples in the collar per step
+  gluing_collar_width: 0.5               # collar half-width as fraction of δ: r ∈ [δ(1−w), δ(1+w)]
+  gluing_c1_weight: 50.0                 # C¹ matching weight relative to C⁰
+  gluing_c2_weight: 20.0                 # C² matching weight relative to C⁰
 
   # Junction circle radius penalty (genus 2 only)
   # ReLU² penalty below junction_min_radius and above junction_max_radius.
   junction_radius_weight: 15.0
-  junction_min_radius: 0.5   # ℝ³ radius floor for the gluing circle
-  junction_max_radius: 1.2   # ℝ³ radius ceiling for the gluing circle
+  junction_min_radius: 0.6   # ℝ³ radius floor for the gluing circle
+  junction_max_radius: 1.1   # ℝ³ radius ceiling for the gluing circle
 
   # Annular near-disk regularity (genus 2 only)
   # Applies regularity loss in the transition zone δ ≤ r_param ≤ annular_radius_factor·δ.
@@ -120,11 +121,6 @@ loss:
   annular_regularity_weight: 5.0
   annular_radius_factor: 2.5   # outer/inner ratio of the annular zone in parameter space
   annular_num_points: 256      # samples per chart per step in the annular zone
-
-  # Topology guard (genus 2 only)
-  # ReLU² penalty fires when W < topology_guard_floor, exploiting W ≥ 4π² for genus-2 surfaces.
-  topology_guard_weight: 0.0
-  topology_guard_floor: 20 
 
 # Optimiser
 optimizer:

@@ -279,182 +279,55 @@ class RegularityLoss(nn.Module):
 # ============================================================================
 
 
-class BoundaryMatchingLoss(nn.Module):
+class SeamGluingLoss(nn.Module):
     """
-    Boundary matching loss for the two-chart genus-2 parametrisation.
+    Gluing loss enforcing C°/C¹/C² smoothness across the seam between the
+    two torus charts of the genus-2 parametrisation.
 
-    Enforces C⁰ (position), C¹ (first normal derivative) and C² (second normal
-    derivative) matching directly between φ₁(∂D₁) on T₁ and φ₂(∂D₂) on T₂.
+    The gluing map is the linear radial reflection
 
-    C² matching is essential: the Willmore integrand H² depends on second
-    derivatives of φ, so without it each chart optimises curvature independently
-    and a non-physical curvature seam forms at the identification.
+        g(r, θ) = (2δ − r, θ)
 
-    Derivatives are computed via autograd (exact) in the *crossing direction*:
-      - T₁ side: inward toward disk centre, direction (−cos s, −sin s)
-      - T₂ side: inward toward disk centre, direction (+cos s, −sin s)
-        (u-component reversed to match the reversed orientation of ∂D₂)
-    """
+    which maps the collar {δ(1−w) ≤ r ≤ δ(1+w)} bijectively to itself and
+    has Jacobian Dg: d̂_r ↦ −d̂_r, d̂_θ ↦ +d̂_θ.
 
-    def __init__(self, num_boundary_points: int = 64,
-                 derivative_weight: float = 0.5,
-                 second_derivative_weight: float = 0.3):
-        super().__init__()
-        self.num_boundary_points = num_boundary_points
-        self.derivative_weight = derivative_weight
-        self.second_derivative_weight = second_derivative_weight
+    Sample points:
+        p₁(r, θ) = (u₀_T1 + r cos θ,       v₀_T1 + r sin θ)        [mod 2π]
+        p₂(r, θ) = (u₀_T2 + (2δ−r) cos θ,  v₀_T2 + (2δ−r) sin θ)  [mod 2π]
 
-    @staticmethod
-    def _directional_derivs(
-        model_fn,
-        uv: torch.Tensor,
-        direction: torch.Tensor,
-        order: int = 2,
-    ) -> tuple:
-        """Compute exact directional derivatives via autograd.
+    with r ∼ Uniform[δ(1−w), δ(1+w)], θ ∼ Uniform[0, 2π).
 
-        Args:
-            model_fn: maps (N, 2) → (N, 3).
-            uv: (N, 2) parameter coordinates (detached; re-attached internally).
-            direction: (N, 2) unit direction for the directional derivative.
-            order: 1 for C¹ only, 2 for C¹+C².
+    Matching conditions derived from the Dg sign pattern:
+        C°:            φ₁(p₁) = φ₂(p₂)
+        C¹ radial:     ∂ᵣφ₁ + ∂ᵣφ₂ = 0          (sign flip from Dg)
+        C¹ tangential: e_θ·∇φ₁ − e_θ·∇φ₂ = 0    (same sign from Dg)
+        C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0
+        C² rθ:  e_r⊗e_θ:∇²φ₁ + e_r⊗e_θ:∇²φ₂ = 0  (sign flip)
+        C² θθ: e_θ⊗e_θ:∇²φ₁ − e_θ⊗e_θ:∇²φ₂ = 0
 
-        Returns:
-            (xyz, d1, d2) where d2 is None when order < 2.
-        """
-        uv = uv.detach().requires_grad_(True)
-        xyz = model_fn(uv)                      # (N, 3)
-
-        d1_comps, d2_comps = [], []
-        for i in range(3):
-            grad1 = torch.autograd.grad(
-                xyz[:, i], uv, torch.ones_like(xyz[:, i]),
-                create_graph=True, retain_graph=True,
-            )[0]                                  # (N, 2)
-            d1_i = (grad1 * direction).sum(dim=1) # (N,) — first directional deriv
-
-            if order >= 2:
-                grad2 = torch.autograd.grad(
-                    d1_i, uv, torch.ones_like(d1_i),
-                    create_graph=True, retain_graph=True,
-                )[0]                              # (N, 2)
-                d2_i = (grad2 * direction).sum(dim=1)
-                d2_comps.append(d2_i)
-
-            d1_comps.append(d1_i)
-
-        d1 = torch.stack(d1_comps, dim=1)        # (N, 3)
-        d2 = torch.stack(d2_comps, dim=1) if d2_comps else None
-        return xyz, d1, d2
-
-    def forward(self, model) -> torch.Tensor:
-        """
-        Compute boundary matching loss for a Genus2MultiChartNetwork.
-
-        Args:
-            model: Genus2MultiChartNetwork instance.
-
-        Returns:
-            Scalar boundary matching loss.
-        """
-        n = self.num_boundary_points
-        device = next(model.parameters()).device
-        dtype = next(model.parameters()).dtype
-
-        s = torch.linspace(0, 2 * np.pi, n + 1, device=device, dtype=dtype)[:-1]
-
-        # Crossing directions: inward toward the respective disk centre.
-        # T₁ boundary circle: (u₀ + δcos s, v₀ + δsin s)  ⇒ inward = (−cos s, −sin s)
-        # T₂ boundary circle: (u₀ − δcos s, v₀ + δsin s)  ⇒ inward = (+cos s, −sin s)
-        # The sign flip on the T₂ u-component matches disk_boundary_T2's reversed
-        # orientation, so both directional derivatives point "into the handle".
-        torus_dir_T1 = torch.stack([-torch.cos(s), -torch.sin(s)], dim=1)  # (n, 2)
-        torus_dir_T2 = torch.stack([ torch.cos(s), -torch.sin(s)], dim=1)  # (n, 2)
-
-        need_c1 = self.derivative_weight > 0
-        need_c2 = self.second_derivative_weight > 0
-        order = 2 if need_c2 else (1 if need_c1 else 0)
-
-        # Boundary coordinates on each torus chart
-        uv_d1 = model.disk_boundary_T1(s)   # (n, 2)
-        uv_d2 = model.disk_boundary_T2(s)   # (n, 2)
-
-        if order >= 1:
-            xyz_T1, d1_T1, d2_T1 = self._directional_derivs(
-                model.forward_torus1, uv_d1, torus_dir_T1, order)
-            xyz_T2, d1_T2, d2_T2 = self._directional_derivs(
-                model.forward_torus2, uv_d2, torus_dir_T2, order)
-        else:
-            xyz_T1 = model.forward_torus1(uv_d1)
-            xyz_T2 = model.forward_torus2(uv_d2)
-
-        # C⁰ — position matching
-        total = ((xyz_T1 - xyz_T2) ** 2).sum(1).mean()
-
-        # C¹ — first normal-derivative matching
-        # Both directions point "into the handle", so d1 values should agree.
-        if need_c1:
-            c1_loss = ((d1_T1 - d1_T2) ** 2).sum(1).mean()
-            total = total + self.derivative_weight * c1_loss
-
-        # C² — second normal-derivative matching (curvature continuity)
-        if need_c2:
-            c2_loss = ((d2_T1 - d2_T2) ** 2).sum(1).mean()
-            total = total + self.second_derivative_weight * c2_loss
-
-        return total
-
-
-class AnnularGluingLoss(nn.Module):
-    """
-    Gluing loss enforcing C⁰/C¹/C² smoothness throughout an annular collar
-    neighbourhood of the excluded disk.
-
-    By the smooth collar construction for genus-2 surfaces, the annular region
-    r ∈ [δ·r_inner, δ·r_outer] is simultaneously covered by both chart
-    parametrisations via the identification
-
-        uv_T1(r, θ) = (u₀_T1 + r cos θ,  v₀_T1 + r sin θ)
-        uv_T2(r, θ) = (u₀_T2 − r cos θ,  v₀_T2 + r sin θ)
-
-    The gluing map g: uv_T1 ↦ uv_T2 has Jacobian Dg = diag(−1, +1), so the
-    C¹ compatibility condition reads
-
-        ∂φ₁/∂u = −∂φ₂/∂u'   and   ∂φ₁/∂v = ∂φ₂/∂v'
-
-    and applying the chain rule for Dg gives the C² conditions
-
-        ∂²φ₁/∂u²   =   ∂²φ₂/∂u'²
-        ∂²φ₁/∂u∂v  = −∂²φ₂/∂u'∂v'
-        ∂²φ₁/∂v²   =   ∂²φ₂/∂v'²
-
-    Sampling the full 2D annulus (rather than just ∂D at r = δ) provides dense
-    gradient signal throughout the collar, and matching both partial derivatives
-    rather than a single inward direction gives complete C¹/C² enforcement.
+    where e_r = (cos θ, sin θ), e_θ = (−sin θ, cos θ).
     """
 
     def __init__(
         self,
-        num_annular_points: int = 256,
-        inner_radius_factor: float = 1.0,
-        outer_radius_factor: float = 2.5,
+        num_points: int = 256,
+        collar_width: float = 0.5,
         c0_weight: float = 1.0,
-        c1_weight: float = 0.5,
-        c2_weight: float = 0.3,
+        c1_weight: float = 1.0,
+        c2_weight: float = 1.0,
     ):
         """
         Args:
-            num_annular_points: Number of (r, θ) samples per forward call.
-            inner_radius_factor: r_inner = inner_radius_factor · δ.
-            outer_radius_factor: r_outer = outer_radius_factor · δ.
-            c0_weight: Weight for C⁰ position matching.
-            c1_weight: Weight for C¹ Jacobian matching relative to C⁰.
-            c2_weight: Weight for C² Hessian matching relative to C⁰.
+            num_points: Number of (r, θ) samples per forward call.
+            collar_width: Collar half-width as a fraction of δ; collar is
+                r ∈ [δ(1 − collar_width), δ(1 + collar_width)].
+            c0_weight: Weight for C° position matching.
+            c1_weight: Weight for C¹ matching (radial + tangential combined).
+            c2_weight: Weight for C² matching (rr + rθ + θθ combined).
         """
         super().__init__()
-        self.num_annular_points = num_annular_points
-        self.inner_radius_factor = inner_radius_factor
-        self.outer_radius_factor = outer_radius_factor
+        self.num_points = num_points
+        self.collar_width = collar_width
         self.c0_weight = c0_weight
         self.c1_weight = c1_weight
         self.c2_weight = c2_weight
@@ -494,33 +367,31 @@ class AnnularGluingLoss(nn.Module):
                 Hijk = torch.autograd.grad(
                     J[:, i, j], uv, torch.ones_like(J[:, i, j]),
                     create_graph=True, retain_graph=True,
-                )[0]  # (N, 2):  [∂²φᵢ/(∂u₀∂uⱼ), ∂²φᵢ/(∂u₁∂uⱼ)]
+                )[0]  # (N, 2)
                 H_cols.append(Hijk)
             H_rows.append(torch.stack(H_cols, dim=1))  # (N, 2, 2)
         H = torch.stack(H_rows, dim=1)  # (N, 3, 2, 2)
         return xyz, J, H
 
     def forward(self, model) -> torch.Tensor:
-        """Compute annular gluing loss for a Genus2MultiChartNetwork.
+        """Compute seam gluing loss for a Genus2MultiChartNetwork.
 
         Args:
             model: Genus2MultiChartNetwork instance.
 
         Returns:
-            Scalar annular gluing loss.
+            Scalar seam gluing loss.
         """
-        n = self.num_annular_points
+        n = self.num_points
         device = next(model.parameters()).device
         dtype = next(model.parameters()).dtype
 
         delta = model.disk_radius
-        r_inner = delta * self.inner_radius_factor
-        r_outer = delta * self.outer_radius_factor
+        r_min = delta * (1.0 - self.collar_width)
+        r_max = delta * (1.0 + self.collar_width)
 
-        # Sample (r, θ) with uniform area distribution (uniform in r² ↔ uniform in area)
-        r2 = (torch.rand(n, device=device, dtype=dtype)
-              * (r_outer ** 2 - r_inner ** 2) + r_inner ** 2)
-        r = r2.sqrt()
+        # Sample r uniformly in [δ(1−w), δ(1+w)], θ uniformly in [0, 2π)
+        r = torch.rand(n, device=device, dtype=dtype) * (r_max - r_min) + r_min
         theta = torch.rand(n, device=device, dtype=dtype) * 2.0 * np.pi
         cos_t = torch.cos(theta)
         sin_t = torch.sin(theta)
@@ -528,16 +399,18 @@ class AnnularGluingLoss(nn.Module):
         u0_T1, v0_T1 = model.disk_center_T1
         u0_T2, v0_T2 = model.disk_center_T2
 
-        # T₁ annular coordinates: (u₀ + r cos θ, v₀ + r sin θ)
+        r2 = 2.0 * delta - r  # reflected radius; also lies in [δ(1−w), δ(1+w)]
+
+        # T₁ sample: p₁ = (u₀ + r cos θ, v₀ + r sin θ)  [mod 2π]
         uv_1 = torch.stack([
             (u0_T1 + r * cos_t) % (2.0 * np.pi),
             (v0_T1 + r * sin_t) % (2.0 * np.pi),
         ], dim=1)
 
-        # T₂ annular coordinates via gluing map: (u₀' − r cos θ, v₀' + r sin θ)
+        # T₂ sample via g: p₂ = (u₀ + (2δ−r) cos θ, v₀ + (2δ−r) sin θ)  [mod 2π]
         uv_2 = torch.stack([
-            (u0_T2 - r * cos_t) % (2.0 * np.pi),
-            (v0_T2 + r * sin_t) % (2.0 * np.pi),
+            (u0_T2 + r2 * cos_t) % (2.0 * np.pi),
+            (v0_T2 + r2 * sin_t) % (2.0 * np.pi),
         ], dim=1)
 
         need_hessian = self.c2_weight > 0
@@ -552,42 +425,58 @@ class AnnularGluingLoss(nn.Module):
             xyz_1 = model.forward_torus1(uv_1.detach())
             xyz_2 = model.forward_torus2(uv_2.detach())
 
-        # C⁰: position matching
+        # C°: position matching
         total = self.c0_weight * ((xyz_1 - xyz_2) ** 2).sum(dim=1).mean()
 
-        # C¹: Jacobian matching via Dg = diag(−1, +1)
-        #   ∂φ₁/∂u = −∂φ₂/∂u'  →  J₁[:,:,0] + J₂[:,:,0] = 0
-        #   ∂φ₁/∂v =  ∂φ₂/∂v'  →  J₁[:,:,1] − J₂[:,:,1] = 0
         if self.c1_weight > 0:
-            c1 = (
-                ((J_1[:, :, 0] + J_2[:, :, 0]) ** 2).mean()
-                + ((J_1[:, :, 1] - J_2[:, :, 1]) ** 2).mean()
-            )
-            total = total + self.c1_weight * c1
+            # Polar frame vectors: e_r = (cos θ, sin θ), e_th = (−sin θ, cos θ)
+            e_r = torch.stack([cos_t, sin_t], dim=1)    # (N, 2)
+            e_th = torch.stack([-sin_t, cos_t], dim=1)  # (N, 2)
 
-        # C²: Hessian matching  (H[:, i, j, k] = ∂²φᵢ/(∂uₖ∂uⱼ))
-        #   ∂²φ₁/∂u²    =   ∂²φ₂/∂u'²    →  H₁[:,:,0,0] − H₂[:,:,0,0] = 0
-        #   ∂²φ₁/∂u∂v   = −∂²φ₂/∂u'∂v'  →  H₁[:,:,0,1] + H₂[:,:,0,1] = 0  (also :,1,0)
-        #   ∂²φ₁/∂v²    =   ∂²φ₂/∂v'²   →  H₁[:,:,1,1] − H₂[:,:,1,1] = 0
+            # Radial directional derivative ∂ᵣφ = J @ e_r  (N, 3)
+            J1_r = torch.einsum('nij,nj->ni', J_1, e_r)
+            J2_r = torch.einsum('nij,nj->ni', J_2, e_r)
+            # Tangential directional derivative e_θ·∇φ = J @ e_th  (N, 3)
+            J1_th = torch.einsum('nij,nj->ni', J_1, e_th)
+            J2_th = torch.einsum('nij,nj->ni', J_2, e_th)
+
+            # C¹ radial:     ∂ᵣφ₁ + ∂ᵣφ₂ = 0   (sign flip from Dg)
+            c1_r = ((J1_r + J2_r) ** 2).sum(dim=1).mean()
+            # C¹ tangential: e_θ·∇φ₁ − e_θ·∇φ₂ = 0   (same sign from Dg)
+            c1_th = ((J1_th - J2_th) ** 2).sum(dim=1).mean()
+            total = total + self.c1_weight * (c1_r + c1_th)
+
         if self.c2_weight > 0:
-            c2 = (
-                ((H_1[:, :, 0, 0] - H_2[:, :, 0, 0]) ** 2).mean()
-                + ((H_1[:, :, 0, 1] + H_2[:, :, 0, 1]) ** 2).mean()
-                + ((H_1[:, :, 1, 0] + H_2[:, :, 1, 0]) ** 2).mean()
-                + ((H_1[:, :, 1, 1] - H_2[:, :, 1, 1]) ** 2).mean()
-            )
-            total = total + self.c2_weight * c2
+            if self.c1_weight <= 0:
+                e_r = torch.stack([cos_t, sin_t], dim=1)
+                e_th = torch.stack([-sin_t, cos_t], dim=1)
+
+            # Hessian contracted on polar frame vectors:
+            # H_ab[n,i] = Σ_{j,k} H[n,i,j,k] · a[n,j] · b[n,k]
+            H1_rr = torch.einsum('nijk,nj,nk->ni', H_1, e_r, e_r)
+            H2_rr = torch.einsum('nijk,nj,nk->ni', H_2, e_r, e_r)
+            H1_rt = torch.einsum('nijk,nj,nk->ni', H_1, e_r, e_th)
+            H2_rt = torch.einsum('nijk,nj,nk->ni', H_2, e_r, e_th)
+            H1_tt = torch.einsum('nijk,nj,nk->ni', H_1, e_th, e_th)
+            H2_tt = torch.einsum('nijk,nj,nk->ni', H_2, e_th, e_th)
+
+            # C² rr:  e_r⊗e_r:∇²φ₁ − e_r⊗e_r:∇²φ₂ = 0   (no sign flip)
+            c2_rr = ((H1_rr - H2_rr) ** 2).sum(dim=1).mean()
+            # C² rθ:  e_r⊗e_θ:∇²φ₁ + e_r⊗e_θ:∇²φ₂ = 0   (sign flip from Dg)
+            c2_rt = ((H1_rt + H2_rt) ** 2).sum(dim=1).mean()
+            # C² θθ: e_θ⊗e_θ:∇²φ₁ − e_θ⊗e_θ:∇²φ₂ = 0   (no sign flip)
+            c2_tt = ((H1_tt - H2_tt) ** 2).sum(dim=1).mean()
+            total = total + self.c2_weight * (c2_rr + c2_rt + c2_tt)
 
         return total
-
 
 class MultiChartCombinedLoss(nn.Module):
     """
     Combined loss for the genus-2 two-chart architecture.
 
-    Aggregates Willmore + regularity over two charts (T₁, T₂) plus an annular
+    Aggregates Willmore + regularity over two charts (T₁, T₂) plus a seam
     gluing loss enforcing C⁰/C¹/C² continuity throughout the collar neighbourhood
-    of the gluing circle.
+    of the gluing seam.
     """
 
     def __init__(
@@ -607,17 +496,14 @@ class MultiChartCombinedLoss(nn.Module):
         regularity_mean_area_floor_weight: float = 0.0,
         regularity_log_barrier_weight: float = 0.0,
         max_willmore_weight: float = 1.0,
-        gluing_num_annular_points: int = 256,
-        gluing_inner_radius_factor: float = 1.0,
-        gluing_outer_radius_factor: float = 2.5,
-        gluing_derivative_weight: float = 0.5,
-        gluing_second_derivative_weight: float = 0.3,
+        gluing_num_points: int = 256,
+        gluing_collar_width: float = 0.5,
+        gluing_c1_weight: float = 0.5,
+        gluing_c2_weight: float = 0.3,
         disk_radius: float = 0.3,
         junction_radius_weight: float = 0.0,
         junction_min_radius: float = 0.1,
         junction_max_radius: Optional[float] = None,
-        topology_guard_weight: float = 0.0,
-        topology_guard_floor: float = 4.0 * np.pi ** 2,
         annular_regularity_weight: float = 0.0,
         annular_radius_factor: float = 2.5,
         annular_num_points: int = 128,
@@ -628,13 +514,12 @@ class MultiChartCombinedLoss(nn.Module):
         self.regularity_weight = regularity_weight
         self.initial_regularity_weight = regularity_weight
         self.gluing_weight = gluing_weight
+        self.initial_gluing_weight = gluing_weight
         self.max_willmore_weight = max_willmore_weight
         self.initial_weight_sum = willmore_weight + regularity_weight
         self.junction_radius_weight = junction_radius_weight
         self.junction_min_radius = junction_min_radius
         self.junction_max_radius = junction_max_radius
-        self.topology_guard_weight = topology_guard_weight
-        self.topology_guard_floor = topology_guard_floor
         self.annular_regularity_weight = annular_regularity_weight
         self.annular_radius_factor = annular_radius_factor
         self.annular_num_points = annular_num_points
@@ -659,13 +544,12 @@ class MultiChartCombinedLoss(nn.Module):
             mean_area_floor_weight=regularity_mean_area_floor_weight,
             log_barrier_weight=regularity_log_barrier_weight,
         )
-        self.gluing_loss = AnnularGluingLoss(
-            num_annular_points=gluing_num_annular_points,
-            inner_radius_factor=gluing_inner_radius_factor,
-            outer_radius_factor=gluing_outer_radius_factor,
+        self.gluing_loss = SeamGluingLoss(
+            num_points=gluing_num_points,
+            collar_width=gluing_collar_width,
             c0_weight=1.0,
-            c1_weight=gluing_derivative_weight,
-            c2_weight=gluing_second_derivative_weight,
+            c1_weight=gluing_c1_weight,
+            c2_weight=gluing_c2_weight,
         )
         self.genus = 2
 
@@ -705,6 +589,16 @@ class MultiChartCombinedLoss(nn.Module):
                 base_r *= boost
         self.regularity_weight = base_r
 
+        # Gluing annealing: after willmore warmup ends, linearly reduce gluing
+        # weight to initial_gluing_weight * gluing_annealing.  1.0 = no annealing.
+        gluing_annealing = adaptive_config.get('gluing_annealing', 1.0)
+        if gluing_annealing < 1.0 and not in_warmup:
+            post_warmup_progress = min(1.0, max(0.0,
+                (epoch - warmup_epochs) / max(1, total_epochs - warmup_epochs)))
+            self.gluing_weight = self.initial_gluing_weight * (
+                1.0 - (1.0 - gluing_annealing) * post_warmup_progress
+            )
+
     def forward(self, model, uv_T1: torch.Tensor, uv_T2: torch.Tensor) -> dict:
         """
         Compute combined two-chart loss.
@@ -726,20 +620,6 @@ class MultiChartCombinedLoss(nn.Module):
         willmore_train = w_T1 + w_T2
         willmore_value = w_T1_val + w_T2_val
         total = total + self.willmore_weight * willmore_train
-
-        # --- Topology guard: penalise W < theoretical genus-2 minimum ---
-        # The Willmore conjecture (Marques–Neves 2012) proves W ≥ 4π² ≈ 39.48
-        # for embedded tori; for genus-2 surfaces the same floor is conjectured
-        # (Lawson's ξ_{2,1} saturates it).  Any measured W < 4π² is an
-        # infallible indicator that the surface is no longer an embedded genus-2
-        # surface.  The ReLU² penalty creates an energy floor at W_floor so the
-        # network is penalised for topology-changing deformations while remaining
-        # free to minimise Willmore within the genus-2 manifold (where W ≥ floor).
-        if self.topology_guard_weight > 0:
-            topo_penalty = torch.nn.functional.relu(
-                self.topology_guard_floor - willmore_train
-            ) ** 2
-            total = total + self.topology_guard_weight * topo_penalty
 
         # --- Regularity on each chart ---
         r_T1 = self.regularity_loss(model.torus1, uv_T1)
@@ -1080,18 +960,14 @@ def create_embedding_loss(config: dict) -> nn.Module:
             regularity_mean_area_floor_weight=loss_config.get("regularity_mean_area_floor_weight", 0.0),
             regularity_log_barrier_weight=loss_config.get("regularity_log_barrier_weight", 0.0),
             max_willmore_weight=loss_config.get("max_willmore_weight", 1.0),
-            gluing_num_annular_points=loss_config.get("gluing_num_annular_points",
-                                                       loss_config.get("gluing_num_boundary_points", 256)),
-            gluing_inner_radius_factor=loss_config.get("gluing_inner_radius_factor", 1.0),
-            gluing_outer_radius_factor=loss_config.get("gluing_outer_radius_factor", 2.5),
-            gluing_derivative_weight=loss_config.get("gluing_derivative_weight", 0.5),
-            gluing_second_derivative_weight=loss_config.get("gluing_second_derivative_weight", 0.3),
+            gluing_num_points=loss_config.get("gluing_num_points", 256),
+            gluing_collar_width=loss_config.get("gluing_collar_width", 0.5),
+            gluing_c1_weight=loss_config.get("gluing_c1_weight", 0.5),
+            gluing_c2_weight=loss_config.get("gluing_c2_weight", 0.3),
             disk_radius=float(dt_params.get('disk_radius', 0.3)),
             junction_radius_weight=loss_config.get("junction_radius_weight", 0.0),
             junction_min_radius=loss_config.get("junction_min_radius", 0.1),
             junction_max_radius=loss_config.get("junction_max_radius", None),
-            topology_guard_weight=loss_config.get("topology_guard_weight", 0.0),
-            topology_guard_floor=loss_config.get("topology_guard_floor", 4.0 * np.pi ** 2),
             annular_regularity_weight=loss_config.get("annular_regularity_weight", 0.0),
             annular_radius_factor=loss_config.get("annular_radius_factor", 2.5),
             annular_num_points=loss_config.get("annular_num_points", 128),

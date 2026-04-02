@@ -695,39 +695,6 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
                 else:
                     print(f"   Warning: best_model.pt not found, continuing")
 
-        # --- Check 3: Topology collapse (genus-2 only) ---
-        # The Willmore conjecture (Marques-Neves 2012) guarantees W ≥ 4π² ≈ 39.48
-        # for any smooth embedded genus-2 surface.  When the EMA of W falls below
-        # this threshold after the warmup period, the surface has lost genus-2
-        # topology (degenerated to a sphere-like dumbbell).  Roll back to the
-        # last good checkpoint and boost gluing + regularity weights to stabilise
-        # the topology before the Willmore gradient dominates again.
-        warmup_epochs_topo = adaptive_config.get('willmore_warmup_epochs', 0)
-        topo_floor = adaptive_config.get('willmore_topology_floor', 4.0 * np.pi ** 2)
-        if (not rolled_back
-                and genus == 2
-                and adaptive_config.get('checkpoint_rollback', False)
-                and epoch > max(5, warmup_epochs_topo)
-                and ema_willmore < topo_floor
-                and rollback_count < max_rollbacks):
-            rollback_count += 1
-            print(f"\n\U0001f6a8 TOPOLOGY COLLAPSE (Rollback {rollback_count}/{max_rollbacks})")
-            print(f"   EMA W={ema_willmore:.2f} < genus-2 floor {topo_floor:.2f}")
-            ckpt_path = os.path.join(checkpoint_dir, 'best_model.pt')
-            ok = _do_rollback(ckpt_path, lr_scale=0.5)
-            if ok:
-                ema_willmore = topo_floor  # reset EMA so guard doesn't immediately re-fire
-                loss_fn.regularity_weight = min(loss_fn.regularity_weight * 2.0,
-                                                loss_fn.initial_regularity_weight * 8.0)
-                loss_fn.gluing_weight = min(loss_fn.gluing_weight * 2.0,
-                                            loss_fn.initial_willmore_weight * 40.0)
-                print(f"   Reverted. regularity_weight\u2192{loss_fn.regularity_weight:.1f}, "
-                      f"gluing_weight\u2192{loss_fn.gluing_weight:.1f}")
-                print(f"   LR \u2192 {optimizer.param_groups[0]['lr']:.2e}")
-                rolled_back = True
-            else:
-                print(f"   Warning: best_model.pt not found, continuing")
-
         # Skip recording this failed epoch if we rolled back
         if rolled_back:
             continue

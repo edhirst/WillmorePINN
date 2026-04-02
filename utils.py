@@ -146,17 +146,22 @@ def make_genus2_colors(
     uv_t1, uv_t2,
     disk_center_T1=(0.0, 0.0),
     disk_center_T2=(np.pi, 0.0),
+    collar_radius: float = 0.0,
 ) -> np.ndarray:
     """Compute per-point RGB colours for a genus-2 multi-chart surface.
 
     T₁ and T₂ points are coloured by u (hue = u / 2π, matching the domain
-    plot).
+    plot).  Points within collar_radius of the disk centre are coloured black
+    to highlight the gluing annulus.
 
     Args:
         uv_t1: (N₁, 2) parameter coords for T₁ (u, v).
         uv_t2: (N₂, 2) parameter coords for T₂ (u, v).
         disk_center_T1: (u₀, v₀) disk centre on T₁.
         disk_center_T2: (u₀, v₀) disk centre on T₂.
+        collar_radius: Points within this radius of the disk centre are coloured
+            black.  Pass the disk_radius (δ) used during sampling so the collar
+            boundary is visible.  Zero disables the override.
 
     Returns:
         (N₁+N₂, 3) float32 RGB array in [0, 1].
@@ -170,13 +175,31 @@ def make_genus2_colors(
     c1 = hsv_to_rgb_colors(uv1[:, 0], 2 * np.pi)  # (N₁, 3)
     c2 = hsv_to_rgb_colors(uv2[:, 0], 2 * np.pi)  # (N₂, 3)
 
+    if collar_radius > 0:
+        def _periodic_dist2(uv, center):
+            """Squared periodic distance on [0, 2π]² from center."""
+            du = np.abs(uv[:, 0] - center[0])
+            du = np.minimum(du, 2 * np.pi - du)
+            dv = np.abs(uv[:, 1] - center[1])
+            dv = np.minimum(dv, 2 * np.pi - dv)
+            return du ** 2 + dv ** 2
+
+        r2 = collar_radius ** 2
+        if uv1.shape[0] > 0:
+            mask1 = _periodic_dist2(uv1, disk_center_T1) <= r2
+            c1[mask1] = 0.0
+        if uv2.shape[0] > 0:
+            mask2 = _periodic_dist2(uv2, disk_center_T2) <= r2
+            c2[mask2] = 0.0
+
     return np.concatenate([c1, c2], axis=0).astype(np.float32)
 
 
 def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=1j,
                                      neck_radius=0.3,
                                      disk_center_T1=(0.0, 0.0),
-                                     disk_center_T2=None):
+                                     disk_center_T2=None,
+                                     annular_width_factor=2.0):
     """Plot the fundamental domain with the periodic coloring.
 
     For genus 2, draws the two parameter-space charts (T₁, T₂) with
@@ -197,6 +220,7 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=
         _plot_connected_sum_domain(
             ax, tau1=tau1, tau2=tau2, neck_radius=neck_radius,
             disk_center_T1=disk_center_T1, disk_center_T2=disk_center_T2,
+            annular_width_factor=annular_width_factor,
             num_points=num_points,
         )
         return
@@ -253,6 +277,7 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=
 def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
                                 disk_center_T1=(0.0, 0.0),
                                 disk_center_T2=(np.pi, 0.0),
+                                annular_width_factor=2.0,
                                 num_points=80):
     """
     Two-chart parameter domain for the genus-2 multi-chart architecture.
@@ -335,17 +360,25 @@ def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
         (x0_T1 + u0_T1,     v0_T1 + L),
         (x0_T1 + u0_T1 + L, v0_T1 + L),
     ]:
-        c = Circle((cx, cy), radius=delta, fc='white', ec='black', lw=1.5, zorder=11)
-        ax.add_patch(c)
-        c.set_clip_path(T1_clip)
+        c_ann = Circle((cx, cy), radius=delta * annular_width_factor,
+                       fc='black', ec='none', zorder=11)
+        ax.add_patch(c_ann)
+        c_ann.set_clip_path(T1_clip)
+        c_disk = Circle((cx, cy), radius=delta, fc='white', ec='black', lw=1.5, zorder=12)
+        ax.add_patch(c_disk)
+        c_disk.set_clip_path(T1_clip)
 
     for cx, cy in [
         (x0_T2 + u0_T2, v0_T2),
         (x0_T2 + u0_T2, v0_T2 + L),
     ]:
-        c = Circle((cx, cy), radius=delta, fc='white', ec='black', lw=1.5, zorder=11)
-        ax.add_patch(c)
-        c.set_clip_path(T2_clip)
+        c_ann = Circle((cx, cy), radius=delta * annular_width_factor,
+                       fc='black', ec='none', zorder=11)
+        ax.add_patch(c_ann)
+        c_ann.set_clip_path(T2_clip)
+        c_disk = Circle((cx, cy), radius=delta, fc='white', ec='black', lw=1.5, zorder=12)
+        ax.add_patch(c_disk)
+        c_disk.set_clip_path(T2_clip)
 
     # --- Chart labels ---
     tau1_str = (f'{tau1_re:.1f}+{tau1_im:.1f}i' if abs(tau1_re) > 0.02

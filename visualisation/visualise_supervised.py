@@ -223,23 +223,26 @@ def visualise_supervised_genus1(output_dir: str, num_points: int, config_path: s
 def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: str, device: torch.device):
     """Pretrain and visualize double torus embeddings (genus 2).
 
-    create_embedding_model with skip_init=False calls model.pretrain() internally.
-    T₁ is fitted to the standard torus.  T₂'s reference is the x → −x reflection
-    plus a z-offset of 2·Im(τ₂), which:
-      • keeps C¹/C² exact at the collar (z of a standard torus is independent of u)
-      • breaks C⁰ by exactly z_shift in z, giving the gluing loss a non-zero gradient
-      • places T₂ above T₁ in z, avoiding the self-intersection degeneracy of the
-        pure x-flip (where both charts are identical in ℝ³ and training is stuck).
+    create_embedding_model with skip_init=False trains each sub-network to the
+    standard torus via _init_near_reference, then Genus2MultiChartNetwork.__init__
+    applies the x-separation construction:
+      • T₁: x-shift −(R+r) → x ∈ [−2(R+r), 0], outer equator touching x=0
+      • T₂: x-flip + x-shift +(R+r) → x ∈ [0, 2(R+r)], outer equator touching x=0
+    Both hole-axes are along z.  The gluing map is the identity (Dg = I).
     """
     with open(config_path, 'r') as f:
         base_config = yaml.safe_load(f)
 
+    annular_width_factor = float(
+        base_config.get('topology', {}).get('double_torus', {}).get('annular_width_factor', 2.0)
+    )
+
     dt_configs = [
         # disk_center_T2 is always auto-computed from τ₂ via _compute_disk_center_T2
-        {'tau1': '0.85j', 'tau2': '0.85j',
+        {'tau1': '0.7j', 'tau2': '0.7j',
          'disk_radius': 0.65,
          'disk_center_T1': [0.0, 0.0],
-         'label': 'τ₁=τ₂=0.85i (training config)'},
+         'label': 'τ₁=τ₂=0.7i (training config)'},
         {'tau1': '1j', 'tau2': '1j',
          'disk_radius': 0.65,
          'disk_center_T1': [0.0, 0.0],
@@ -251,7 +254,7 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         {'tau1': '1.0+0.5j', 'tau2': '-1.0+0.5j',
          'disk_radius': 0.5,
          'disk_center_T1': [0.0, 0.0],
-         'label': 'τ₁=1+0.5i, τ₂=−1+0.5i (twisted)'},
+         'label': 'τ₁=0.2+0.2i, τ₂=−0.2+0.2i (twisted)'},
         {'tau1': '0.85j', 'tau2': '0.85j',
          'disk_radius': 0.3,
          'disk_center_T1': [0.0, 0.0],
@@ -289,6 +292,7 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         ax_domain, genus=2, tau1=tau1, tau2=tau2,
         neck_radius=first_cfg['disk_radius'],
         disk_center_T1=tuple(first_cfg['disk_center_T1']),
+        annular_width_factor=annular_width_factor,
     )
 
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
@@ -311,7 +315,7 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
             xyz = torch.cat([model.forward_torus1(uv_t1),
                              model.forward_torus2(uv_t2)], dim=0).cpu()
             uv = torch.cat([uv_t1, uv_t2], dim=0).cpu()
-        _plot_data.append((xyz, uv, label, genus, c_T1, c_T2, uv_t1, uv_t2))
+        _plot_data.append((xyz, uv, label, genus, c_T1, c_T2, uv_t1, uv_t2, delta))
 
     _all_xyz = np.concatenate([d[0].numpy() for d in _plot_data])
     _global_range = np.array([
@@ -320,11 +324,12 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         _all_xyz[:, 2].max() - _all_xyz[:, 2].min()
     ]).max() / 2.0
 
-    for idx, (xyz, uv, label, genus, c_T1, c_T2, uv_t1, uv_t2) in enumerate(_plot_data):
+    for idx, (xyz, uv, label, genus, c_T1, c_T2, uv_t1, uv_t2, delta) in enumerate(_plot_data):
         ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
         if genus == 2:
             colors = make_genus2_colors(uv_t1, uv_t2,
-                                        disk_center_T1=c_T1, disk_center_T2=c_T2)
+                                        disk_center_T1=c_T1, disk_center_T2=c_T2,
+                                        collar_radius=delta * annular_width_factor)
             plot_surface_3d(ax, xyz, uv, label, genus=genus, global_range=_global_range,
                             color_values=colors)
         else:

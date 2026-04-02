@@ -46,7 +46,7 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 2000
+  num_epochs: 150 ##2000
   batch_size: 3000
   learning_rate: 0.0002
   weight_decay: 0.000001
@@ -75,8 +75,8 @@ training:
 
 # Sampling Parameters
 sampling:
-  num_points: 9000
-  eval_num_points: 5000      # Uniform eval sample for logged W (reduces MC variance)
+  num_points: 5000 ##9000
+  eval_num_points: 1000 ##5000      # Uniform eval sample for logged W (reduces MC variance)
   print_eval: false          # If true, full eval runs every epoch; if false, only on log epochs
   noise_level: 0.0
   resample_each_epoch: true

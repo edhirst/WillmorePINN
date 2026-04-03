@@ -382,9 +382,9 @@ def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
                 else f'{tau1_im:.1f}i')
     tau2_str = (f'{tau2_re:.1f}+{tau2_im:.1f}i' if abs(tau2_re) > 0.02
                 else f'{tau2_im:.1f}i')
-    ax.text((x0_T1 + x1_T1) / 2, L + 0.12, f'T₁  τ₁={tau1_str}',
+    ax.text((x0_T1 + x1_T1) / 2, L + 0.12, 'T₁',
             ha='center', va='bottom', fontsize=8)
-    ax.text((x0_T2 + x1_T2) / 2, L + 0.12, f'T₂  τ₂={tau2_str}',
+    ax.text((x0_T2 + x1_T2) / 2, L + 0.12, 'T₂',
             ha='center', va='bottom', fontsize=8)
 
     # --- Axis setup ---

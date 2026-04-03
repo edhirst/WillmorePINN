@@ -44,17 +44,17 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 300 ##2000
-  batch_size: 500
+  num_epochs: 2000
+  batch_size: 1000
   learning_rate: 0.0002
   weight_decay: 0.000001
   scheduler: "cosine_warm_restarts"
   scheduler_params:
-    T_0: 500       # Initial cosine period in epochs
+    T_0: 2000       # Initial cosine period in epochs
     T_mult: 2      # Each restart multiplies the period by this factor
     eta_min: 0.000001
   gradient_clip: 1.0
-  log_frequency: 20  # Log metrics and save checkpoints every N epochs
+  log_frequency: 50  # Log metrics and save checkpoints every N epochs
 
   # Adaptive safeguards against regularity collapse and topology change.
   adaptive_training:
@@ -74,7 +74,7 @@ training:
 # Sampling Parameters
 sampling:
   num_points: 5000 
-  eval_num_points: null      # Uniform eval sample for logged W (reduces MC variance)
+  eval_num_points: 5000      # Uniform eval sample for logged W (reduces MC variance)
   print_eval: false          # If true, full eval runs every epoch; if false, only on log epochs
   noise_level: 0.0
   resample_each_epoch: true
@@ -107,7 +107,7 @@ loss:
   gluing_c1_weight: 50.0                 # C¹ matching weight relative to C⁰
   gluing_c1_delay: 50                    # Epochs before C¹ loss activates; weight then ramps linearly over 0.2·delay epochs
   gluing_c2_weight: 20.0                 # C² matching weight relative to C°
-  gluing_c2_delay: 125                   # Epochs before C² loss activates; weight then ramps linearly over 0.2·delay epochs
+  gluing_c2_delay: 150                   # Epochs before C² loss activates; weight then ramps linearly over 0.2·delay epochs
 
   # Junction circle radius penalty (genus 2 only)
   # ReLU² penalty below junction_min_radius and above junction_max_radius.

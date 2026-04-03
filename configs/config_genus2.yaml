@@ -12,7 +12,6 @@ topology:
     disk_radius: 0.65           # Parameter-space radius δ of excluded disk on each torus chart
     torus_centre_shift: 1.0      # x-shift per chart: T₁ shifts by −(torus_centre_shift+Im(τ)), T₂ by +(torus_centre_shift+Im(τ))
     disk_center_T1: [0.0, 0.0] # (u₀, v₀) centre of excluded disk on T₁; outer equatorial point of T₁ (u=v=0)
-    torus2_offset: [0.0, 0.0, 0.0]  # ℝ³ translation applied to T₂ during pretraining (deprecated; x-flip in model handles gluing alignment)
 
 # Model Architecture
 model:
@@ -45,8 +44,8 @@ model:
 
 # Training Parameters
 training:
-  num_epochs: 200 ##2000
-  batch_size: 3000
+  num_epochs: 300 ##2000
+  batch_size: 500
   learning_rate: 0.0002
   weight_decay: 0.000001
   scheduler: "cosine_warm_restarts"
@@ -68,14 +67,14 @@ training:
     willmore_spike_threshold: 0.0       # 0.0 = disabled
     willmore_ema_alpha: 0.3             # EMA decay for Willmore tracking
     max_rollbacks: 30
-    willmore_warmup_epochs: 600         # Ramps willmore_weight from willmore_warmup_start×weight to full weight over this many epochs; also suppresses rollback during this window
+    willmore_warmup_epochs: 200         # Ramps willmore_weight from willmore_warmup_start×weight to full weight over this many epochs; also suppresses rollback during this window
     willmore_warmup_start: 0.01         # Willmore weight fraction at epoch 1
     gluing_annealing: 0.5               # after willmore warmup, gluing weight ramps to this fraction of its initial value
 
 # Sampling Parameters
 sampling:
-  num_points: 5000 ##9000
-  eval_num_points: 1000 ##5000      # Uniform eval sample for logged W (reduces MC variance)
+  num_points: 5000 
+  eval_num_points: null      # Uniform eval sample for logged W (reduces MC variance)
   print_eval: false          # If true, full eval runs every epoch; if false, only on log epochs
   noise_level: 0.0
   resample_each_epoch: true

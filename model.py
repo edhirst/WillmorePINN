@@ -754,9 +754,6 @@ class Genus2MultiChartNetwork(nn.Module):
 
     Each torus has a parametric disk D_i excluded from the Willmore integral.
     ∂D₁ and ∂D₂ are identified directly by a boundary-matching loss (no bridge
-    chart).  torus2_offset keeps T₂ spatially separated during pretraining;
-    the gluing loss pulls φ₁(∂D₁) and φ₂(∂D₂) together during Willmore training.
-
     Attributes:
         disk_center_T1: (u₀, v₀) centre of the excluded disk on T₁ (parameter space)
         disk_center_T2: (u₀, v₀) centre of the excluded disk on T₂
@@ -775,7 +772,6 @@ class Genus2MultiChartNetwork(nn.Module):
         disk_center_T1: Tuple[float, float] = (0.0, 0.0),
         disk_center_T2: Tuple[float, float] = (0.0, 0.0),
         disk_radius: float = 0.3,
-        torus2_offset: Tuple[float, float, float] = (0.0, 0.0, 0.0),
         torus_centre_shift: float = 1.0,
         skip_init: bool = False,
         supervised_pretraining_config: Optional[dict] = None,
@@ -787,7 +783,6 @@ class Genus2MultiChartNetwork(nn.Module):
         self.disk_center_T1 = disk_center_T1
         self.disk_center_T2 = disk_center_T2
         self.disk_radius = disk_radius
-        self.torus2_offset = torus2_offset
         self.torus_centre_shift = torus_centre_shift
         self.topology_params = topology_params or {}
 
@@ -989,7 +984,6 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         # disk_center_T2 is always derived from τ₂ so that the excised disk
         # sits on the part of T₂ closest to T₁ for any complex τ₂.
         disk_center_T2 = _compute_disk_center_T2(tau2)
-        torus2_offset = tuple(dt_params.get('torus2_offset', [0.0, 0.0, 0.0]))
         torus_centre_shift = float(dt_params.get('torus_centre_shift', 1.0))
 
         model = Genus2MultiChartNetwork(
@@ -1002,7 +996,6 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
             disk_center_T1=disk_center_T1,
             disk_center_T2=disk_center_T2,
             disk_radius=disk_radius,
-            torus2_offset=torus2_offset,
             torus_centre_shift=torus_centre_shift,
             skip_init=skip_init,
             supervised_pretraining_config=supervised_pretraining_config,
@@ -1017,8 +1010,6 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         print(f"Two-chart model created for genus 2 (T₁ + T₂, direct gluing)")
         print(f"  τ₁ = {tau1}, τ₂ = {tau2}")
         print(f"  Disk radius δ = {disk_radius}")
-        if any(abs(x) > 1e-12 for x in torus2_offset):
-            print(f"  T₂ offset = {torus2_offset}")
         print(f"  Parameters: {model.count_parameters()} trainable")
         return model
 

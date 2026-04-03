@@ -84,3 +84,8 @@ Training creates:
 - `checkpoints/run_N/` - Model states (`best_model.pt`, `latest_model.pt`, epoch checkpoints)
 - `logs/run_N/training_history.json` - Loss curves and metrics
 - `logs/run_N/loss_curves.png` - Automatically generated after training
+
+## BibTeX Citation  
+``` 
+NotImplementedError("paper yet to be posted...")
+```

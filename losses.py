@@ -8,7 +8,7 @@ that minimizes the Willmore energy.
 Supports different topologies:
 - Genus 0 (sphere/ellipsoid): Standard Willmore minimization
 - Genus 1 (torus): Standard Willmore minimization
-- Genus 2 (double torus): Extended domain parametrization
+- Genus 2 (double torus): Two-chart architecture (T₁ + T₂) with seam gluing
 """
 
 import torch
@@ -31,7 +31,6 @@ class EmbeddingWillmoreLoss(nn.Module):
     Supports different domain types:
     - ellipsoid: [0, 2π] × [0, π] domain
     - torus: [0, 2π] × [0, 2π] domain
-    - double_torus: [0, 2π] × [0, 5π] domain
     """
     
     def __init__(self, epsilon: float = 1e-8, domain: str = "torus", genus: Optional[int] = None,
@@ -112,7 +111,6 @@ class EmbeddingWillmoreLoss(nn.Module):
         # domain_area:
         #   ellipsoid/sphere : 2π × π  = 2π²
         #   torus            : 2π × 2π = 4π²
-        #   double_torus     : 2π × 5π = 10π²
         integrand = H * H * area_element
 
         # Always compute uncapped energy for honest reporting (detached — no gradient path)
@@ -522,9 +520,6 @@ class MultiChartCombinedLoss(nn.Module):
         gluing_c1_delay: int = 0,
         gluing_c2_delay: int = 0,
         disk_radius: float = 0.3,
-        junction_radius_weight: float = 0.0,
-        junction_min_radius: float = 0.1,
-        junction_max_radius: Optional[float] = None,
         annular_regularity_weight: float = 0.0,
         annular_radius_factor: float = 2.5,
         annular_num_points: int = 128,
@@ -542,9 +537,6 @@ class MultiChartCombinedLoss(nn.Module):
         self.initial_gluing_c2_weight = gluing_c2_weight
         self.max_willmore_weight = max_willmore_weight
         self.initial_weight_sum = willmore_weight + regularity_weight
-        self.junction_radius_weight = junction_radius_weight
-        self.junction_min_radius = junction_min_radius
-        self.junction_max_radius = junction_max_radius
         self.annular_regularity_weight = annular_regularity_weight
         self.annular_radius_factor = annular_radius_factor
         self.annular_num_points = annular_num_points
@@ -693,38 +685,6 @@ class MultiChartCombinedLoss(nn.Module):
         regularity_value = regularity.detach().item()
         total = total + self.regularity_weight * regularity
 
-        # --- Junction circle radius penalty ---
-        # Penalise when the gluing circle on either torus collapses in ℝ³.
-        # The bridge being fine does not prevent the tori from shrinking their
-        # handle to a point; this loss provides the missing topological barrier.
-        junction_r1 = junction_r2 = None
-        if self.junction_radius_weight > 0:
-            n_j = 64
-            s_j = torch.linspace(0, 2 * np.pi, n_j + 1,
-                                  device=uv_T1.device, dtype=uv_T1.dtype)[:-1]
-            uv_j1 = model.disk_boundary_T1(s_j)
-            xyz_j1 = model.forward_torus1(uv_j1)
-            ctr1 = xyz_j1.mean(0, keepdim=True).detach()  # detach so gradient acts only on radius
-            junction_r1 = ((xyz_j1 - ctr1) ** 2).sum(1).sqrt().mean()
-
-            uv_j2 = model.disk_boundary_T2(s_j)
-            xyz_j2 = model.forward_torus2(uv_j2)
-            ctr2 = xyz_j2.mean(0, keepdim=True).detach()
-            junction_r2 = ((xyz_j2 - ctr2) ** 2).sum(1).sqrt().mean()
-
-            junction_penalty = (
-                torch.nn.functional.relu(self.junction_min_radius - junction_r1) ** 2
-                + torch.nn.functional.relu(self.junction_min_radius - junction_r2) ** 2
-            )
-            # Optional upper bound: prevent the junction circle from growing so
-            # large that each torus chart degenerates to a sphere-like cap.
-            if self.junction_max_radius is not None:
-                junction_penalty = junction_penalty + (
-                    torch.nn.functional.relu(junction_r1 - self.junction_max_radius) ** 2
-                    + torch.nn.functional.relu(junction_r2 - self.junction_max_radius) ** 2
-                )
-            total = total + self.junction_radius_weight * junction_penalty
-
         # --- Annular near-disk regularity ---
         # The excluded disk is absent from both the Willmore and regularity
         # integrals, so the network can freely form a thin funnel just outside
@@ -772,8 +732,6 @@ class MultiChartCombinedLoss(nn.Module):
             'willmore': willmore_value,
             'regularity': regularity_value,
             'gluing': gluing_loss_val.detach().item(),
-            'junction_r1': junction_r1.detach().item() if junction_r1 is not None else None,
-            'junction_r2': junction_r2.detach().item() if junction_r2 is not None else None,
         }
 
     def eval_willmore_batched(
@@ -819,7 +777,6 @@ class CombinedEmbeddingLoss(nn.Module):
         self,
         willmore_weight: float = 1.0,
         regularity_weight: float = 0.1,
-        target_area: Optional[float] = None,
         epsilon: float = 1e-8,
         regularity_area_element_weight: float = 1.0,
         regularity_metric_positivity_weight: float = 1.0,
@@ -839,7 +796,6 @@ class CombinedEmbeddingLoss(nn.Module):
         Args:
             willmore_weight: Weight for Willmore energy term
             regularity_weight: Weight for metric regularity preservation
-            target_area: Target surface area (None for adaptive)
             epsilon: Small constant for numerical stability
             regularity_area_element_weight: Weight for area element term within regularity loss
             regularity_metric_positivity_weight: Weight for metric positivity term within regularity loss
@@ -1032,9 +988,6 @@ def create_embedding_loss(config: dict) -> nn.Module:
             gluing_c1_delay=loss_config.get("gluing_c1_delay", 0),
             gluing_c2_delay=loss_config.get("gluing_c2_delay", 0),
             disk_radius=float(dt_params.get('disk_radius', 0.3)),
-            junction_radius_weight=loss_config.get("junction_radius_weight", 0.0),
-            junction_min_radius=loss_config.get("junction_min_radius", 0.1),
-            junction_max_radius=loss_config.get("junction_max_radius", None),
             annular_regularity_weight=loss_config.get("annular_regularity_weight", 0.0),
             annular_radius_factor=loss_config.get("annular_radius_factor", 2.5),
             annular_num_points=loss_config.get("annular_num_points", 128),
@@ -1047,7 +1000,6 @@ def create_embedding_loss(config: dict) -> nn.Module:
     return CombinedEmbeddingLoss(
         willmore_weight=loss_config.get("willmore_weight", 1.0),
         regularity_weight=loss_config.get("regularity_weight", 0.1),
-        target_area=loss_config.get("target_area", None),
         epsilon=loss_config.get("epsilon", 1e-8),
         regularity_area_element_weight=loss_config.get("regularity_area_element_weight", 1.0),
         regularity_metric_positivity_weight=loss_config.get("regularity_metric_positivity_weight", 1.0),
@@ -1064,142 +1016,3 @@ def create_embedding_loss(config: dict) -> nn.Module:
         h2_clip=loss_config.get("h2_clip", None),
     )
 
-
-# ============================================================================
-# Additional Loss Functions (Currently Disabled)
-# ============================================================================
-
-
-class AreaConstraintLoss(nn.Module):
-    """
-    Constraint to maintain appropriate surface area.
-    Prevents collapse or explosion of the surface.
-    """
-    
-    def __init__(
-        self, 
-        target_area: Optional[float] = None,
-        epsilon: float = 1e-8
-    ):
-        """
-        Args:
-            target_area: Target total surface area (None for adaptive)
-            epsilon: Small constant for numerical stability
-        """
-        super().__init__()
-        self.target_area = target_area
-        self.epsilon = epsilon
-    
-    def forward(self, model: nn.Module, uv: torch.Tensor) -> torch.Tensor:
-        """
-        Compute area constraint loss.
-        
-        Args:
-            model: EmbeddingNetwork model
-            uv: Parameter coordinates (batch_size, 2)
-        
-        Returns:
-            Area constraint loss (scalar)
-        """
-        uv = uv.requires_grad_(True)
-        
-        # Compute first fundamental form
-        E, F, G, _, _ = model.compute_first_fundamental_form(uv)
-        
-        # Compute area element
-        area_element = torch.sqrt(torch.abs(E * G - F * F) + self.epsilon)
-        
-        # Total area using proper Monte Carlo integration
-        # Integral ≈ (domain_volume / N) * sum = domain_volume * mean
-        domain_area = (2 * 3.14159265359) ** 2  # (2π)² for [0,2π] × [0,2π]
-        total_area = domain_area * torch.mean(area_element)
-        
-        if self.target_area is not None:
-            # Penalize deviation from target area
-            loss = ((total_area - self.target_area) / self.target_area) ** 2
-        else:
-            # For torus with R, r: area = 4π²Rr
-            # Starting torus (R=3, r=0.5): area ≈ 59.22
-            # Clifford torus (R=√2, r=1): area ≈ 55.55
-            # Use tight bounds to prevent collapse
-            min_area = 30.0  # Much tighter lower bound
-            max_area = 150.0  # Reasonable upper bound
-            
-            # Strong penalty for going below minimum (prevents collapse)
-            collapse_penalty = torch.nn.functional.relu(min_area - total_area) ** 2
-            # Moderate penalty for excessive area
-            explosion_penalty = torch.nn.functional.relu(total_area - max_area) ** 2
-            
-            loss = 10.0 * collapse_penalty + explosion_penalty  # Weight collapse prevention heavily
-        
-        return loss
-
-
-class SymmetryLoss(nn.Module):
-    """
-    Encourages rotational symmetry around the z-axis for the torus.
-    Penalizes deviation from axisymmetric configuration.
-    """
-    
-    def __init__(self, epsilon: float = 1e-8):
-        """
-        Args:
-            epsilon: Small constant for numerical stability
-        """
-        super().__init__()
-        self.epsilon = epsilon
-    
-    def forward(self, model: nn.Module, uv: torch.Tensor) -> torch.Tensor:
-        """
-        Compute symmetry loss.
-        
-        For a torus symmetric around z-axis:
-        1. Distance from z-axis should only depend on v (not u)
-        2. z-coordinate should only depend on v (not u)
-        
-        Args:
-            model: EmbeddingNetwork model
-            uv: Parameter coordinates (batch_size, 2)
-        
-        Returns:
-            Symmetry loss (scalar)
-        """
-        # Get embedding
-        xyz = model.forward(uv)
-        
-        # Distance from z-axis: r = sqrt(x² + y²)
-        r_xy = torch.sqrt(xyz[:, 0]**2 + xyz[:, 1]**2 + self.epsilon)
-        z = xyz[:, 2]
-        
-        # For perfect symmetry, r and z should be functions of v only
-        # Sample pairs with same v but different u
-        batch_size = uv.shape[0]
-        if batch_size >= 2:
-            # Split batch in half and create pairs
-            half = batch_size // 2
-            
-            # First half and second half
-            uv1 = uv[:half]
-            uv2 = uv[half:2*half]
-            
-            # Create pairs with same v, different u
-            uv_paired = torch.stack([
-                torch.stack([uv1[:, 0], uv2[:, 1]], dim=1),  # Different u, v from uv2
-                torch.stack([uv2[:, 0], uv2[:, 1]], dim=1),  # Different u, same v
-            ], dim=0)
-            
-            xyz_paired = torch.stack([
-                model.forward(uv_paired[0]),
-                model.forward(uv_paired[1])
-            ], dim=0)
-            
-            r_xy_paired = torch.sqrt(xyz_paired[:, :, 0]**2 + xyz_paired[:, :, 1]**2 + self.epsilon)
-            z_paired = xyz_paired[:, :, 2]
-            
-            # Points with same v should have same r and z
-            r_diff = torch.mean((r_xy_paired[0] - r_xy_paired[1]) ** 2)
-            z_diff = torch.mean((z_paired[0] - z_paired[1]) ** 2)
-            
-            return r_diff + z_diff
-        else:
-            return torch.tensor(0.0, device=uv.device)

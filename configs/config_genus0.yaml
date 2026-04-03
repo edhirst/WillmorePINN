@@ -76,7 +76,6 @@ loss:
   willmore_weight: 1.0
   max_willmore_weight: 1.0  # Equal to willmore_weight disables annealing
   regularity_weight: 10.0
-  target_area: null          # Target surface area (null = adaptive)
   epsilon: 0.000001          # Numerical stability constant
   h2_clip: null              # Huber threshold for H² (null = exact Willmore throughout)
 

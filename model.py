@@ -724,26 +724,6 @@ class EmbeddingNetwork(nn.Module):
 # ============================================================================
 
 
-def _compute_disk_center_T2(tau2: complex) -> Tuple[float, float]:
-    """Compute the T₂ disk centre in the square [0, 2π]² parameter domain.
-
-    D₂ is placed at the outer equatorial point (u=0, v=0) of T₂, which is
-    the same domain location as D₁ on T₁.  Under transform_square_to_parallelogram
-    the domain origin (0, 0) always maps to v_twisted = 0, giving
-    x = R + r cos(0) = R + r — the outermost point of the torus tube.
-    After the x-flip and +(R+r) shift applied to T₂, this point lands at x = 0.
-
-    Returns (0.0, 0.0) for all τ₂.
-
-    Args:
-        tau2: Complex modulus of T₂ (unused; retained for API compatibility).
-
-    Returns:
-        (0.0, 0.0): disk centre in the square [0, 2π]² parameter domain.
-    """
-    return (0.0, 0.0)
-
-
 class Genus2MultiChartNetwork(nn.Module):
     """
     Two-chart embedding network for genus-2 surfaces.
@@ -753,10 +733,9 @@ class Genus2MultiChartNetwork(nn.Module):
       T₂:  EmbeddingNetwork with genus=1 (doubly-periodic Fourier features)
 
     Each torus has a parametric disk D_i excluded from the Willmore integral.
-    ∂D₁ and ∂D₂ are identified directly by a boundary-matching loss (no bridge
+    ∂D₁ and ∂D₂ are identified directly by a boundary-matching loss (no bridge chart).
+
     Attributes:
-        disk_center_T1: (u₀, v₀) centre of the excluded disk on T₁ (parameter space)
-        disk_center_T2: (u₀, v₀) centre of the excluded disk on T₂
         disk_radius:    δ  (parameter-space radius of each excluded disk)
     """
 
@@ -769,8 +748,6 @@ class Genus2MultiChartNetwork(nn.Module):
         initialization: str = "xavier_uniform",
         tau1: complex = 1j,
         tau2: complex = 1j,
-        disk_center_T1: Tuple[float, float] = (0.0, 0.0),
-        disk_center_T2: Tuple[float, float] = (0.0, 0.0),
         disk_radius: float = 0.3,
         torus_centre_shift: float = 1.0,
         skip_init: bool = False,
@@ -780,8 +757,8 @@ class Genus2MultiChartNetwork(nn.Module):
         super().__init__()
         self.tau1 = tau1
         self.tau2 = tau2
-        self.disk_center_T1 = disk_center_T1
-        self.disk_center_T2 = disk_center_T2
+        self.disk_center_T1 = (0.0, 0.0)
+        self.disk_center_T2 = (0.0, 0.0)
         self.disk_radius = disk_radius
         self.torus_centre_shift = torus_centre_shift
         self.topology_params = topology_params or {}
@@ -930,11 +907,6 @@ class Genus2MultiChartNetwork(nn.Module):
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-    @property
-    def domain(self):
-        """Compatibility property — the multi-chart network has no single domain."""
-        return "genus2_multichart"
-
 
 def create_embedding_model(config: dict, device: torch.device, skip_init: bool = False) -> nn.Module:
     """
@@ -980,10 +952,6 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         tau1 = _parse_tau(dt_params.get('tau1', '1j'))
         tau2 = _parse_tau(dt_params.get('tau2', '1j'))
         disk_radius = float(dt_params.get('disk_radius', 0.3))
-        disk_center_T1 = tuple(dt_params.get('disk_center_T1', [0.0, 0.0]))
-        # disk_center_T2 is always derived from τ₂ so that the excised disk
-        # sits on the part of T₂ closest to T₁ for any complex τ₂.
-        disk_center_T2 = _compute_disk_center_T2(tau2)
         torus_centre_shift = float(dt_params.get('torus_centre_shift', 1.0))
 
         model = Genus2MultiChartNetwork(
@@ -993,8 +961,6 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
             num_frequencies=model_config.get("num_frequencies", 6),
             initialization=model_config.get("initialization", "xavier_uniform"),
             tau1=tau1, tau2=tau2,
-            disk_center_T1=disk_center_T1,
-            disk_center_T2=disk_center_T2,
             disk_radius=disk_radius,
             torus_centre_shift=torus_centre_shift,
             skip_init=skip_init,

@@ -252,8 +252,7 @@ def _train_epoch_genus2(
     b_T1 = max(1, n_T1 // num_batches)
     b_T2 = max(1, n_T2 // num_batches)
 
-    epoch_losses = {'total': 0.0, 'willmore': 0.0, 'regularity': 0.0, 'gluing': 0.0,
-                    'junction_r1': 0.0, 'junction_r2': 0.0}
+    epoch_losses = {'total': 0.0, 'willmore': 0.0, 'regularity': 0.0, 'gluing': 0.0}
 
     for batch_idx in range(num_batches):
         s1, e1 = batch_idx * b_T1, min((batch_idx + 1) * b_T1, n_T1)
@@ -506,8 +505,6 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
         'willmore_energy': [],
         'regularity': [],
         'gluing': [],          # gluing loss (genus 2 only; 0.0 for genus 0/1)
-        'junction_r1': [],     # ℝ³ radius of T₁ gluing circle (genus 2 only)
-        'junction_r2': [],     # ℝ³ radius of T₂ gluing circle (genus 2 only)
         'learning_rate': [],
         'genus': genus
     }
@@ -713,8 +710,6 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
         history['willmore_energy'].append(eval_willmore)
         history['regularity'].append(epoch_losses['regularity'])
         history['gluing'].append(epoch_losses.get('gluing', 0.0))
-        history['junction_r1'].append(epoch_losses.get('junction_r1', 0.0))
-        history['junction_r2'].append(epoch_losses.get('junction_r2', 0.0))
         history['learning_rate'].append(current_lr)
 
         # Best-model check: only update on epochs where a proper eval was run.
@@ -741,8 +736,6 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
             print(f"  Regularity: {epoch_losses['regularity']:.6f}")
             if genus == 2:
                 print(f"  Gluing loss: {epoch_losses.get('gluing', 0.0):.6f}")
-                if epoch_losses.get('junction_r1', 0.0) > 0 or epoch_losses.get('junction_r2', 0.0) > 0:
-                    print(f"  Junction radii: r1={epoch_losses.get('junction_r1', 0.0):.4f}  r2={epoch_losses.get('junction_r2', 0.0):.4f}")
 
             # Gradient-norm balance diagnostic (GradNorm-inspired, Chen et al. 2018).
             # Only for genus 0/1 (single-chart); genus 2 uses multi-chart loss.

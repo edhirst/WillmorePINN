@@ -10,8 +10,7 @@ topology:
     tau1: "0.7j"                # Complex modulus for T₁; Im(τ) controls tube thickness, Re(τ) controls shear
     tau2: "0.7j"                # Complex modulus for T₂; Im(τ) controls tube thickness, Re(τ) controls shear
     disk_radius: 0.65           # Parameter-space radius δ of excluded disk on each torus chart
-    torus_centre_shift: 1.0      # x-shift per chart: T₁ shifts by −(torus_centre_shift+Im(τ)), T₂ by +(torus_centre_shift+Im(τ))
-    disk_center_T1: [0.0, 0.0] # (u₀, v₀) centre of excluded disk on T₁; outer equatorial point of T₁ (u=v=0)
+    torus_centre_shift: 1.0     # x-shift per chart: T₁ shifts by −(torus_centre_shift+Im(τ)), T₂ by +(torus_centre_shift+Im(τ))
 
 # Model Architecture
 model:
@@ -84,7 +83,6 @@ loss:
   willmore_weight: 1.0
   max_willmore_weight: 1.0   # Equal to willmore_weight disables annealing
   regularity_weight: 10.0
-  target_area: null          # Target surface area (null = adaptive)
   epsilon: 0.000001          # Numerical stability constant
   h2_clip: 50.0              # Huber threshold for H²: exact Willmore below, linear gradient above
 
@@ -108,12 +106,6 @@ loss:
   gluing_c1_delay: 50                    # Epochs before C¹ loss activates; weight then ramps linearly over 0.2·delay epochs
   gluing_c2_weight: 20.0                 # C² matching weight relative to C°
   gluing_c2_delay: 150                   # Epochs before C² loss activates; weight then ramps linearly over 0.2·delay epochs
-
-  # Junction circle radius penalty (genus 2 only)
-  # ReLU² penalty below junction_min_radius and above junction_max_radius.
-  junction_radius_weight: 15.0
-  junction_min_radius: 0.0   # ℝ³ radius floor for the gluing circle
-  junction_max_radius: 100.0   # ℝ³ radius ceiling for the gluing circle
 
   # Annular near-disk regularity (genus 2 only)
   # Applies regularity loss in the transition zone δ ≤ r_param ≤ annular_radius_factor·δ.

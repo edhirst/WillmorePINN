@@ -28,7 +28,7 @@ python visualisation/visualise_supervised.py --genus 1
 
 ## Core Concept
 
-The network learns **residual corrections** to reference surfaces, minimizing:
+The network learns a surface embedding φ:(u,v)→(x,y,z), minimizing:
 
 $$W = \int\int H^2 \sqrt{EG - F^2} \, du \, dv$$
 
@@ -37,26 +37,17 @@ where H is mean curvature computed via automatic differentiation of the embeddin
 ## Usage
 
 ```bash
-# Basic training (defaults to configs/config_genus2.yaml)
-python run.py
-
-# Train with a specific config
-python run.py --config configs/config_genus1.yaml
-
 # Resume from a checkpoint
 python run.py --config configs/config_genus1.yaml --resume checkpoints/run_1/latest_model.pt
 
-# Visualize training evolution
+# Visualize with both surface and loss plots
 python visualisation/visualise.py --mode both
 
 # Visualize analytical surfaces (genus 0, 1, or 2)
 python visualisation/visualise_analytic.py --genus 1
 
-# Train and visualize supervised pretraining
+# Supervised pretraining visualization
 python visualisation/visualise_supervised.py --genus 1 --points 20000
-
-# Analysis
-python utils.py --checkpoint checkpoints/run_1/best_model.pt
 ```
 
 Config files are in `configs/`. The `--config` flag accepts any path; it defaults to `configs/config_genus2.yaml`.
@@ -67,7 +58,7 @@ Config files are in `configs/`. The `--config` flag accepts any path; it default
 - **`losses.py`** - Willmore energy ∫∫H²dA computed via autodiff of fundamental forms
 - **`sampling.py`** - Parameter space sampling for torus, sphere, double torus, etc.
 - **`run.py`** - Training loop with checkpointing
-- **`utils.py`** - Model analysis, curvature statistics, and utility functions
+- **`utils.py`** - Visualization utilities and run management
 - **`visualisation/`** - Visualization scripts:
   - `visualise.py` - Training evolution visualization
   - `visualise_analytic.py` - Analytical reference surface visualization
@@ -82,14 +73,14 @@ where H = (EN-2FM+GL)/(2(EG-F²)) is mean curvature, computed from:
 - Second fundamental form: L = ⟨φ_uu,n⟩, M = ⟨φ_uv,n⟩, N = ⟨φ_vv,n⟩
 - Unit normal: n = (φ_u × φ_v) / |φ_u × φ_v|
 
-**Key Results**:
-- Clifford torus (R=r=√2): W = 2π² ≈ 19.74 (optimal)
-- Standard torus (R=2, r=1): W ≈ 49.35
-- This package achieves W ≈ 21 (7% above optimal) via gradient descent
+**Known minima**:
+- Genus 0: round sphere, W = 4π ≈ 12.566
+- Genus 1: Clifford torus, W = 2π² ≈ 19.74
+- Genus 2: Lawson surface ξ_{2,1} (conjectured), W = 4π² ≈ 39.48
 
 ## Output
 
 Training creates:
-- `logs/checkpoints/` - Model states (best_model.pt, latest_model.pt, epoch checkpoints)
-- `logs/training_history.json` - Loss curves and metrics
-- `logs/*.png` - Visualisations (when running visualise.py)
+- `checkpoints/run_N/` - Model states (`best_model.pt`, `latest_model.pt`, epoch checkpoints)
+- `logs/run_N/training_history.json` - Loss curves and metrics
+- `logs/run_N/loss_curves.png` - Automatically generated after training

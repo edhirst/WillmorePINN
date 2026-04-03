@@ -133,8 +133,7 @@ def sample_parameters(
     """
     Sample points in parameter space for the specified domain/topology.
 
-    For genus 2 (multi-chart), use the per-chart samplers directly
-    (sample_torus_excluding_disk, sample_bridge_domain) instead.
+    For genus 2 (multi-chart), use sample_torus_excluding_disk directly.
     
     Args:
         num_points: Number of points to sample
@@ -153,22 +152,7 @@ def sample_parameters(
     domain_lower = domain.lower()
     
     if domain_lower == "torus":
-        # Get tau_imag from config if available, else default to 1.0
-        tau_imag = 1.0
-        import inspect
-        frame = inspect.currentframe()
-        tau = None
-        # Try to get tau from the calling context if possible
-        if 'tau' in frame.f_back.f_locals:
-            tau = frame.f_back.f_locals['tau']
-        elif 'tau' in frame.f_back.f_globals:
-            tau = frame.f_back.f_globals['tau']
-        if tau is not None:
-            try:
-                tau_imag = abs(complex(tau).imag)
-            except Exception:
-                tau_imag = 1.0
-        return sample_rectangular_domain(num_points, (0, 2*np.pi), (0, 2*np.pi * tau_imag), device, dtype)
+        return sample_rectangular_domain(num_points, (0, 2*np.pi), (0, 2*np.pi), device, dtype)
     elif domain_lower in ["sphere", "ellipsoid"]:
         return sample_ellipsoid_parameters(num_points, device, dtype)
     elif domain_lower == "double_torus":

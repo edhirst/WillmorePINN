@@ -166,7 +166,6 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
     tau1 = complex(str(dt_params['tau1']).replace('i', 'j'))
     tau2 = complex(str(dt_params['tau2']).replace('i', 'j'))
     disk_radius = float(dt_params['disk_radius'])
-    annular_width_factor = float(dt_params.get('annular_width_factor', 2.0))
     disk_center_T1 = tuple(float(x) for x in dt_params.get('disk_center_T1', [0.0, 0.0]))
     label = f'τ₁={dt_params["tau1"]}, τ₂={dt_params["tau2"]}, δ={disk_radius}'
 
@@ -191,11 +190,11 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
         uv_both  = torch.cat([uv_t1,  uv_t2],  dim=0)
 
     colors_both = make_genus2_colors(uv_t1, uv_t2, disk_center_T1=c_T1, disk_center_T2=c_T2,
-                                      collar_radius=disk_radius * annular_width_factor)
+                                      collar_radius=disk_radius * 2.0)
     colors_t1   = make_genus2_colors(uv_t1, torch.zeros(0, 2), disk_center_T1=c_T1, disk_center_T2=c_T2,
-                                      collar_radius=disk_radius * annular_width_factor)
+                                      collar_radius=disk_radius * 2.0)
     colors_t2   = make_genus2_colors(torch.zeros(0, 2), uv_t2,  disk_center_T1=c_T1, disk_center_T2=c_T2,
-                                      collar_radius=disk_radius * annular_width_factor)
+                                      collar_radius=disk_radius * 2.0)
 
     all_xyz = xyz_both.cpu().numpy()
     global_range = np.array([
@@ -212,7 +211,6 @@ def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_p
         ax_domain, genus=2, tau1=tau1, tau2=tau2,
         neck_radius=disk_radius,
         disk_center_T1=disk_center_T1,
-        annular_width_factor=annular_width_factor,
     )
 
     # Panel 2: T₁ alone

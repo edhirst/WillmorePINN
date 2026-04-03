@@ -233,10 +233,6 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
     with open(config_path, 'r') as f:
         base_config = yaml.safe_load(f)
 
-    annular_width_factor = float(
-        base_config.get('topology', {}).get('double_torus', {}).get('annular_width_factor', 2.0)
-    )
-
     dt_configs = [
         # disk_center_T2 is always auto-computed from τ₂ via _compute_disk_center_T2
         {'tau1': '0.7j', 'tau2': '0.7j',
@@ -292,7 +288,6 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         ax_domain, genus=2, tau1=tau1, tau2=tau2,
         neck_radius=first_cfg['disk_radius'],
         disk_center_T1=tuple(first_cfg['disk_center_T1']),
-        annular_width_factor=annular_width_factor,
     )
 
     genus_names = {0: "sphere/ellipsoid", 1: "torus", 2: "double torus"}
@@ -329,7 +324,7 @@ def visualise_supervised_genus2(output_dir: str, num_points: int, config_path: s
         if genus == 2:
             colors = make_genus2_colors(uv_t1, uv_t2,
                                         disk_center_T1=c_T1, disk_center_T2=c_T2,
-                                        collar_radius=delta * annular_width_factor)
+                                        collar_radius=delta * 2.0)
             plot_surface_3d(ax, xyz, uv, label, genus=genus, global_range=_global_range,
                             color_values=colors)
         else:

@@ -776,7 +776,7 @@ class Genus2MultiChartNetwork(nn.Module):
         disk_center_T2: Tuple[float, float] = (0.0, 0.0),
         disk_radius: float = 0.3,
         torus2_offset: Tuple[float, float, float] = (0.0, 0.0, 0.0),
-        torus_major_radius: float = 1.0,
+        torus_centre_shift: float = 1.0,
         skip_init: bool = False,
         supervised_pretraining_config: Optional[dict] = None,
         topology_params: Optional[Dict] = None,
@@ -788,7 +788,7 @@ class Genus2MultiChartNetwork(nn.Module):
         self.disk_center_T2 = disk_center_T2
         self.disk_radius = disk_radius
         self.torus2_offset = torus2_offset
-        self.torus_major_radius = torus_major_radius
+        self.torus_centre_shift = torus_centre_shift
         self.topology_params = topology_params or {}
 
         pretrain_cfg = supervised_pretraining_config or {}
@@ -839,7 +839,7 @@ class Genus2MultiChartNetwork(nn.Module):
         # Applied to the last nn.Linear (output layer) only.
         if not skip_init:
             with torch.no_grad():
-                R = torus_major_radius
+                R = torus_centre_shift
                 r1 = abs(tau1.imag)
                 r2 = abs(tau2.imag)
                 # T₁: shift x by −(R+r)
@@ -903,7 +903,7 @@ class Genus2MultiChartNetwork(nn.Module):
         x ∈ [−2(R+r), 0] with its outer equator touching x = 0 at u=0, v=0.
         """
         ref = self.torus1._get_reference_embedding(uv)
-        R, r = self.torus_major_radius, abs(self.tau1.imag)
+        R, r = self.torus_centre_shift, abs(self.tau1.imag)
         return torch.stack([ref[:, 0] - (R + r), ref[:, 1], ref[:, 2]], dim=1)
 
     def reference_torus2(self, uv: torch.Tensor) -> torch.Tensor:
@@ -914,7 +914,7 @@ class Genus2MultiChartNetwork(nn.Module):
         of T₁ and T₂ share the same ℝ³ circle at x = 0.
         """
         ref = self.torus2._get_reference_embedding(uv)
-        R, r = self.torus_major_radius, abs(self.tau2.imag)
+        R, r = self.torus_centre_shift, abs(self.tau2.imag)
         return torch.stack([(R + r) - ref[:, 0], ref[:, 1], ref[:, 2]], dim=1)
 
     # ---- supervised pretraining --------------------------------------------
@@ -990,7 +990,7 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
         # sits on the part of T₂ closest to T₁ for any complex τ₂.
         disk_center_T2 = _compute_disk_center_T2(tau2)
         torus2_offset = tuple(dt_params.get('torus2_offset', [0.0, 0.0, 0.0]))
-        torus_major_radius = float(dt_params.get('torus_major_radius', 1.0))
+        torus_centre_shift = float(dt_params.get('torus_centre_shift', 1.0))
 
         model = Genus2MultiChartNetwork(
             hidden_dims=model_config.get("hidden_dims", [128, 256, 512, 256, 128]),
@@ -1003,7 +1003,7 @@ def create_embedding_model(config: dict, device: torch.device, skip_init: bool =
             disk_center_T2=disk_center_T2,
             disk_radius=disk_radius,
             torus2_offset=torus2_offset,
-            torus_major_radius=torus_major_radius,
+            torus_centre_shift=torus_centre_shift,
             skip_init=skip_init,
             supervised_pretraining_config=supervised_pretraining_config,
             topology_params=topology_config,

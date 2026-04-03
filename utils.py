@@ -198,8 +198,7 @@ def make_genus2_colors(
 def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=1j,
                                      neck_radius=0.3,
                                      disk_center_T1=(0.0, 0.0),
-                                     disk_center_T2=None,
-                                     annular_width_factor=2.0):
+                                     disk_center_T2=None):
     """Plot the fundamental domain with the periodic coloring.
 
     For genus 2, draws the two parameter-space charts (T₁, T₂) with
@@ -220,7 +219,6 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=
         _plot_connected_sum_domain(
             ax, tau1=tau1, tau2=tau2, neck_radius=neck_radius,
             disk_center_T1=disk_center_T1, disk_center_T2=disk_center_T2,
-            annular_width_factor=annular_width_factor,
             num_points=num_points,
         )
         return
@@ -277,7 +275,6 @@ def plot_fundamental_domain_coloring(ax, genus=1, num_points=100, tau1=1j, tau2=
 def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
                                 disk_center_T1=(0.0, 0.0),
                                 disk_center_T2=(np.pi, 0.0),
-                                annular_width_factor=2.0,
                                 num_points=80):
     """
     Two-chart parameter domain for the genus-2 multi-chart architecture.
@@ -360,7 +357,7 @@ def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
         (x0_T1 + u0_T1,     v0_T1 + L),
         (x0_T1 + u0_T1 + L, v0_T1 + L),
     ]:
-        c_ann = Circle((cx, cy), radius=delta * annular_width_factor,
+        c_ann = Circle((cx, cy), radius=delta * 2.0,
                        fc='black', ec='none', zorder=11)
         ax.add_patch(c_ann)
         c_ann.set_clip_path(T1_clip)
@@ -372,7 +369,7 @@ def _plot_connected_sum_domain(ax, tau1=1j, tau2=1j, neck_radius=0.3,
         (x0_T2 + u0_T2, v0_T2),
         (x0_T2 + u0_T2, v0_T2 + L),
     ]:
-        c_ann = Circle((cx, cy), radius=delta * annular_width_factor,
+        c_ann = Circle((cx, cy), radius=delta * 2.0,
                        fc='black', ec='none', zorder=11)
         ax.add_patch(c_ann)
         c_ann.set_clip_path(T2_clip)

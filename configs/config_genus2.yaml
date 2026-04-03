@@ -10,8 +10,7 @@ topology:
     tau1: "0.7j"                # Complex modulus for T₁; Im(τ) controls tube thickness, Re(τ) controls shear
     tau2: "0.7j"                # Complex modulus for T₂; Im(τ) controls tube thickness, Re(τ) controls shear
     disk_radius: 0.65           # Parameter-space radius δ of excluded disk on each torus chart
-    torus_major_radius: 1.0     # R: major torus radius; x-separation per torus = R + Im(τ)
-    annular_width_factor: 2.0   # Collar outer radius = annular_width_factor · δ (for visualisation and loss sampling)
+    torus_centre_shift: 1.0      # x-shift per chart: T₁ shifts by −(torus_centre_shift+Im(τ)), T₂ by +(torus_centre_shift+Im(τ))
     disk_center_T1: [0.0, 0.0] # (u₀, v₀) centre of excluded disk on T₁; outer equatorial point of T₁ (u=v=0)
     torus2_offset: [0.0, 0.0, 0.0]  # ℝ³ translation applied to T₂ during pretraining (deprecated; x-flip in model handles gluing alignment)
 
@@ -28,7 +27,7 @@ model:
   use_residual: false                     # Learn corrections to reference embedding rather than full embedding
   residual_scale: 0.5                     # Scale factor for residual corrections
 
-  # Coarse-to-fine Fourier frequency curriculum (Mildenhall et al. 2020):
+  # Coarse-to-fine Fourier frequency curriculum:
   # progressively activates higher bands so the network learns global shape before fine detail.
   freq_curriculum:
     warmup_epochs: 0   # Epochs over which to ramp from start_freqs to all frequencies; 0 = disabled

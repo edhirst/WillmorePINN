@@ -11,8 +11,6 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-import yaml
-
 from sampling import get_reference_embedding, sample_parameters, get_domain_for_genus, sample_torus_excluding_disk
 from utils import get_next_run_number, plot_fundamental_domain_coloring, hsv_to_rgb_colors, plot_surface_3d, make_genus2_colors
 
@@ -141,92 +139,92 @@ def visualise_analytic_genus1(output_dir: str, num_points: int = 10000, config_p
 
 
 def visualise_analytic_genus2(output_dir: str, num_points: int = 15000, config_path: str = None):
-    """Visualize the genus-2 reference embedding used during training.
+    """Visualize genus-2 reference embeddings for a range of τ / δ configurations.
 
-    Four panels: parameter-space domain coloring, T₁ alone, T₂ alone, and
-    both tori combined.  Parameters are read from config_path if provided,
-    otherwise the defaults from config_genus2.yaml are used.
+    One panel per configuration (plus a domain-coloring panel), each showing
+    the combined T₁ ∪ T₂ reference surface.
     """
     from model import create_embedding_model
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float32
 
-    # Load config
-    dt_params = {
-        'tau1': '0.7j', 'tau2': '0.7j',
-        'disk_radius': 0.65,
-        'disk_center_T1': [0.0, 0.0],
-    }
-    if config_path and os.path.exists(config_path):
-        with open(config_path) as f:
-            cfg_file = yaml.safe_load(f)
-        dt_params.update(cfg_file.get('topology', {}).get('double_torus', {}))
+    dt_configs = [
+        {'tau1': '0.7j', 'tau2': '0.7j',
+         'disk_radius': 0.65,
+         'disk_center_T1': [0.0, 0.0],
+         'label': 'τ₁=τ₂=0.7i (training config)'},
+        {'tau1': '1j', 'tau2': '1j',
+         'disk_radius': 0.65,
+         'disk_center_T1': [0.0, 0.0],
+         'label': 'τ₁=τ₂=i (symmetric)'},
+        {'tau1': '0.5j', 'tau2': '0.7j',
+         'disk_radius': 0.65,
+         'disk_center_T1': [0.0, 0.0],
+         'label': 'τ₁=0.5i, τ₂=0.7i (asymmetric)'},
+        {'tau1': '1.0+0.5j', 'tau2': '-1.0+0.5j',
+         'disk_radius': 0.5,
+         'disk_center_T1': [0.0, 0.0],
+         'label': 'τ₁=0.2+0.2i, τ₂=−0.2+0.2i (twisted)'},
+        {'tau1': '0.85j', 'tau2': '0.85j',
+         'disk_radius': 0.3,
+         'disk_center_T1': [0.0, 0.0],
+         'label': 'disk_radius=0.3 (narrow neck)'},
+    ]
 
-    tau1 = complex(str(dt_params['tau1']).replace('i', 'j'))
-    tau2 = complex(str(dt_params['tau2']).replace('i', 'j'))
-    disk_radius = float(dt_params['disk_radius'])
-    disk_center_T1 = tuple(float(x) for x in dt_params.get('disk_center_T1', [0.0, 0.0]))
-    label = f'τ₁={dt_params["tau1"]}, τ₂={dt_params["tau2"]}, δ={disk_radius}'
+    n_models = len(dt_configs)
+    n_plots = n_models + 1
+    n_rows = int(np.ceil(n_plots / 2))
+    fig = plt.figure(figsize=(12, 5 * n_rows))
 
-    config = {'topology': {'genus': 2, 'double_torus': dt_params}, 'model': {}}
-    model = create_embedding_model(config, device, skip_init=True)
-    c_T1 = model.disk_center_T1
-    c_T2 = model.disk_center_T2
-    print(f"Genus-2 reference embedding: tau1={tau1}, tau2={tau2}, δ={disk_radius}")
-    print(f"  disk_center_T1={c_T1}, disk_center_T2={c_T2}")
-    print(f"  Parameters: {sum(p.numel() for p in model.parameters())} trainable")
-
-    n_t1 = num_points // 2
-    n_t2 = num_points - n_t1
-    with torch.no_grad():
-        uv_t1 = sample_torus_excluding_disk(n_t1, disk_center=c_T1, disk_radius=disk_radius,
-                                            device=device, dtype=dtype)
-        uv_t2 = sample_torus_excluding_disk(n_t2, disk_center=c_T2, disk_radius=disk_radius,
-                                            device=device, dtype=dtype)
-        xyz_t1 = model.reference_torus1(uv_t1)
-        xyz_t2 = model.reference_torus2(uv_t2)
-        xyz_both = torch.cat([xyz_t1, xyz_t2], dim=0)
-        uv_both  = torch.cat([uv_t1,  uv_t2],  dim=0)
-
-    colors_both = make_genus2_colors(uv_t1, uv_t2, disk_center_T1=c_T1, disk_center_T2=c_T2,
-                                      collar_radius=disk_radius * 2.0)
-    colors_t1   = make_genus2_colors(uv_t1, torch.zeros(0, 2), disk_center_T1=c_T1, disk_center_T2=c_T2,
-                                      collar_radius=disk_radius * 2.0)
-    colors_t2   = make_genus2_colors(torch.zeros(0, 2), uv_t2,  disk_center_T1=c_T1, disk_center_T2=c_T2,
-                                      collar_radius=disk_radius * 2.0)
-
-    all_xyz = xyz_both.cpu().numpy()
-    global_range = np.array([
-        all_xyz[:, 0].max() - all_xyz[:, 0].min(),
-        all_xyz[:, 1].max() - all_xyz[:, 1].min(),
-        all_xyz[:, 2].max() - all_xyz[:, 2].min(),
-    ]).max() / 2.0
-
-    fig = plt.figure(figsize=(12, 10))
-
-    # Panel 1: parameter-space domain coloring
-    ax_domain = fig.add_subplot(2, 2, 1)
+    first_cfg = dt_configs[0]
+    ax_domain = fig.add_subplot(n_rows, 2, 1)
     plot_fundamental_domain_coloring(
-        ax_domain, genus=2, tau1=tau1, tau2=tau2,
-        neck_radius=disk_radius,
-        disk_center_T1=disk_center_T1,
+        ax_domain, genus=2,
+        tau1=complex(first_cfg['tau1'].replace('i', 'j')),
+        tau2=complex(first_cfg['tau2'].replace('i', 'j')),
+        neck_radius=first_cfg['disk_radius'],
+        disk_center_T1=tuple(first_cfg['disk_center_T1']),
     )
 
-    # Panel 2: T₁ alone
-    ax1 = fig.add_subplot(2, 2, 2, projection='3d')
-    plot_surface_3d(ax1, xyz_t1, uv_t1, f'T₁  ({label})', genus=2,
-                    global_range=global_range, color_values=colors_t1)
+    # First pass: collect xyz for all configurations
+    _surfaces = []
+    for idx, cfg in enumerate(dt_configs):
+        label = cfg['label']
+        dt_params = {k: v for k, v in cfg.items() if k != 'label'}
+        disk_radius = float(dt_params['disk_radius'])
+        config = {'topology': {'genus': 2, 'double_torus': dt_params}, 'model': {}}
+        model = create_embedding_model(config, device, skip_init=True)
+        c_T1 = model.disk_center_T1
+        c_T2 = model.disk_center_T2
+        print(f"Visualizing analytic surface {idx+1}: {label}")
+        print(f"  disk_center_T1={c_T1}, disk_center_T2={c_T2}")
+        n_t1 = num_points // 2
+        n_t2 = num_points - n_t1
+        with torch.no_grad():
+            uv_t1 = sample_torus_excluding_disk(n_t1, disk_center=c_T1, disk_radius=disk_radius,
+                                                device=device, dtype=dtype)
+            uv_t2 = sample_torus_excluding_disk(n_t2, disk_center=c_T2, disk_radius=disk_radius,
+                                                device=device, dtype=dtype)
+            xyz_t1 = model.reference_torus1(uv_t1)
+            xyz_t2 = model.reference_torus2(uv_t2)
+        xyz_both = torch.cat([xyz_t1, xyz_t2], dim=0)
+        uv_both  = torch.cat([uv_t1,  uv_t2],  dim=0)
+        colors = make_genus2_colors(uv_t1, uv_t2, disk_center_T1=c_T1, disk_center_T2=c_T2,
+                                    collar_radius=disk_radius * 2.0)
+        _surfaces.append((label, uv_both, xyz_both, colors))
 
-    # Panel 3: T₂ alone
-    ax2 = fig.add_subplot(2, 2, 3, projection='3d')
-    plot_surface_3d(ax2, xyz_t2, uv_t2, f'T₂  ({label})', genus=2,
-                    global_range=global_range, color_values=colors_t2)
+    _all_xyz = np.concatenate([s[2].cpu().numpy() for s in _surfaces])
+    _global_range = np.array([
+        _all_xyz[:, 0].max() - _all_xyz[:, 0].min(),
+        _all_xyz[:, 1].max() - _all_xyz[:, 1].min(),
+        _all_xyz[:, 2].max() - _all_xyz[:, 2].min(),
+    ]).max() / 2.0
 
-    # Panel 4: both tori combined
-    ax3 = fig.add_subplot(2, 2, 4, projection='3d')
-    plot_surface_3d(ax3, xyz_both, uv_both, f'T₁ ∪ T₂  ({label})', genus=2,
-                    global_range=global_range, color_values=colors_both)
+    for idx, (label, uv_both, xyz_both, colors) in enumerate(_surfaces):
+        ax = fig.add_subplot(n_rows, 2, idx + 2, projection='3d')
+        plot_surface_3d(ax, xyz_both, uv_both, label, genus=2,
+                        global_range=_global_range, color_values=colors)
 
     plt.tight_layout()
     output_path = os.path.join(output_dir, 'analytic_genus2.png')

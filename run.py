@@ -717,8 +717,17 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
         history['junction_r2'].append(epoch_losses.get('junction_r2', 0.0))
         history['learning_rate'].append(current_lr)
 
-        # Best-model check: only update on epochs where a proper eval was run
+        # Best-model check: only update on epochs where a proper eval was run.
+        # For genus 2, also require all C⁰/C¹/C² gluing weights to be fully active
+        # (i.e. both C¹ and C² have finished ramping) to avoid saving a best model
+        # that was evaluated under incomplete gluing constraints.
         is_best = should_eval and (eval_willmore < best_willmore)
+        if genus == 2:
+            all_gluing_on = (
+                loss_fn.gluing_loss.c1_weight >= loss_fn.initial_gluing_c1_weight
+                and loss_fn.gluing_loss.c2_weight >= loss_fn.initial_gluing_c2_weight
+            )
+            is_best = is_best and all_gluing_on
         if is_best:
             best_willmore = eval_willmore
         

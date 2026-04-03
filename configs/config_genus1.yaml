@@ -62,7 +62,7 @@ training:
     willmore_spike_threshold: 0.0       # 0.0 = disabled
     willmore_ema_alpha: 0.3             # EMA decay for Willmore tracking
     max_rollbacks: 5
-    willmore_warmup_epochs: 0           # Epochs before rollback can fire
+    willmore_warmup_epochs: 0           # Ramps willmore_weight from willmore_warmup_start×weight to full weight over this many epochs; also suppresses rollback during this window
     willmore_warmup_start: 1.0          # Willmore weight fraction at epoch 1
 
 # Sampling Parameters

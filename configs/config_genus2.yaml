@@ -63,13 +63,13 @@ training:
     enabled: true
     regularity_threshold: 0.1           # Regularity/Willmore ratio above which to boost regularity weight
     regularity_boost_factor: 3.0
-    checkpoint_rollback: true
+    checkpoint_rollback: false
     severe_degradation_threshold: 4.0   # Rollback if regularity increases by this factor
     regularity_abs_threshold: 0.000001  # Minimum absolute regularity before rollback can fire
     willmore_spike_threshold: 0.0       # 0.0 = disabled
     willmore_ema_alpha: 0.3             # EMA decay for Willmore tracking
     max_rollbacks: 30
-    willmore_warmup_epochs: 200         # Epochs before topology-collapse rollback can fire
+    willmore_warmup_epochs: 600         # Ramps willmore_weight from willmore_warmup_start×weight to full weight over this many epochs; also suppresses rollback during this window
     willmore_warmup_start: 0.01         # Willmore weight fraction at epoch 1
     gluing_annealing: 0.5               # after willmore warmup, gluing weight ramps to this fraction of its initial value
 
@@ -107,15 +107,15 @@ loss:
   gluing_num_points: 256                 # (r, θ) samples in the collar per step
   gluing_collar_width: 0.5               # collar half-width as fraction of δ: r ∈ [δ(1−w), δ(1+w)]
   gluing_c1_weight: 50.0                 # C¹ matching weight relative to C⁰
-  gluing_c1_delay: 40                     # Epochs before C¹ loss activates; weight then ramps linearly over 0.2·delay epochs
-  gluing_c2_weight: 25.0                 # C² matching weight relative to C°
-  gluing_c2_delay: 100                   # Epochs before C² loss activates; weight then ramps linearly over 0.2·delay epochs
+  gluing_c1_delay: 50                    # Epochs before C¹ loss activates; weight then ramps linearly over 0.2·delay epochs
+  gluing_c2_weight: 20.0                 # C² matching weight relative to C°
+  gluing_c2_delay: 125                   # Epochs before C² loss activates; weight then ramps linearly over 0.2·delay epochs
 
   # Junction circle radius penalty (genus 2 only)
   # ReLU² penalty below junction_min_radius and above junction_max_radius.
   junction_radius_weight: 15.0
-  junction_min_radius: 0.6   # ℝ³ radius floor for the gluing circle
-  junction_max_radius: 1.1   # ℝ³ radius ceiling for the gluing circle
+  junction_min_radius: 0.0   # ℝ³ radius floor for the gluing circle
+  junction_max_radius: 100.0   # ℝ³ radius ceiling for the gluing circle
 
   # Annular near-disk regularity (genus 2 only)
   # Applies regularity loss in the transition zone δ ≤ r_param ≤ annular_radius_factor·δ.

@@ -1,5 +1,5 @@
 # Willmore energy minimisation — Genus 2 (double torus)
-# Conjectured minimum: W = 4π² ≈ 39.48 (Lawson's ξ_{2,1})
+# Conjectured minimum: W ≈ 21.89 (Lawson's ξ_{2,1})
 
 topology:
   genus: 2  # 0 = sphere/ellipsoid, 1 = torus, 2 = double torus

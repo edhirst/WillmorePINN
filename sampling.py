@@ -425,7 +425,7 @@ def compute_reference_willmore_energy(
     elif domain_lower == "double_torus":
         # Genus 2: reference energy is just the theoretical minimum (no analytical
         # reference surface in the multi-chart architecture).
-        return 4 * np.pi**2  # Lawson ξ_{2,1} ≈ 39.48
+        return 21.89  # Lawson ξ_{2,1}
     
     else:
         raise ValueError(f"Reference Willmore energy not known for: {domain}")
@@ -438,7 +438,7 @@ def get_theoretical_minimum_willmore(genus: int) -> float:
     These are the conjectured/proven minimizers:
     - Genus 0: Round sphere, W = 4π ≈ 12.566
     - Genus 1: Clifford torus, W = 2π² ≈ 19.739
-    - Genus 2: Lawson surface ξ_{2,1}, W ≈ 4π² ≈ 39.478
+    - Genus 2: Lawson surface ξ_{2,1}, W ≈ 21.89
     
     Args:
         genus: Surface genus
@@ -451,7 +451,7 @@ def get_theoretical_minimum_willmore(genus: int) -> float:
     elif genus == 1:
         return 2 * np.pi**2  # Clifford torus
     elif genus == 2:
-        return 4 * np.pi**2  # Lawson minimal surface (approximate)
+        return 21.89  # Lawson ξ_{2,1} (conjectured minimum)
     else:
         raise NotImplementedError(f"Theoretical minimum not known for genus {genus}")
 

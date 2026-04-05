@@ -7,7 +7,7 @@ that minimizes the Willmore energy functional.
 Supported topologies:
 - Genus 0 (sphere/ellipsoid): Minimizes to round sphere (W = 4π)
 - Genus 1 (torus): Minimizes to Clifford torus (W = 2π²)
-- Genus 2 (double torus): Minimizes toward Lawson surface (W ≈ 4π²)
+- Genus 2 (double torus): Minimizes toward Lawson surface (W ≈ 21.89)
 """
 
 import torch
@@ -446,7 +446,7 @@ def train(config_path: str = "configs/config_genus2.yaml", resume_from: Optional
     if genus == 2:
         # Multi-chart: no single-domain reference embedding
         print(f"\nMode: Two-chart genus-2 embedding (T₁ + T₂, direct gluing)")
-        ref_willmore = 4 * np.pi**2
+        ref_willmore = 21.89
     else:
         try:
             # Get topology-specific parameters for reference computation

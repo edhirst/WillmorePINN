@@ -76,7 +76,7 @@ where H = (EN-2FM+GL)/(2(EG-F²)) is mean curvature, computed from:
 **Known minima**:
 - Genus 0: round sphere, W = 4π ≈ 12.566
 - Genus 1: Clifford torus, W = 2π² ≈ 19.74
-- Genus 2: Lawson surface ξ_{2,1} (conjectured), W = 4π² ≈ 39.48
+- Genus 2: Lawson surface ξ_{2,1} (conjectured), W ≈ 21.89
 
 ## Output
 

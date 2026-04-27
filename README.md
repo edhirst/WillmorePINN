@@ -87,5 +87,13 @@ Training creates:
 
 ## BibTeX Citation  
 ``` 
-NotImplementedError("paper yet to be posted...")
+@article{Hirst:2026qwi,
+    author = "Hirst, Edward and Earp, Henrique N. S{\'a} and Silva, Tom{\'a}s S. R.",
+    title = "{Minimising Willmore Energy via Neural Flow}",
+    eprint = "2604.04321",
+    archivePrefix = "arXiv",
+    primaryClass = "math.DG",
+    month = "4",
+    year = "2026"
+}
 ```
